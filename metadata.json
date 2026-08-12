@@ -1,0 +1,6 @@
+{
+  "name": "Supabase PHP Database Connector",
+  "description": "PHP 8.2+ PDO singleton database connection class and configuration for Supabase PostgreSQL.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
