@@ -320,6 +320,7 @@ function closeAuth(){document.getElementById('authModal').classList.remove('open
       <div class="field"><label>Full name</label><input type="text" name="name" placeholder="Aina Rahman" required></div>
       <div class="field"><label>Email address</label><input type="email" name="email" placeholder="aina@company.com" required></div>
       <div class="field"><label>Phone (Malaysia)</label><input type="tel" name="phone" placeholder="+60 12-345 6789" pattern="[\+\d\s\-]{8,20}" required></div>
+      <div class="field"><label>Password</label><input type="password" name="password" placeholder="At least 6 characters" minlength="6" required></div>
       <button type="submit" class="btn primary full">Send activation link →</button>
       <p class="hint">Already have an account? <a href="#" onclick="closeSignup();openAuth();return false" style="color:var(--brand);font-weight:700">Sign in</a></p>
     </form>
