@@ -1,5 +1,7 @@
 <?php
-session_start();
+require_once __DIR__ . '/../includes/auth.php';   // starts session + loads config & settings
+ensure_settings_table($pdo);
+$trialHours = max(1, (int)get_setting($pdo, 'general', 'trial_default_hours', 1));
 $isLoggedIn = isset($_SESSION['user_id']);
 $userName   = $isLoggedIn ? $_SESSION['user_name'] : '';
 $userRole   = $isLoggedIn ? $_SESSION['user_role'] : '';
