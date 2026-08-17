@@ -7,6 +7,17 @@ $uid = currentUserId();
 $me  = currentUser();
 
 // Handle profile updates
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'setup_password') {
+    $new     = $_POST['new_password']     ?? '';
+    $confirm = $_POST['confirm_password'] ?? '';
+    if ($new !== $confirm)                         { header("Location: main.php?err=pwd_mismatch"); exit; }
+    if (strlen($new) < 6)                          { header("Location: main.php?err=pwd_short");    exit; }
+    $hash = password_hash($new, PASSWORD_BCRYPT);
+    $pdo->prepare("UPDATE users SET password_hash = ? WHERE id = ? AND password_hash IS NULL")
+        ->execute([$hash, $uid]);
+    header("Location: main.php?welcome=1&pwd_set=1"); exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     if ($_POST['action'] === 'update_profile') {
         $name = trim($_POST['name'] ?? '');
@@ -420,5 +431,28 @@ document.querySelectorAll('a[href]').forEach(link => {
   });
 });
 </script>
+
+<?php
+$showSetup = needsPasswordSetup() || (isset($_GET['setup_pwd']) && $_GET['setup_pwd'] == 1);
+?>
+<div class="modal <?= $showSetup ? 'open' : '' ?>" id="setupPwdModal" style="z-index:80">
+  <div class="modal-card">
+    <form method="POST" class="action-form">
+      <input type="hidden" name="action" value="setup_password">
+      <span class="logo" style="margin:0 auto;width:48px;height:48px;border-radius:12px;background:var(--grad);color:#fff;display:grid;place-items:center;font-size:20px">🔐</span>
+      <h3 style="text-align:center;margin-top:16px">Set your password</h3>
+      <p class="msub" style="text-align:center">You signed up with Google. Please set a password so you can also sign in with email if needed.</p>
+      <?php if (isset($_GET['err'])): ?>
+        <div style="margin-top:12px;background:#fff1f2;color:#e11d48;border-radius:10px;padding:10px;font-size:12px;text-align:center">
+          <?= $_GET['err'] === 'pwd_mismatch' ? 'Passwords do not match.' : 'Password must be at least 6 characters.' ?>
+        </div>
+      <?php endif; ?>
+      <div class="field"><label>New password</label><input type="password" name="new_password" minlength="6" required autofocus></div>
+      <div class="field"><label>Confirm password</label><input type="password" name="confirm_password" minlength="6" required></div>
+      <div class="mrow"><button class="btn-save" type="submit">Save password</button></div>
+    </form>
+  </div>
+</div>
+    
 </body>
 </html>
