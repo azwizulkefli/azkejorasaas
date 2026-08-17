@@ -113,9 +113,9 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 
 <main class="main">
 
-  <?php if (isset($_GET['welcome'])): ?>
-    <div class="banner">🎉 Account activated! Your free trial has started.</div>
-  <?php endif; ?>
+<?php if (isset($_GET['welcome'])): ?>
+  <div class="banner">🎉 Welcome back! Your dashboard is ready.</div>
+<?php endif; ?>
 
   <h1>Welcome back, <span style="background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent"><?= htmlspecialchars(explode(' ',$me['name'])[0]) ?></span> 👋</h1>
   <p class="sub">Here's what's happening across your services today.</p>
