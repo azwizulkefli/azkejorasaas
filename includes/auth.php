@@ -3,6 +3,15 @@ if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/settings.php';
 
+function needsPasswordSetup(): bool {
+    if (!currentUserId()) return false;
+    global $pdo;
+    $st = $pdo->prepare("SELECT password_hash, reg_type FROM users WHERE id = ?");
+    $st->execute([currentUserId()]);
+    $u = $st->fetch();
+    return $u && $u['reg_type'] === 'google' && empty($u['password_hash']);
+}
+
 function login(string $email, string $password): bool {
     global $pdo;
     $stmt = $pdo->prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?)");
