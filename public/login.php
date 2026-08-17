@@ -1,24 +1,31 @@
 <?php
-require_once '../includes/auth.php';
+require_once __DIR__ . '/../includes/auth.php';
 
-if (isset($_GET['logout'])) {
-    logout();
-}
+/* Sign out */
+if (isset($_GET['logout'])) { logout(); }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = $_POST['email'] ?? '';
-    $password = $_POST['password'] ?? '';
+    $email = trim($_POST['email'] ?? '');
+    $pass  = $_POST['password'] ?? '';
 
-    if (login($email, $password)) {
+    if (login($email, $pass)) {
+        /* ✅ Role-based redirect */
         if ($_SESSION['user_role'] === 'admin') {
-            header('Location: admin.php');
+            header('Location: admin.php');                      // admin → admin console
         } else {
-            header('Location: index.php'); // Route customers to dashboard later
+            header('Location: subscriber/main.php?welcome=1');  // subscriber → customer dashboard
         }
         exit;
-    } else {
-        header('Location: index.php?err=1');
-        exit;
     }
+
+    /* ❌ Failed login — distinguish "not activated" vs "wrong credentials" */
+    $st = $pdo->prepare("SELECT activated_at FROM users WHERE LOWER(email) = LOWER(?)");
+    $st->execute([$email]);
+    $row  = $st->fetch();
+    $code = ($row && empty($row['activated_at'])) ? 2 : 1;
+    header("Location: index.php?err=$code");
+    exit;
 }
+
 header('Location: index.php');
+exit;
