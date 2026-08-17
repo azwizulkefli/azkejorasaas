@@ -1,8 +1,6 @@
-node_modules/
-build/
-dist/
-coverage/
-.DS_Store
-*.log
-.env*
-!.env.example
+# Ignore email logs and temporary files
+storage/*.txt
+storage/*.log
+
+# Keep the folder structure in Git, but ignore the contents
+!storage/.gitkeep
