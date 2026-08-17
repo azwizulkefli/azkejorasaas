@@ -5,12 +5,20 @@ require_once __DIR__ . '/settings.php';
 
 function login(string $email, string $password): bool {
     global $pdo;
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND activated_at IS NOT NULL");
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?)");
     $stmt->execute([$email]);
     $user = $stmt->fetch();
+    
     if (!$user) return false;
+
+    // ✅ Allow admins to bypass email activation check
+    if ($user['role'] !== 'admin' && empty($user['activated_at'])) {
+        return false;
+    }
+
     $ok = password_verify($password, $user['password_hash'])
        || crypt($password, $user['password_hash']) === $user['password_hash'];
+       
     if ($ok) {
         $_SESSION['user_id']    = $user['id'];
         $_SESSION['user_name']  = $user['name'];
