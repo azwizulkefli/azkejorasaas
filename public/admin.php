@@ -332,6 +332,8 @@ tbody tr:hover{background:#f8fafc}
 
           <!-- 5 · TOTAL SALE -->
           <td class="sale">RM <?= number_format((float)$s['total_sale'], 0) ?></td>
+          
+          <td class="sale">RM <?= number_format((float)$s['total_sale'], 0) ?></td>
 
           <!-- 6 · ACTIONS -->
           <td><div class="actions">
