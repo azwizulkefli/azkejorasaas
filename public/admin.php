@@ -2,162 +2,122 @@
 require_once '../includes/auth.php';
 requireAdmin();
 
-// Fetch subscribers
-$stmt = $pdo->query("
-    SELECT u.id, u.name, u.email, s.plan, s.status, s.price, s.trial_ends_at, s.period_ends_at, s.created_at
-    FROM users u
-    LEFT JOIN subscriptions s ON u.id = s.user_id
-    WHERE u.role = 'customer'
-    ORDER BY u.created_at DESC
-");
-$subscribers = $stmt->fetchAll();
-
-// Handle Actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $userId = $_POST['user_id'] ?? '';
-    
     if ($_POST['action'] === 'extend_trial') {
-        $hours = (int)($_POST['hours'] ?? 2); // Default 2 hours
-        $stmt = $pdo->prepare("UPDATE subscriptions SET status = 'active_trial', trial_ends_at = NOW() + INTERVAL '{$hours} hours' WHERE user_id = ?");
+        $hours = (int)($_POST['hours'] ?? 2);
+        $stmt = $pdo->prepare("UPDATE subscriptions SET status='active_trial', trial_ends_at = NOW() + INTERVAL '{$hours} hours' WHERE user_id = ?");
         $stmt->execute([$userId]);
-    } 
-    elseif ($_POST['action'] === 'activate') {
-        $stmt = $pdo->prepare("UPDATE subscriptions SET status = 'active', period_ends_at = NOW() + INTERVAL '90 days' WHERE user_id = ?");
+    } elseif ($_POST['action'] === 'activate') {
+        $stmt = $pdo->prepare("UPDATE subscriptions SET status='active', period_ends_at = NOW() + INTERVAL '90 days' WHERE user_id = ?");
         $stmt->execute([$userId]);
-    } 
-    elseif ($_POST['action'] === 'suspend') {
-        $stmt = $pdo->prepare("UPDATE subscriptions SET status = 'suspended' WHERE user_id = ?");
+    } elseif ($_POST['action'] === 'suspend') {
+        $stmt = $pdo->prepare("UPDATE subscriptions SET status='suspended' WHERE user_id = ?");
         $stmt->execute([$userId]);
     }
-    header("Location: admin.php");
-    exit;
+    header("Location: admin.php"); exit;
 }
 
-$stats = $pdo->query("
-    SELECT 
-        COUNT(*) FILTER (WHERE status = 'active') as active_subs,
-        COUNT(*) FILTER (WHERE status = 'active_trial') as trials,
-        COUNT(*) FILTER (WHERE status = 'past_due') as past_due
-    FROM subscriptions
-")->fetch();
+$subscribers = $pdo->query("
+    SELECT u.id, u.name, u.email, s.plan, s.status, s.price, s.trial_ends_at, s.period_ends_at
+    FROM users u LEFT JOIN subscriptions s ON u.id = s.user_id
+    WHERE u.role = 'customer' ORDER BY u.created_at DESC")->fetchAll();
+
+$stats = $pdo->query("SELECT
+    COUNT(*) FILTER (WHERE status='active') AS active_subs,
+    COUNT(*) FILTER (WHERE status='active_trial') AS trials,
+    COUNT(*) FILTER (WHERE status='past_due') AS past_due
+    FROM subscriptions")->fetch();
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Admin Console — AZ Kejora SaaS</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5.1.1/400.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/sora@5.1.1/700.css">
-<script>
-tailwind.config = { theme: { extend: { fontFamily: { display:['Sora','sans-serif'], sans:['Inter','sans-serif'] }, colors: { ink:'#131327', brand:{500:'#6366f1', 600:'#5457e5', 700:'#4644cf'} } } } }
-</script>
-<style>body{font-family:'Inter',sans-serif} .btn-primary{@apply bg-brand-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-brand-700 transition;} .btn-danger{@apply bg-rose-50 text-rose-600 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-rose-100;} .btn-ghost{@apply bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-slate-200;}</style>
+<style>
+:root{--ink:#131327;--bg:#F6F7FB;--brand:#5457e5;--violet:#8b5cf6;--muted:#64748b;--faint:#94a3b8;--line:#e2e8f0;--grad:linear-gradient(90deg,var(--brand),var(--violet));--card:0 1px 2px rgba(19,19,39,.06),0 12px 32px -16px rgba(19,19,39,.12)}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink)}
+a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
+.topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
+.logo{width:36px;height:36px;border-radius:12px;background:var(--grad);color:#fff;display:grid;place-items:center}
+.brand em{font-style:normal;color:var(--brand)}
+.top-right{display:flex;align-items:center;gap:14px;font-size:13px;color:var(--muted)}
+.main{max-width:1200px;margin:0 auto;padding:32px 24px}
+h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
+.sub{color:var(--muted);font-size:14px;margin-top:4px}
+.stats3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin:28px 0}
+@media(max-width:760px){.stats3{grid-template-columns:1fr}}
+.stat{background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:var(--card)}
+.stat p{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.stat b{display:block;margin-top:8px;font-size:30px;font-weight:800}
+.stat .g{color:#059669}.stat .b{color:var(--brand)}.stat .r{color:#e11d48}
+.table-card{background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--card)}
+.table-head{padding:16px 24px;border-bottom:1px solid #f1f5f9;font-weight:700}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:820px}
+th{padding:14px 24px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}
+td{padding:14px 24px;border-bottom:1px solid #f1f5f9;color:var(--muted)}
+tbody tr:hover{background:#f8fafc}
+.name b{color:#1e293b}.email{font-size:12px;color:var(--faint)}
+.badge{display:inline-block;margin-top:4px;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+.badge.active{background:#d1fae5;color:#059669}.badge.active_trial{background:#e0e5ff;color:#4644cf}
+.badge.past_due{background:#fef3c7;color:#d97706}.badge.canceled{background:#f1f5f9;color:#64748b}.badge.suspended{background:#ffe4e6;color:#e11d48}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+.actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.abtn{border-radius:8px;padding:7px 12px;font-size:11px;font-weight:700;transition:.15s}
+.abtn.trial{background:#f1f5f9;color:#475569}.abtn.trial:hover{background:#e2e8f0}
+.abtn.go{background:var(--grad);color:#fff}.abtn.go:hover{opacity:.9}
+.abtn.stop{background:#fff1f2;color:#e11d48}.abtn.stop:hover{background:#ffe4e6}
+.btn-out{background:#fff1f2;color:#e11d48;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700}
+</style>
 </head>
-<body class="bg-slate-50 text-ink">
-<nav class="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center">
-    <div class="flex items-center gap-3">
-        <span class="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-brand-600 to-violet-500 text-white shadow-lg">⚡</span>
-        <span class="font-display text-lg font-bold tracking-tight">AZ Kejora <span class="text-brand-600">Admin</span></span>
-    </div>
-    <div class="flex items-center gap-4">
-        <span class="text-sm text-slate-500">Logged in as <b><?= htmlspecialchars($_SESSION['user_name']) ?></b></span>
-        <a href="login.php?logout=1" class="btn-danger">Sign out</a>
-    </div>
+<body>
+<nav class="topbar">
+  <span class="brand"><span class="logo">⚡</span>AZ Kejora <em>Admin</em></span>
+  <div class="top-right"><span>Logged in as <b><?= htmlspecialchars($_SESSION['user_name']) ?></b></span><a class="btn-out" href="login.php?logout=1">Sign out</a></div>
 </nav>
-
-<main class="max-w-7xl mx-auto px-6 py-8">
-    <h1 class="font-display text-3xl font-extrabold mb-6">Subscriber Management</h1>
-    
-    <!-- Stats -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-            <p class="text-xs font-bold uppercase tracking-wide text-slate-400">Active Subscriptions</p>
-            <p class="text-3xl font-extrabold text-emerald-600 mt-2"><?= $stats['active_subs'] ?></p>
-        </div>
-        <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-            <p class="text-xs font-bold uppercase tracking-wide text-slate-400">Active Trials</p>
-            <p class="text-3xl font-extrabold text-brand-600 mt-2"><?= $stats['trials'] ?></p>
-        </div>
-        <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-            <p class="text-xs font-bold uppercase tracking-wide text-slate-400">Past Due</p>
-            <p class="text-3xl font-extrabold text-rose-500 mt-2"><?= $stats['past_due'] ?></p>
-        </div>
-    </div>
-
-    <!-- Subscribers Table -->
-    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
-            <h2 class="font-display font-bold text-lg">All Subscribers</h2>
-        </div>
-        <div class="overflow-x-auto">
-            <table class="w-full text-sm text-left">
-                <thead class="bg-slate-50 text-slate-500 uppercase text-[11px] tracking-wider">
-                    <tr>
-                        <th class="px-6 py-4">Customer</th>
-                        <th class="px-6 py-4">Plan / Status</th>
-                        <th class="px-6 py-4">Expiry / Trial Ends</th>
-                        <th class="px-6 py-4 text-right">Actions</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                    <?php foreach ($subscribers as $sub): ?>
-                    <tr class="hover:bg-slate-50/60 transition">
-                        <td class="px-6 py-4">
-                            <div class="font-semibold text-slate-800"><?= htmlspecialchars($sub['name']) ?></div>
-                            <div class="text-xs text-slate-400"><?= htmlspecialchars($sub['email']) ?></div>
-                        </td>
-                        <td class="px-6 py-4">
-                            <div class="font-semibold"><?= $sub['plan'] ?: 'No Plan' ?> <span class="text-slate-400 font-normal">(RM <?= $sub['price'] ?>)</span></div>
-                            <span class="inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase 
-                                <?= $sub['status'] == 'active' ? 'bg-emerald-50 text-emerald-600' : 
-                                   ($sub['status'] == 'active_trial' ? 'bg-brand-50 text-brand-700' : 
-                                   ($sub['status'] == 'past_due' ? 'bg-amber-50 text-amber-600' : 'bg-slate-100 text-slate-500')) ?>">
-                                <?= $sub['status'] ?>
-                            </span>
-                        </td>
-                        <td class="px-6 py-4 text-xs text-slate-500">
-                            <?php if ($sub['status'] == 'active_trial' && $sub['trial_ends_at']): ?>
-                                <span class="font-mono"><?= date('M d, H:i', strtotime($sub['trial_ends_at'])) ?></span>
-                            <?php elseif ($sub['period_ends_at']): ?>
-                                <span class="font-mono"><?= date('M d, Y', strtotime($sub['period_ends_at'])) ?></span>
-                            <?php else: ?>
-                                —
-                            <?php endif; ?>
-                        </td>
-                        <td class="px-6 py-4 text-right">
-                            <div class="flex justify-end gap-2">
-                                <?php if ($sub['status'] == 'active_trial' || $sub['status'] == 'suspended' || $sub['status'] == 'past_due'): ?>
-                                <form method="POST" class="flex gap-1">
-                                    <input type="hidden" name="user_id" value="<?= $sub['id'] ?>">
-                                    <input type="hidden" name="action" value="extend_trial">
-                                    <input type="hidden" name="hours" value="2">
-                                    <button type="submit" class="btn-ghost" title="Reset/Extend Trial (2h)">⏱️ +2h Trial</button>
-                                </form>
-                                <?php endif; ?>
-                                
-                                <?php if ($sub['status'] !== 'active'): ?>
-                                <form method="POST">
-                                    <input type="hidden" name="user_id" value="<?= $sub['id'] ?>">
-                                    <input type="hidden" name="action" value="activate">
-                                    <button type="submit" class="btn-primary !py-1.5 !px-3 !text-xs">Activate (90d)</button>
-                                </form>
-                                <?php else: ?>
-                                <form method="POST">
-                                    <input type="hidden" name="user_id" value="<?= $sub['id'] ?>">
-                                    <input type="hidden" name="action" value="suspend">
-                                    <button type="submit" class="btn-danger">Suspend</button>
-                                </form>
-                                <?php endif; ?>
-                            </div>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-    </div>
+<main class="main">
+  <h1>Subscriber Management</h1>
+  <p class="sub">Manage billing, suspensions and trial expiry (default 2 hours).</p>
+  <div class="stats3">
+    <div class="stat"><p>Active Subscriptions</p><b class="g"><?= $stats['active_subs'] ?></b></div>
+    <div class="stat"><p>Active Trials</p><b class="b"><?= $stats['trials'] ?></b></div>
+    <div class="stat"><p>Past Due</p><b class="r"><?= $stats['past_due'] ?></b></div>
+  </div>
+  <div class="table-card">
+    <div class="table-head">All Subscribers</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Customer</th><th>Plan / Status</th><th>Trial / Period Ends</th><th style="text-align:right">Actions</th></tr></thead>
+      <tbody>
+      <?php foreach ($subscribers as $s): ?>
+        <tr>
+          <td class="name"><b><?= htmlspecialchars($s['name']) ?></b><div class="email"><?= htmlspecialchars($s['email']) ?></div></td>
+          <td><?= $s['plan'] ?: 'No Plan' ?> <span style="color:var(--faint)">(RM <?= $s['price'] ?>)</span><br>
+              <span class="badge <?= htmlspecialchars($s['status']) ?>"><?= htmlspecialchars($s['status']) ?></span></td>
+          <td class="mono"><?php
+            if ($s['status']==='active_trial' && $s['trial_ends_at']) echo '⏱ '.date('M d, H:i', strtotime($s['trial_ends_at']));
+            elseif ($s['period_ends_at']) echo date('M d, Y', strtotime($s['period_ends_at']));
+            else echo '—';
+          ?></td>
+          <td><div class="actions">
+            <?php if (in_array($s['status'], ['active_trial','suspended','past_due'])): ?>
+              <form method="POST"><input type="hidden" name="user_id" value="<?= $s['id'] ?>"><input type="hidden" name="action" value="extend_trial"><input type="hidden" name="hours" value="2">
+              <button class="abtn trial" title="Reset trial to 2 hours">⏱ +2h Trial</button></form>
+            <?php endif; ?>
+            <?php if ($s['status'] !== 'active'): ?>
+              <form method="POST"><input type="hidden" name="user_id" value="<?= $s['id'] ?>"><input type="hidden" name="action" value="activate">
+              <button class="abtn go">Activate (90d)</button></form>
+            <?php else: ?>
+              <form method="POST"><input type="hidden" name="user_id" value="<?= $s['id'] ?>"><input type="hidden" name="action" value="suspend">
+              <button class="abtn stop">Suspend</button></form>
+            <?php endif; ?>
+          </div></td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table></div>
+  </div>
 </main>
 </body>
 </html>
