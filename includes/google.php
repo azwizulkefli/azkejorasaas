@@ -1,8 +1,8 @@
 <?php
 /* Google OAuth 2.0 helper — zero dependencies, pure cURL */
 
-define('GOOGLE_CLIENT_ID',     '962944051050-nt5o2vlgiphnq1tef858ca2ik1en40bt.apps.googleusercontent.com');
-define('GOOGLE_CLIENT_SECRET', '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');
+define('GOOGLE_CLIENT_ID',     '1024820598270-f1qk2htlpdf0lq772ufldnen6fcilsn8.apps.googleusercontent.com');
+define('GOOGLE_CLIENT_SECRET', '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');
 
 function google_redirect_uri(): string {
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
