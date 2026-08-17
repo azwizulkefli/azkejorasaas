@@ -315,6 +315,8 @@ tbody tr:hover{background:#f8fafc}
             <span><small>Payment:</small> <b class="mono"><?= $s['first_payment'] ? date('M d, Y', strtotime($s['first_payment'])) : '—' ?></b></span>
           </td>
 
+          <td class="sale">&nbsp;</td>
+          
           <!-- 4 · EXPIRY -->
           <td class="date-pair">
             <?php if ($expiryDate): ?>
@@ -330,9 +332,7 @@ tbody tr:hover{background:#f8fafc}
             <?php endif; ?>
           </td>
 
-          <!-- 5 · TOTAL SALE -->
-          <td class="sale">RM <?= number_format((float)$s['total_sale'], 0) ?></td>
-          
+          <!-- 5 · TOTAL SALE -->          
           <td class="sale">RM <?= number_format((float)$s['total_sale'], 0) ?></td>
 
           <!-- 6 · ACTIONS -->
