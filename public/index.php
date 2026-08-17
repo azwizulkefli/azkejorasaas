@@ -188,12 +188,12 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
       <div class="chip" style="right:-14px;bottom:36px;animation-delay:1.4s"><span class="ic" style="background:#e0e5ff;color:var(--brand)">📅</span><div><b>Booking confirmed</b><small>Badminton Court · 18:00 · RM 36</small></div></div>
     </div>
   </div>
-  <div class="wrap"><div class="stats">
+  <!--<div class="wrap"><div class="stats">
     <div><b>1,240+</b><p>SMEs onboarded</p></div>
     <div><b>RM 4.2M</b><p>Invoices processed</p></div>
     <div><b>99.98%</b><p>Platform uptime</p></div>
     <div><b>4.9★</b><p>Merchant rating</p></div>
-  </div></div>
+  </div></div>-->
 </section>
 
 <!-- FEATURES -->
@@ -296,6 +296,7 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
   <div class="modal-card">
     <form action="login.php" method="POST">
       <span class="logo">⚡</span>
+
       <h3>Sign in to AZ Kejora</h3>
       <p class="sub">Enter your credentials to continue</p>
 <?php if($loginError): ?>
@@ -303,6 +304,23 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
       ? 'Account not activated yet — open the activation link we emailed you.'
       : 'Invalid email or password.' ?></div>
 <?php endif; ?>
+
+      <!-- GOOGLE SIGN-IN BUTTON -->
+      <div style="margin-bottom:20px">
+        <a href="?google=1" class="btn ghost full" style="gap:10px;font-weight:700">
+          <svg width="18" height="18" viewBox="0 0 24 24">
+            <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"/>
+            <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09C3.26 21.3 7.31 24 12 24z"/>
+            <path fill="#FBBC05" d="M5.27 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.98-3.09z"/>
+            <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75z"/>
+          </svg>
+          Continue with Google
+        </a>
+        <div style="display:flex;align-items:center;gap:12px;margin:16px 0;color:var(--faint);font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase">
+          <span style="flex:1;height:1px;background:var(--line)"></span>OR<span style="flex:1;height:1px;background:var(--line)"></span>
+        </div>
+      </div>
+
       <div class="field"><label>Email address</label><input type="email" name="email"  required></div>
       <div class="field"><label>Password</label><input type="password" name="password"  required></div>
       <button type="submit" class="btn primary full">Sign in securely</button>
