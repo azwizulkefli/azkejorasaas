@@ -44,11 +44,12 @@ try {
 
     if (!$user) {
         // Brand new Google user → create + auto-activate (no password yet)
+        $dummyHash = '$2y$10$GoogleOAuthUserNoPasswordSet000000000000000000000000000'; // never verifies
         $pdo->prepare("INSERT INTO users
             (name, email, password_hash, role, reg_type, google_id, google_picture, activated_at)
-            VALUES (?, ?, NULL, 'customer', 'google', ?, ?, NOW())")
-            ->execute([$name, $email, $gId, $pic]);
-
+            VALUES (?, ?, ?, 'customer', 'google', ?, ?, NOW())")
+            ->execute([$name, $email, $dummyHash, $gId, $pic]);
+        
         $userId = $pdo->lastInsertId();
 
         // Provision trial subscription
