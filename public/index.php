@@ -147,7 +147,7 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
       <a class="btn primary" href="<?= $userRole==='admin' ? 'admin.php' : '#' ?>">Get started</a>
     <?php else: ?>
       <button class="btn ghost" onclick="openAuth()">Sign in</button>
-      <button class="btn primary" onclick="openAuth()">Get started</button>
+      <button class="btn primary" onclick="openSignup()">Get started</button>
     <?php endif; ?>
   </div>
 </div></header>
