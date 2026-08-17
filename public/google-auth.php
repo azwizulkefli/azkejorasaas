@@ -43,22 +43,27 @@ try {
     $user = $stmt->fetch();
 
     if (!$user) {
-        // Brand new Google user → create + auto-activate (no password yet)
-        $dummyHash = '$2y$10$GoogleOAuthUserNoPasswordSet000000000000000000000000000'; // never verifies
-        $pdo->prepare("INSERT INTO users
-            (name, email, password_hash, role, reg_type, google_id, google_picture, activated_at)
-            VALUES (?, ?, ?, 'customer', 'google', ?, ?, NOW())")
-            ->execute([$name, $email, $dummyHash, $gId, $pic]);
+        // Brand new Google user → create + auto-activate
+        $dummyHash = '$2y$10$GoogleOAuthUserNoPasswordSet000000000000000000000000000'; // placeholder
         
-        $userId = $pdo->lastInsertId();
+        // 👇 Added "RETURNING id" to fetch the generated UUID
+        $stmt = $pdo->prepare("INSERT INTO users
+            (name, email, password_hash, role, reg_type, google_id, google_picture, activated_at)
+            VALUES (?, ?, ?, 'customer', 'google', ?, ?, NOW())
+            RETURNING id");
+        $stmt->execute([$name, $email, $dummyHash, $gId, $pic]);
+        
+        // 👇 Fetches the UUID directly from the INSERT result
+        $userId = $stmt->fetchColumn(); 
 
         // Provision trial subscription
         $pdo->prepare("INSERT INTO subscriptions (user_id, status, price, trial_ends_at)
                         VALUES (?, 'active_trial', 0, NOW() + (? * INTERVAL '1 hour'))")
             ->execute([$userId, $trialHours]);
 
-        // Log in
-        $full = $pdo->prepare("SELECT * FROM users WHERE id = ?"); $full->execute([$userId]);
+        // Fetch full user record for session
+        $full = $pdo->prepare("SELECT * FROM users WHERE id = ?"); 
+        $full->execute([$userId]);
         $user = $full->fetch();
 
     } else {
