@@ -304,5 +304,52 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
 function openAuth(){document.getElementById('authModal').classList.add('open')}
 function closeAuth(){document.getElementById('authModal').classList.remove('open')}
 </script>
+
+<!-- ============ SIGNUP MODAL ============ -->
+<div class="modal" id="signupModal" onclick="if(event.target===this)closeSignup()">
+  <div class="modal-card">
+    <form action="signup.php" method="POST">
+      <span class="logo">⚡</span>
+      <h3>Create your account</h3>
+      <p class="sub">Start your free trial — no card required</p>
+      <?php if (isset($_GET['signup']) && isset($_GET['err'])): ?>
+        <div class="err"><?= htmlspecialchars($_GET['err']) ?></div>
+      <?php endif; ?>
+      <div class="field"><label>Full name</label><input type="text" name="name" placeholder="Aina Rahman" required></div>
+      <div class="field"><label>Email address</label><input type="email" name="email" placeholder="aina@company.com" required></div>
+      <div class="field"><label>Phone (Malaysia)</label><input type="tel" name="phone" placeholder="+60 12-345 6789" pattern="[\+\d\s\-]{8,20}" required></div>
+      <button type="submit" class="btn primary full">Send activation link →</button>
+      <p class="hint">Already have an account? <a href="#" onclick="closeSignup();openAuth();return false" style="color:var(--brand);font-weight:700">Sign in</a></p>
+    </form>
+    <button class="btn ghost full" style="margin-top:12px" onclick="closeSignup()">Cancel</button>
+  </div>
+</div>
+
+<!-- ============ CHECK-EMAIL MODAL ============ -->
+<?php if (isset($_GET['check'])): ?>
+<div class="modal open" id="checkModal">
+  <div class="modal-card" style="text-align:center">
+    <span class="logo" style="background:linear-gradient(135deg,#10b981,#14b8a6)">✉</span>
+    <h3>Check your inbox</h3>
+    <p class="sub">We sent an activation link to<br><b><?= htmlspecialchars($_GET['email']) ?></b></p>
+    <div style="margin:20px 0;padding:16px;background:#f8fafc;border-radius:12px;font-size:12px;color:#475569;text-align:left;word-break:break-all">
+      <div style="font-weight:700;margin-bottom:8px;color:#059669">✓ Activation email sent</div>
+      Click the link in the email to activate your account and start your <?= get_setting($pdo,'general','trial_default_hours',1) ?? 1 ?>-hour free trial.
+      <?php if (!empty($_GET['fallback'])): ?>
+        <details style="margin-top:12px"><summary style="cursor:pointer;color:var(--brand);font-weight:600">Show activation link (fallback)</summary>
+        <a href="<?= htmlspecialchars($_GET['fallback']) ?>" style="color:var(--brand);text-decoration:underline;word-break:break-all"><?= htmlspecialchars($_GET['fallback']) ?></a>
+        </details>
+      <?php endif; ?>
+    </div>
+    <button class="btn primary full" onclick="document.getElementById('checkModal').classList.remove('open')">Got it</button>
+  </div>
+</div>
+<?php endif; ?>
+
+<script>
+function openSignup(){document.getElementById('signupModal').classList.add('open')}
+function closeSignup(){document.getElementById('signupModal').classList.remove('open')}
+<?php if (isset($_GET['signup']) && isset($_GET['err'])): ?>openSignup();<?php endif; ?>
+</script>
 </body>
 </html>
