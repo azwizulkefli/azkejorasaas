@@ -151,3 +151,34 @@ CREATE TABLE IF NOT EXISTS einvoice_items (
  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_einvoice_user ON einvoice_items(user_id);
+
+-- Add avatar to users
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_path VARCHAR(255);
+
+-- Company profiles
+CREATE TABLE IF NOT EXISTS companies (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(255),
+    registration_no VARCHAR(100),
+    address TEXT,
+    business_type VARCHAR(100),
+    postcode VARCHAR(20),
+    state VARCHAR(100),
+    town VARCHAR(100),
+    -- E-Invoice config
+    msic_code VARCHAR(50),
+    classification_code VARCHAR(50),
+    taxpayer_tin VARCHAR(100),
+    taxpayer_brn VARCHAR(100),
+    sandbox_clientid TEXT,
+    sandbox_secret1 TEXT,
+    sandbox_secret2 TEXT,
+    prod_clientid TEXT,
+    prod_secret1 TEXT,
+    prod_secret2 TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_user ON companies(user_id);
