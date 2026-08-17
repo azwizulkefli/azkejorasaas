@@ -13,7 +13,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($_SESSION['user_role'] === 'admin') {
             header('Location: admin.php');                      // admin → admin console
         } else {
-            header('Location: subscriber/main.php?welcome=1');  // subscriber → customer dashboard
+            header('Location: /subscriber/main.php?welcome=1');  // subscriber → customer dashboard
         }
         exit;
     }
