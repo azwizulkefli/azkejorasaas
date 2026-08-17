@@ -12,7 +12,7 @@ $loginError = isset($_GET['err']);
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AZ Kejora SaaS — E-Invoice & Facility Booking Platform</title>
+<title>AZ Kejora SaaS — E-Invoice & Facility Booking</title>
 <style>
 /* ================= TOKENS / BASE ================= */
 :root{--ink:#131327;--bg:#F6F7FB;--brand:#5457e5;--brand-dark:#4644cf;--violet:#8b5cf6;--fuchsia:#d946ef;--text:#334155;--muted:#64748b;--faint:#94a3b8;--line:#e2e8f0;--emerald:#10b981;--rose:#e11d48;--grad:linear-gradient(90deg,var(--brand),var(--violet));--shadow:0 8px 30px -12px rgba(19,19,39,.15);--card:0 1px 2px rgba(19,19,39,.06),0 12px 32px -16px rgba(19,19,39,.12)}
@@ -158,7 +158,7 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
 <section class="hero"><div class="glow"></div>
   <div class="wrap hero-grid">
     <div>
-      <span class="eyebrow"><span class="dot"></span>LHDN e-Invoice ready · Supabase PG</span>
+      <span class="eyebrow"><span class="dot"></span>LHDN e-Invoice ready</span>
       <h1 class="big">Run your whole service business on <span class="grad-text">one elegant platform.</span></h1>
       <p class="lead">AZ Kejora SaaS pairs smart e-Invoicing for SMEs with a beautiful facility-booking engine — wrapped in a simple 3-month subscription. Sign in and start free.</p>
       <div class="cta-row">
@@ -166,7 +166,7 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
         <?php else: ?><button class="btn primary" style="padding:14px 28px;font-size:16px" onclick="openAuth()">Start 30-day free trial →</button><?php endif; ?>
         <a class="btn ghost" style="padding:14px 24px;font-size:16px" href="#pricing">View 3-month plans</a>
       </div>
-      <div class="checks"><span>No credit card</span><span>Secure login</span><span>Stripe · FPX · ToyyibPay</span></div>
+      <!--<div class="checks"><span>No credit card</span><span>Secure login</span><span>Stripe · FPX · ToyyibPay</span></div>-->
     </div>
     <div class="mock">
       <div class="mock-card">
@@ -281,7 +281,7 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
 </div></section>
 <footer><div class="wrap foot">
   <span class="brand" style="font-size:15px"><span class="logo" style="width:28px;height:28px;border-radius:8px;font-size:13px">⚡</span>AZ Kejora SaaS</span>
-  <small>© 2026 AZ Kejora SaaS · PHP 8.2 · Supabase PostgreSQL · Stripe Webhooks</small>
+  <small>© 2026 AZ Kejora SaaS . Copyright Protected</small>
   <nav><a href="#features">Features</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></nav>
 </div></footer>
 
@@ -297,10 +297,9 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
       ? 'Account not activated yet — open the activation link we emailed you.'
       : 'Invalid email or password.' ?></div>
 <?php endif; ?>
-      <div class="field"><label>Email address</label><input type="email" name="email" placeholder="admin@azkejora.io" required></div>
-      <div class="field"><label>Password</label><input type="password" name="password" placeholder="••••••••" required></div>
+      <div class="field"><label>Email address</label><input type="email" name="email"  required></div>
+      <div class="field"><label>Password</label><input type="password" name="password"  required></div>
       <button type="submit" class="btn primary full">Sign in securely</button>
-      <p class="hint">Demo Admin: <code>admin@azkejora.io</code> / <code>password</code></p>
     </form>
     <button class="btn ghost full" style="margin-top:12px" onclick="closeAuth()">Cancel</button>
   </div>
