@@ -209,7 +209,8 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
     
     <div class="field"><label>Client ID</label><input type="text" name="prod_clientid" value="<?= htmlspecialchars($company['prod_clientid'] ?? '') ?>"></div>
     <div class="grid2">
-      <div class="field"><label>Client Secret 1</label><input type="password" name="prod_secret1" value="<?= htmlspecialchars($prod_secret1'] ?? '') ?>"></div>
+      <!-- FIXED TYPO BELOW -->
+      <div class="field"><label>Client Secret 1</label><input type="password" name="prod_secret1" value="<?= htmlspecialchars($company['prod_secret1'] ?? '') ?>"></div>
       <div class="field"><label>Client Secret 2</label><input type="password" name="prod_secret2" value="<?= htmlspecialchars($company['prod_secret2'] ?? '') ?>"></div>
     </div>
     
