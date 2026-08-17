@@ -1,11 +1,5 @@
 <?php
 // Supabase PostgreSQL Connection
-
-host=aws-0-ap-northeast-1.pooler.supabase.com
-port=6543
-database=postgres
-user=postgres.jfdpnbkacxnlsquqypsy
-
 $host = 'aws-0-ap-northeast-1.pooler.supabase.com';
 $port = '6543';
 $db   = 'postgres';
