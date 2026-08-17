@@ -1,12 +1,20 @@
 <?php
 // Supabase PostgreSQL Connection
-$host = 'db.jfdpnbkacxnlsquqypsy.supabase.co';
-$port = '5432';
+
+host=aws-0-ap-northeast-1.pooler.supabase.com
+port=6543
+database=postgres
+user=postgres.jfdpnbkacxnlsquqypsy
+
+$host = 'aws-0-ap-northeast-1.pooler.supabase.com';
+$port = '6543';
 $db   = 'postgres';
-$user = 'postgres';
+$user = 'postgres.jfdpnbkacxnlsquqypsy';
 $pass = 'predicatenotdefined2026'; // Replace this!
 
-$dsn = "pgsql:host=$host;port=$port;dbname=$db;";
+// IMPORTANT: Supabase requires SSL for external connections
+$dsn = "pgsql:host=$host;port=$port;dbname=$db;sslmode=require;";
+
 $options = [
     PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
