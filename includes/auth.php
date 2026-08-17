@@ -27,10 +27,13 @@ function registerCustomer(array $data): array {
     $name  = trim($data['name']  ?? '');
     $email = trim(strtolower($data['email'] ?? ''));
     $phone = trim($data['phone'] ?? '');
-    $pass  = $data['password'] ?? bin2hex(random_bytes(8)); // temp password until activated
+    $pass  = $data['password'] ?? '';
 
     if ($name === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || $phone === '')
         return ['ok'=>false, 'error'=>'Please fill name, valid email and phone.'];
+        
+    if (strlen($pass) < 6)
+        return ['ok'=>false, 'error'=>'Password must be at least 6 characters.'];
 
     $exists = $pdo->prepare("SELECT id, activated_at FROM users WHERE LOWER(email) = LOWER(?)");
     $exists->execute([$email]);
