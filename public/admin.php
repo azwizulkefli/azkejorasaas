@@ -47,11 +47,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     } elseif ($_POST['action'] === 'delete_user') {
         $pdo->beginTransaction();
         try {
-            // Guard: admins can never be deleted from this console
             $chk = $pdo->prepare("SELECT role FROM users WHERE id = ?");
             $chk->execute([$userId]);
             if ($chk->fetchColumn() === 'customer') {
-                // Remove relational data first (bookings, payments, invoices, subscription)
                 foreach (['bookings', 'transactions', 'einvoice_items', 'subscriptions'] as $tbl) {
                     if ($pdo->query("SELECT to_regclass('public." . $tbl . "')")->fetchColumn()) {
                         $pdo->prepare("DELETE FROM " . $tbl . " WHERE user_id = ?")->execute([$userId]);
@@ -79,7 +77,7 @@ $page    = min($page, $pages);
 $offset  = ($page - 1) * $perPage;
 
 $subscribers = $pdo->prepare("
-    SELECT u.id, u.name, u.email, s.plan, s.status, s.price, s.trial_ends_at, s.period_ends_at,
+    SELECT u.id, u.name, u.email, u.created_at, s.plan, s.status, s.price, s.trial_ends_at, s.period_ends_at,
            agg.first_payment, agg.total_sale
     FROM users u
     LEFT JOIN subscriptions s ON s.user_id = u.id
@@ -128,7 +126,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .stat p{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
 .stat b{display:block;margin-top:8px;font-size:30px;font-weight:800}
 .stat .g{color:#059669}.stat .b{color:var(--brand)}.stat .r{color:#e11d48}
-/* settings */
 .set-card{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--card);margin-bottom:28px;overflow:hidden}
 .set-head{padding:16px 24px;border-bottom:1px solid #f1f5f9;font-weight:700;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .set-head small{color:var(--faint);font-weight:500}
@@ -142,7 +139,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .set-input:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.1)}
 .btn-save{background:var(--grad);color:#fff;border-radius:10px;padding:10px 18px;font-size:13px;font-weight:700}
 .btn-save:hover{opacity:.9}
-/* table */
 .table-card{background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--card)}
 .toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 24px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap}
 .toolbar h3{font-weight:700}
@@ -153,7 +149,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .search-btn{background:#f1f5f9;color:#475569;border-radius:10px;padding:9px 16px;font-size:12px;font-weight:700}
 .clear-btn{font-size:12px;font-weight:700;color:#e11d48}
 .table-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:14px;min-width:1020px}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:1100px}
 th{padding:14px 24px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}
 td{padding:14px 24px;border-bottom:1px solid #f1f5f9;color:var(--muted);vertical-align:middle}
 tbody tr:hover{background:#f8fafc}
@@ -164,6 +160,11 @@ tbody tr:hover{background:#f8fafc}
 .badge.suspended{background:#ffe4e6;color:#e11d48}.badge.none{background:#f1f5f9;color:#94a3b8}
 .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
 .sale{font-weight:800;color:#1e293b}
+.date-pair{display:flex;flex-direction:column;gap:4px}
+.date-pair span{display:flex;align-items:center;gap:6px}
+.date-pair small{color:var(--faint);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.remaining{margin-top:4px;font-size:11px;font-weight:700;color:var(--brand)}
+.remaining.expired{color:#e11d48}
 .actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;align-items:center}
 .ibtn{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:14px;background:#f8fafc;border:1px solid var(--line);transition:.15s}
 .ibtn:hover{background:#e2e8f0}
@@ -179,7 +180,6 @@ tbody tr:hover{background:#f8fafc}
 .pbtn:hover{background:#e2e8f0}.pbtn.off{opacity:.4;pointer-events:none}
 .pnum{border-radius:8px;padding:7px 11px;font-size:12px;font-weight:700;background:#fff;border:1px solid var(--line);color:#475569}
 .pnum.on{background:var(--grad);color:#fff;border-color:transparent}
-/* modal */
 .modal{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);padding:16px}
 .modal.open{display:grid}
 .modal-card{width:100%;max-width:420px;background:#fff;border-radius:20px;padding:28px;box-shadow:0 30px 80px -20px rgba(19,19,39,.4)}
@@ -191,9 +191,22 @@ tbody tr:hover{background:#f8fafc}
 .field input:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.1)}
 .mrow{display:flex;gap:10px;margin-top:20px}
 .mrow .btn-save{flex:1;text-align:center}.mrow .cancel{flex:1;background:#f1f5f9;color:#475569;border-radius:10px;font-size:13px;font-weight:700}
+.loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.92);backdrop-filter:blur(4px);display:none;place-items:center;z-index:9999}
+.loading-overlay.active{display:grid}
+.spinner-wrap{text-align:center}
+.spinner{width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner-text{margin-top:16px;font-size:13px;font-weight:600;color:var(--muted)}
 </style>
 </head>
 <body>
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="spinner-wrap">
+    <div class="spinner"></div>
+    <p class="spinner-text">Processing…</p>
+  </div>
+</div>
+
 <nav class="topbar">
   <span class="brand"><span class="logo">⚡</span>AZ Kejora <em>Admin</em></span>
   <div class="top-right"><span>Logged in as <b><?= htmlspecialchars($_SESSION['user_name']) ?></b></span><a class="btn-out" href="login.php?logout=1">Sign out</a></div>
@@ -210,7 +223,6 @@ tbody tr:hover{background:#f8fafc}
     <div class="stat"><p>Past Due</p><b class="r"><?= $stats['past_due'] ?></b></div>
   </div>
 
-  <!-- ============ PLATFORM SETTINGS ============ -->
   <form method="POST" class="set-card">
     <input type="hidden" name="action" value="save_settings">
     <div class="set-head"><span>Platform Settings</span><small>Module-based configuration store · <code>settings(module, key, value)</code></small><button class="btn-save">Save settings</button></div>
@@ -227,7 +239,6 @@ tbody tr:hover{background:#f8fafc}
     </div>
   </form>
 
-  <!-- ============ SUBSCRIBERS ============ -->
   <div class="table-card">
     <form method="GET" class="toolbar">
       <h3>All Subscribers <span><?= $total ?> record(s)<?= $q ? ' · filtered by "'.htmlspecialchars($q).'"' : '' ?></span></h3>
@@ -238,37 +249,71 @@ tbody tr:hover{background:#f8fafc}
       </div>
     </form>
     <div class="table-wrap"><table>
-      <thead><tr><th>Customer</th><th>Plan</th><th>Status</th><th>Expiry</th><th>Start</th><th>Total Sale</th><th style="text-align:right">Actions</th></tr></thead>
+      <thead><tr><th>Customer</th><th>Plan</th><th>Status</th><th>Start</th><th>Expiry</th><th>Total Sale</th><th style="text-align:right">Actions</th></tr></thead>
       <tbody>
-      <?php foreach ($rows as $s): $st = $s['status'] ?? 'none'; ?>
+      <?php foreach ($rows as $s): 
+        $st = $s['status'] ?? 'none';
+        $now = new DateTime();
+        $expiryDate = null;
+        $remainingText = '';
+        $remainingClass = '';
+        
+        if ($st === 'active_trial' && $s['trial_ends_at']) {
+            $expiryDate = new DateTime($s['trial_ends_at']);
+        } elseif ($s['period_ends_at']) {
+            $expiryDate = new DateTime($s['period_ends_at']);
+        }
+        
+        if ($expiryDate) {
+            $diff = $now->diff($expiryDate);
+            $totalMinutes = ($diff->days * 24 * 60) + ($diff->h * 60) + $diff->i;
+            if ($now > $expiryDate) {
+                $remainingText = 'Expired';
+                $remainingClass = 'expired';
+            } else {
+                $remainingText = $diff->days > 0 ? "{$diff->days}d {$diff->h}h left" : "{$diff->h}h {$diff->i}m left";
+            }
+        }
+      ?>
         <tr data-id="<?= $s['id'] ?>" data-name="<?= htmlspecialchars($s['name'], ENT_QUOTES) ?>" data-email="<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>">
           <td class="name"><b><?= htmlspecialchars($s['name']) ?></b><div class="email"><?= htmlspecialchars($s['email']) ?></div></td>
           <td><?= $s['plan'] ?: 'No Plan' ?> <span style="color:var(--faint)">(RM <?= $s['price'] ?>)</span></td>
           <td><span class="badge <?= htmlspecialchars($st) ?>"><?= htmlspecialchars($st) ?></span></td>
-          <td class="mono"><?php
-            if ($st === 'active_trial' && $s['trial_ends_at']) echo '⏱ ' . date('M d, H:i', strtotime($s['trial_ends_at']));
-            elseif ($s['period_ends_at']) echo date('M d, Y', strtotime($s['period_ends_at']));
-            else echo '—';
-          ?></td>
-          <td class="mono"><?= $s['first_payment'] ? date('M d, Y', strtotime($s['first_payment'])) : '—' ?></td>
+          <td class="date-pair">
+            <span><small>Registered:</small> <b class="mono"><?= $s['created_at'] ? date('M d, Y', strtotime($s['created_at'])) : '—' ?></b></span>
+            <span><small>Payment:</small> <b class="mono"><?= $s['first_payment'] ? date('M d, Y', strtotime($s['first_payment'])) : '—' ?></b></span>
+          </td>
+          <td class="date-pair">
+            <?php if ($expiryDate): ?>
+              <span><b class="mono"><?php
+                if ($st === 'active_trial') echo '⏱ ' . $expiryDate->format('M d, H:i');
+                else echo $expiryDate->format('M d, Y');
+              ?></b></span>
+              <?php if ($remainingText): ?>
+                <span class="remaining <?= $remainingClass ?>"><?= $remainingText ?></span>
+              <?php endif; ?>
+            <?php else: ?>
+              <span class="mono">—</span>
+            <?php endif; ?>
+          </td>
           <td class="sale">RM <?= number_format((float)$s['total_sale'], 0) ?></td>
           <td><div class="actions">
             <button class="ibtn" data-edit title="Edit profile">✏️</button>
             <button class="ibtn" title="Impersonate (coming soon)" onclick="impersonate('<?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?>')">🎭</button>
-            <form method="POST" onsubmit="return confirm('Permanently delete <?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?> (<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>) and ALL related bookings, transactions & invoices?\nThis cannot be undone.')">
+            <form method="POST" class="action-form" onsubmit="return confirm('Permanently delete <?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?> (<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>) and ALL related bookings, transactions & invoices?\nThis cannot be undone.')">
               <input type="hidden" name="action" value="delete_user">
               <input type="hidden" name="user_id" value="<?= $s['id'] ?>">
               <button class="ibtn del" title="Delete user + related data (testing)">🗑️</button>
             </form>
             <?php if (in_array($st, ['active_trial','suspended','past_due','none'])): ?>
-              <form method="POST"><input type="hidden" name="action" value="extend_trial"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
+              <form method="POST" class="action-form"><input type="hidden" name="action" value="extend_trial"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
               <button class="abtn trial" title="Reset trial to configured default">⏱ +<?= $trialHours ?>h</button></form>
             <?php endif; ?>
             <?php if ($st !== 'active'): ?>
-              <form method="POST"><input type="hidden" name="action" value="activate"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
+              <form method="POST" class="action-form"><input type="hidden" name="action" value="activate"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
               <button class="abtn go">Activate (90d)</button></form>
             <?php else: ?>
-              <form method="POST"><input type="hidden" name="action" value="suspend"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
+              <form method="POST" class="action-form"><input type="hidden" name="action" value="suspend"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
               <button class="abtn stop">Suspend</button></form>
             <?php endif; ?>
           </div></td>
@@ -290,9 +335,8 @@ tbody tr:hover{background:#f8fafc}
   </div>
 </main>
 
-<!-- ============ EDIT PROFILE MODAL ============ -->
 <div class="modal" id="editModal">
-  <form method="POST" class="modal-card">
+  <form method="POST" class="modal-card action-form">
     <input type="hidden" name="action" value="save_profile">
     <input type="hidden" name="user_id" id="edit_id">
     <h3>Edit customer profile</h3>
@@ -315,6 +359,25 @@ document.querySelectorAll('button[data-edit]').forEach(b => b.addEventListener('
   modal.classList.add('open');
 }));
 function impersonate(name){ alert('🎭 Impersonation for "' + name + '" is planned — module not built yet.'); }
+
+// Loading overlay for all forms
+const overlay = document.getElementById('loadingOverlay');
+document.querySelectorAll('form').forEach(form => {
+  form.addEventListener('submit', function(e) {
+    // Skip if it's a confirm dialog that was cancelled
+    if (this.onsubmit && !this.onsubmit(e)) return;
+    overlay.classList.add('active');
+  });
+});
+
+// Also handle links (pagination, clear search)
+document.querySelectorAll('a[href]').forEach(link => {
+  link.addEventListener('click', function() {
+    if (!this.href.includes('#') && !this.target) {
+      overlay.classList.add('active');
+    }
+  });
+});
 </script>
 </body>
 </html>
