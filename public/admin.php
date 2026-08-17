@@ -66,6 +66,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     header("Location: admin.php?" . $back); exit;
 }
 
+/* ---------------- AUTO-EXPIRE: flip passed trials/periods to 'expired' ---------------- */
+$pdo->exec("UPDATE subscriptions SET status='expired'
+    WHERE (status = 'active_trial' AND trial_ends_at IS NOT NULL AND trial_ends_at < NOW())
+       OR (status IN ('active','past_due') AND period_ends_at IS NOT NULL AND period_ends_at < NOW())");
+
 /* ---------------- DATA ---------------- */
 $like = '%' . mb_strtolower($q) . '%';
 $cnt  = $pdo->prepare("SELECT COUNT(*) FROM users u WHERE u.role='customer' AND (LOWER(u.name) LIKE ? OR LOWER(u.email) LIKE ?)");
@@ -95,7 +100,7 @@ $rows = $subscribers->fetchAll();
 $stats = $pdo->query("SELECT
     COUNT(*) FILTER (WHERE status='active') AS active_subs,
     COUNT(*) FILTER (WHERE status='active_trial') AS trials,
-    COUNT(*) FILTER (WHERE status='past_due') AS past_due
+    COUNT(*) FILTER (WHERE status IN ('past_due','expired')) AS past_due
     FROM subscriptions")->fetch();
 
 $groups = [];
@@ -117,7 +122,7 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 .spinner{width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner-text{margin-top:16px;font-size:13px;font-weight:600;color:var(--muted)}
-.topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10}
+.topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10;gap:12px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
 .logo{width:36px;height:36px;border-radius:12px;background:var(--grad);color:#fff;display:grid;place-items:center}
 .brand em{font-style:normal;color:var(--brand)}
@@ -127,7 +132,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .sub{color:var(--muted);font-size:14px;margin-top:4px}
 .banner{margin:16px 0 0;background:#d1fae5;color:#059669;border-radius:12px;padding:10px 16px;font-size:13px;font-weight:700}
 .stats3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin:28px 0}
-@media(max-width:760px){.stats3{grid-template-columns:1fr}}
 .stat{background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:var(--card)}
 .stat p{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
 .stat b{display:block;margin-top:8px;font-size:30px;font-weight:800}
@@ -149,21 +153,23 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 24px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap}
 .toolbar h3{font-weight:700}
 .toolbar h3 span{color:var(--faint);font-weight:500;font-size:12px}
-.search{display:flex;gap:8px;align-items:center}
+.search{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .search-in{border:1px solid var(--line);border-radius:10px;padding:9px 14px;font-size:13px;width:250px;outline:none}
 .search-in:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.1)}
 .search-btn{background:#f1f5f9;color:#475569;border-radius:10px;padding:9px 16px;font-size:12px;font-weight:700}
 .clear-btn{font-size:12px;font-weight:700;color:#e11d48}
-.table-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:14px;min-width:1100px}
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:960px}
 th{padding:14px 24px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}
-td{padding:14px 24px;border-bottom:1px solid #f1f5f9;color:var(--muted);vertical-align:middle}
+td{padding:14px 24px;border-bottom:1px solid #f1f5f9;color:var(--muted);vertical-align:top}
 tbody tr:hover{background:#f8fafc}
 .name b{color:#1e293b}.email{font-size:12px;color:var(--faint)}
-.badge{display:inline-block;margin-top:4px;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+.plan-line{font-weight:600;color:#475569}
+.badge{display:inline-block;margin-top:6px;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
 .badge.active{background:#d1fae5;color:#059669}.badge.active_trial{background:#e0e5ff;color:#4644cf}
 .badge.past_due{background:#fef3c7;color:#d97706}.badge.canceled{background:#f1f5f9;color:#64748b}
-.badge.suspended{background:#ffe4e6;color:#e11d48}.badge.none{background:#f1f5f9;color:#94a3b8}
+.badge.suspended{background:#ffe4e6;color:#e11d48}.badge.expired{background:#ffe4e6;color:#e11d48}
+.badge.none{background:#f1f5f9;color:#94a3b8}
 .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
 .sale{font-weight:800;color:#1e293b}
 .date-pair{display:flex;flex-direction:column;gap:4px}
@@ -181,7 +187,7 @@ tbody tr:hover{background:#f8fafc}
 .abtn.stop{background:#fff1f2;color:#e11d48}.abtn.stop:hover{background:#ffe4e6}
 .btn-out{background:#fff1f2;color:#e11d48;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700}
 .pager{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 24px;font-size:13px;color:var(--muted);flex-wrap:wrap}
-.pager nav{display:flex;gap:8px}
+.pager nav{display:flex;gap:8px;flex-wrap:wrap}
 .pbtn{border-radius:8px;padding:7px 14px;font-size:12px;font-weight:700;background:#f1f5f9;color:#475569}
 .pbtn:hover{background:#e2e8f0}.pbtn.off{opacity:.4;pointer-events:none}
 .pnum{border-radius:8px;padding:7px 11px;font-size:12px;font-weight:700;background:#fff;border:1px solid var(--line);color:#475569}
@@ -197,6 +203,25 @@ tbody tr:hover{background:#f8fafc}
 .field input:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.1)}
 .mrow{display:flex;gap:10px;margin-top:20px}
 .mrow .btn-save{flex:1;text-align:center}.mrow .cancel{flex:1;background:#f1f5f9;color:#475569;border-radius:10px;font-size:13px;font-weight:700}
+/* ---------- RESPONSIVE ---------- */
+@media(max-width:900px){
+  table{min-width:860px}
+  th,td{padding:12px 16px}
+}
+@media(max-width:760px){
+  .main{padding:20px 12px}
+  h1{font-size:22px}
+  .topbar{padding:12px 14px}
+  .top-right{gap:8px;font-size:12px}
+  .stats3{grid-template-columns:1fr}
+  .toolbar{flex-direction:column;align-items:stretch}
+  .search{width:100%}
+  .search-in{flex:1;width:auto}
+  .set-head{flex-direction:column;align-items:flex-start}
+  .set-row{flex-direction:column;align-items:flex-start;gap:8px}
+  .pager{flex-direction:column;align-items:center}
+  th,td{padding:10px 12px}
+}
 </style>
 </head>
 <body>
@@ -213,14 +238,14 @@ tbody tr:hover{background:#f8fafc}
 </nav>
 <main class="main">
   <h1>Subscriber Management</h1>
-  <p class="sub">Default trial period: <b><?= $trialHours ?> hour(s)</b> — configurable in Platform Settings below.</p>
+  <p class="sub">Default trial period: <b><?= $trialHours ?> hour(s)</b> — configurable in Platform Settings below. Passed trials/periods auto-flip to <b>expired</b>.</p>
   <?php if (isset($_GET['saved'])): ?><div class="banner">✔ Settings saved successfully.</div><?php endif; ?>
   <?php if (isset($_GET['deleted'])): ?><div class="banner" style="background:#ffe4e6;color:#e11d48">🗑️ Subscriber and all related data deleted.</div><?php endif; ?>
 
   <div class="stats3">
     <div class="stat"><p>Active Subscriptions</p><b class="g"><?= $stats['active_subs'] ?></b></div>
     <div class="stat"><p>Active Trials</p><b class="b"><?= $stats['trials'] ?></b></div>
-    <div class="stat"><p>Past Due</p><b class="r"><?= $stats['past_due'] ?></b></div>
+    <div class="stat"><p>Past Due / Expired</p><b class="r"><?= $stats['past_due'] ?></b></div>
   </div>
 
   <form method="POST" class="set-card action-form">
@@ -249,9 +274,9 @@ tbody tr:hover{background:#f8fafc}
       </div>
     </form>
     <div class="table-wrap"><table>
-      <thead><tr><th>Customer</th><th>Plan</th><th>Status</th><th>Start</th><th>Expiry</th><th>Total Sale</th><th style="text-align:right">Actions</th></tr></thead>
+      <thead><tr><th>Customer</th><th>Plan / Status</th><th>Start</th><th>Expiry</th><th>Total Sale</th><th style="text-align:right">Actions</th></tr></thead>
       <tbody>
-      <?php foreach ($rows as $s): 
+      <?php foreach ($rows as $s):
         $st = $s['status'] ?? 'none';
         $now = new DateTime();
         $expiryDate = null;
@@ -275,14 +300,23 @@ tbody tr:hover{background:#f8fafc}
         }
       ?>
         <tr data-id="<?= $s['id'] ?>" data-name="<?= htmlspecialchars($s['name'], ENT_QUOTES) ?>" data-email="<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>">
+          <!-- 1 · CUSTOMER -->
           <td class="name"><b><?= htmlspecialchars($s['name']) ?></b><div class="email"><?= htmlspecialchars($s['email']) ?></div></td>
-          <td><?= $s['plan'] ?: 'No Plan' ?> <span style="color:var(--faint)">(RM <?= $s['price'] ?>)</span></td>
-          <td><span class="badge <?= htmlspecialchars($st) ?>"><?= htmlspecialchars($st) ?></span></td>
+
+          <!-- 2 · PLAN + STATUS (combined) -->
+          <td>
+            <div class="plan-line"><?= $s['plan'] ?: 'No Plan' ?> <span style="color:var(--faint);font-weight:500">(RM <?= $s['price'] ?>)</span></div>
+            <span class="badge <?= htmlspecialchars($st) ?>"><?= htmlspecialchars($st) ?></span>
+          </td>
+
+          <!-- 3 · START -->
           <td class="date-pair">
             <span><small>Registered:</small> <b class="mono"><?= $s['created_at'] ? date('M d, Y', strtotime($s['created_at'])) : '—' ?></b></span>
             <span><small>Payment:</small> <b class="mono"><?= $s['first_payment'] ? date('M d, Y', strtotime($s['first_payment'])) : '—' ?></b></span>
           </td>
-          <td class="date-pair">aaaaaaaa
+
+          <!-- 4 · EXPIRY -->
+          <td class="date-pair">
             <?php if ($expiryDate): ?>
               <span><b class="mono"><?php
                 if ($st === 'active_trial') echo '⏱ ' . $expiryDate->format('M d, H:i');
@@ -295,7 +329,11 @@ tbody tr:hover{background:#f8fafc}
               <span class="mono">—</span>
             <?php endif; ?>
           </td>
+
+          <!-- 5 · TOTAL SALE -->
           <td class="sale">RM <?= number_format((float)$s['total_sale'], 0) ?></td>
+
+          <!-- 6 · ACTIONS -->
           <td><div class="actions">
             <button class="ibtn" data-edit title="Edit profile">✏️</button>
             <button class="ibtn" title="Impersonate (coming soon)" onclick="impersonate('<?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?>')">🎭</button>
@@ -304,7 +342,7 @@ tbody tr:hover{background:#f8fafc}
               <input type="hidden" name="user_id" value="<?= $s['id'] ?>">
               <button class="ibtn del" title="Delete user + related data (testing)">🗑️</button>
             </form>
-            <?php if (in_array($st, ['active_trial','suspended','past_due','none'])): ?>
+            <?php if (in_array($st, ['active_trial','suspended','past_due','expired','none'])): ?>
               <form method="POST" class="action-form"><input type="hidden" name="action" value="extend_trial"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
               <button class="abtn trial" title="Reset trial to configured default">⏱ +<?= $trialHours ?>h</button></form>
             <?php endif; ?>
@@ -318,7 +356,7 @@ tbody tr:hover{background:#f8fafc}
           </div></td>
         </tr>
       <?php endforeach; ?>
-      <?php if (!$rows): ?><tr><td colspan="7" style="text-align:center;padding:40px">No subscribers match your search.</td></tr><?php endif; ?>
+      <?php if (!$rows): ?><tr><td colspan="6" style="text-align:center;padding:40px">No subscribers match your search.</td></tr><?php endif; ?>
       </tbody>
     </table></div>
     <div class="pager">
