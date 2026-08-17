@@ -10,4 +10,6 @@ RUN a2enmod rewrite
 # Copy project files into Apache web root
 COPY . /var/www/html/
 
+RUN mkdir -p storage && chown -R www-data:www-data storage && chmod -R 775 storage
+
 EXPOSE 80
