@@ -38,9 +38,14 @@ function myinvois_request_token(PDO $pdo, string $userId): array {
             CURLOPT_TIMEOUT        => 20,
             CURLOPT_HTTPHEADER     => [
                 'Content-Type: application/x-www-form-urlencoded',
-                'Authorization: Basic ' . base64_encode($clientId . ':' . $secret),
             ],
-            CURLOPT_POSTFIELDS     => http_build_query(['grant_type' => 'client_credentials']),
+            // ✅ FIX: LHDN requires client_id, client_secret, grant_type, AND scope IN THE POST BODY
+            CURLOPT_POSTFIELDS     => http_build_query([
+                'grant_type'    => 'client_credentials',
+                'client_id'     => $clientId,
+                'client_secret' => $secret,
+                'scope'         => 'InvoicingAPI',  // ← Mandatory for LHDN
+            ]),
         ]);
         $resp = curl_exec($ch);
         $http = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
@@ -49,9 +54,10 @@ function myinvois_request_token(PDO $pdo, string $userId): array {
 
         if ($resp === false) { $lastErr = 'cURL: ' . $cerr; continue; }
 
-        $json = json_decode($resp, true);   // ← JSON response parsed here
+        $json = json_decode($resp, true);
+        
+        // ✅ Success
         if (is_array($json) && isset($json['access_token'])) {
-            // ✅ Save token + last token date in users table
             $pdo->prepare("UPDATE users SET ei_token = ?, ei_token_at = NOW() WHERE id = ?")
                 ->execute([$json['access_token'], $userId]);
             return [
@@ -62,7 +68,13 @@ function myinvois_request_token(PDO $pdo, string $userId): array {
                 'url'        => $base,
             ];
         }
-        $lastErr = is_array($json) ? ($json['error_description'] ?? $json['error'] ?? ('HTTP ' . $http)) : ('HTTP ' . $http . ' — invalid JSON');
+        
+        // ✅ Better error extraction for debugging
+        if (is_array($json)) {
+            $lastErr = $json['error_description'] ?? $json['error'] ?? ('HTTP ' . $http);
+        } else {
+            $lastErr = 'HTTP ' . $http . ' — ' . substr((string)$resp, 0, 150);
+        }
     }
 
     return ['ok' => false, 'error' => 'Token request failed: ' . $lastErr];
