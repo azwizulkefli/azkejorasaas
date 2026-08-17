@@ -153,6 +153,9 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .btn.white{background:#fff;color:var(--brand)}.btn.ghost{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.25)}
 .btn.primary{background:var(--grad);color:#fff;box-shadow:0 10px 24px -8px rgba(84,87,229,.5)}
 .btn-out{background:#fff1f2;color:#e11d48;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700}
+.btn-company{background:#e0e5ff;color:#4644cf;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700}
+.btn-company:hover{background:#c6ceff}
+    
 .past-due{margin:24px 0;background:#fff1f2;border:1px solid #fecdd3;border-radius:14px;padding:18px;display:flex;align-items:center;gap:14px;color:#9f1239;font-weight:600}
 .stats4{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;margin:28px 0}
 @media(max-width:900px){.stats4{grid-template-columns:repeat(2,1fr)}}
@@ -208,7 +211,8 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 <nav class="topbar">
   <a href="main.php" class="brand"><span class="logo">⚡</span>AZ Kejora <em>SaaS</em></a>
   <div class="top-right">
-    <span>Welcome, <b><?= htmlspecialchars($me['name']) ?></b></span>
+    <a class="btn-company" href="company.php">🏢 Company profile</a>
+      <span>Welcome, <b><?= htmlspecialchars($me['name']) ?></b></span>
     <button class="avatar" onclick="openProfile()" style="cursor:pointer">
       <?php if ($avatarSrc): ?>
         <img src="<?= htmlspecialchars($avatarSrc) ?>" alt="Avatar">
