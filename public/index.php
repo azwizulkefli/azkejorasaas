@@ -146,7 +146,7 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
       <span class="hi">Hi, <?= htmlspecialchars(explode(' ',$userName)[0]) ?></span>
       <?php if($userRole==='admin'): ?><a class="btn ghost" href="admin.php">Admin Console</a><?php endif; ?>
       <a class="btn ghost" href="login.php?logout=1">Sign out</a>
-      <a class="btn primary" href="<?= $userRole==='admin' ? 'admin.php' : '#' ?>">Get started</a>
+      <a class="btn primary" href="<?= $userRole==='admin' ? 'admin.php' : 'subscriber/main.php' ?>">Get started</a>
     <?php else: ?>
       <button class="btn ghost" onclick="openAuth()">Sign in</button>
       <button class="btn primary" onclick="openSignup()">Get started</button>
@@ -292,7 +292,11 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
       <span class="logo">⚡</span>
       <h3>Sign in to AZ Kejora</h3>
       <p class="sub">Enter your credentials to continue</p>
-      <?php if($loginError): ?><div class="err">Invalid email or password.</div><?php endif; ?>
+<?php if($loginError): ?>
+  <div class="err"><?= ($_GET['err'] ?? '') === '2'
+      ? 'Account not activated yet — open the activation link we emailed you.'
+      : 'Invalid email or password.' ?></div>
+<?php endif; ?>
       <div class="field"><label>Email address</label><input type="email" name="email" placeholder="admin@azkejora.io" required></div>
       <div class="field"><label>Password</label><input type="password" name="password" placeholder="••••••••" required></div>
       <button type="submit" class="btn primary full">Sign in securely</button>
@@ -305,6 +309,7 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
 <script>
 function openAuth(){document.getElementById('authModal').classList.add('open')}
 function closeAuth(){document.getElementById('authModal').classList.remove('open')}
+<?php if($loginError): ?>openAuth();<?php endif; ?>
 </script>
 
 <!-- ============ SIGNUP MODAL ============ -->
