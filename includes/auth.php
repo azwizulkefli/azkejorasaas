@@ -9,7 +9,9 @@ function needsPasswordSetup(): bool {
     $st = $pdo->prepare("SELECT password_hash, reg_type FROM users WHERE id = ?");
     $st->execute([currentUserId()]);
     $u = $st->fetch();
-    return $u && $u['reg_type'] === 'google' && empty($u['password_hash']);
+    if (!$u || $u['reg_type'] !== 'google') return false;
+    return empty($u['password_hash'])
+        || str_starts_with((string)$u['password_hash'], '$2y$10$GoogleOAuth');
 }
 
 function login(string $email, string $password): bool {
