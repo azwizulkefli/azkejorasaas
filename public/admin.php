@@ -315,10 +315,10 @@ tbody tr:hover{background:#f8fafc}
             <span><small>Payment:</small> <b class="mono"><?= $s['first_payment'] ? date('M d, Y', strtotime($s['first_payment'])) : '—' ?></b></span>
           </td>
 
-          <td class="sale">&nbsp;</td>
+          <td class="date-pair">&nbsp;</td>
           
           <!-- 4 · EXPIRY -->
-          <td class="date-pair">
+          <td class="sale">
             <?php if ($expiryDate): ?>
               <span><b class="mono"><?php
                 if ($st === 'active_trial') echo '⏱ ' . $expiryDate->format('M d, H:i');
