@@ -336,7 +336,7 @@ function closeAuth(){document.getElementById('authModal').classList.remove('open
     <p class="sub">We sent an activation link to<br><b><?= htmlspecialchars($_GET['email']) ?></b></p>
     <div style="margin:20px 0;padding:16px;background:#f8fafc;border-radius:12px;font-size:12px;color:#475569;text-align:left;word-break:break-all">
       <div style="font-weight:700;margin-bottom:8px;color:#059669">✓ Activation email sent</div>
-      Click the link in the email to activate your account and start your <?= get_setting($pdo,'general','trial_default_hours',1) ?? 1 ?>-hour free trial.
+      Click the link in the email to activate your account and start your <?= $trialHours ?>-hour free trial.
       <?php if (!empty($_GET['fallback'])): ?>
         <details style="margin-top:12px"><summary style="cursor:pointer;color:var(--brand);font-weight:600">Show activation link (fallback)</summary>
         <a href="<?= htmlspecialchars($_GET['fallback']) ?>" style="color:var(--brand);text-decoration:underline;word-break:break-all"><?= htmlspecialchars($_GET['fallback']) ?></a>
