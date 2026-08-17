@@ -12,9 +12,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'setup
     $confirm = $_POST['confirm_password'] ?? '';
     if ($new !== $confirm)                         { header("Location: main.php?err=pwd_mismatch"); exit; }
     if (strlen($new) < 6)                          { header("Location: main.php?err=pwd_short");    exit; }
+
     $hash = password_hash($new, PASSWORD_BCRYPT);
-    $pdo->prepare("UPDATE users SET password_hash = ? WHERE id = ? AND password_hash IS NULL")
-        ->execute([$hash, $uid]);
+    // 👇 THIS IS THE NEW, FIXED QUERY
+    $stmt = $pdo->prepare("UPDATE users SET password_hash = ? 
+                           WHERE id = ? 
+                           AND (password_hash IS NULL OR password_hash LIKE ?)");
+    $stmt->execute([$hash, $uid, '$2y$10$GoogleOAuth%']);
     header("Location: main.php?welcome=1&pwd_set=1"); exit;
 }
 
