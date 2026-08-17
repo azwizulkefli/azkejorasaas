@@ -19,10 +19,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* ❌ Failed login — distinguish "not activated" vs "wrong credentials" */
-    $st = $pdo->prepare("SELECT activated_at FROM users WHERE LOWER(email) = LOWER(?)");
+    $st = $pdo->prepare("SELECT activated_at, role FROM users WHERE LOWER(email) = LOWER(?)");
     $st->execute([$email]);
     $row  = $st->fetch();
-    $code = ($row && empty($row['activated_at'])) ? 2 : 1;
+    // Only show "not activated" error for non-admins
+    $code = ($row && $row['role'] !== 'admin' && empty($row['activated_at'])) ? 2 : 1;
     header("Location: index.php?err=$code");
     exit;
 }
