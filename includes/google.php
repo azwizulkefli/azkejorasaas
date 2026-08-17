@@ -5,8 +5,9 @@ define('GOOGLE_CLIENT_ID',     '1024820598270-f1qk2htlpdf0lq772ufldnen6fcilsn8.a
 define('GOOGLE_CLIENT_SECRET', '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');
 
 function google_redirect_uri(): string {
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host   = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $host  = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $local = str_contains($host, 'localhost') || str_contains($host, '127.0.0.1');
+    $scheme = $local ? 'http' : 'https';   // Render serves HTTPS at the edge
     return $scheme . '://' . $host . '/public/google-auth.php';
 }
 
