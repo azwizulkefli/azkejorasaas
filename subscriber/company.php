@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/settings.php';
+require_once __DIR__ . '/../includes/myinvois.php';
 requireCustomer();
 ensure_settings_table($pdo);
 $uid = currentUserId();
@@ -19,6 +20,7 @@ if (!$company) {
 
 // Handle updates
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+
     if ($_POST['action'] === 'update_company') {
         $pdo->prepare("UPDATE companies SET 
             name = ?, registration_no = ?, address = ?, business_type = ?,
@@ -36,7 +38,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             ]);
         header("Location: company.php?updated=company"); exit;
     }
-    
+
     if ($_POST['action'] === 'update_einvoice') {
         $pdo->prepare("UPDATE companies SET 
             msic_code = ?, classification_code = ?, taxpayer_tin = ?, taxpayer_brn = ?,
@@ -58,7 +60,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             ]);
         header("Location: company.php?updated=einvoice"); exit;
     }
+
+    if ($_POST['action'] === 'update_ei_env') {
+        $env = (($_POST['ei_env'] ?? 'sandbox') === 'prod') ? 'prod' : 'sandbox';
+        $pdo->prepare("UPDATE users SET ei_env = ? WHERE id = ?")->execute([$env, $uid]);
+        header("Location: company.php?updated=env"); exit;
+    }
+
+    if ($_POST['action'] === 'get_token') {
+        $res = myinvois_request_token($pdo, $uid);
+        header("Location: company.php?" . ($res['ok'] ? "token=ok" : "token=err&msg=" . urlencode($res['error'])));
+        exit;
+    }
 }
+
+// Refresh user (env / token may have changed)
+$me       = currentUser();
+$envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
+$envLabel  = $envIsProd ? 'Production' : 'Sandbox (UAT)';
+$envUrl    = myinvois_base_url($me);
+$maskedTok = !empty($me['ei_token']) ? substr($me['ei_token'], 0, 10) . '••••••••••••' : null;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -76,17 +97,22 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 .spinner{width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner-text{margin-top:16px;font-size:13px;font-weight:600;color:var(--muted)}
-.topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10}
+/* ---- header (matches dashboard) ---- */
+.topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10;gap:12px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
 .logo{width:36px;height:36px;border-radius:12px;background:var(--grad);color:#fff;display:grid;place-items:center}
 .brand em{font-style:normal;color:var(--brand)}
-.top-right{display:flex;align-items:center;gap:14px;font-size:13px;color:var(--muted)}
-.btn-back{background:#f1f5f9;color:#475569;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700}
+.top-right{display:flex;align-items:center;gap:14px;font-size:13px;color:var(--muted);flex-wrap:wrap}
+.btn-company{background:#e0e5ff;color:#4644cf;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700}
+.avatar{width:36px;height:36px;border-radius:50%;background:var(--grad);color:#fff;display:grid;place-items:center;font-weight:800;font-size:13px}
+.btn-out{background:#fff1f2;color:#e11d48;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700}
+/* ---- layout ---- */
 .main{max-width:900px;margin:0 auto;padding:32px 24px}
 h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .sub{color:var(--muted);font-size:14px;margin-top:4px}
 .banner{margin:20px 0 0;border-radius:12px;padding:12px 18px;font-size:13px;font-weight:600}
 .banner.success{background:#d1fae5;color:#059669}
+.banner.error{background:#ffe4e6;color:#e11d48}
 .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:28px;box-shadow:var(--card);margin-bottom:24px}
 .card h2{font-size:20px;font-weight:800;margin-bottom:4px}
 .card .msub{font-size:13px;color:var(--muted);margin-bottom:20px}
@@ -101,7 +127,20 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 @media(max-width:700px){.grid3{grid-template-columns:1fr}}
 .btn-save{background:var(--grad);color:#fff;border-radius:10px;padding:11px 24px;font-size:13px;font-weight:700;margin-top:20px}
 .btn-save:hover{opacity:.9}
-.hint{font-size:11px;color:var(--faint);margin-top:4px}
+.hint{font-size:11px;color:var(--faint);margin-top:4px;word-break:break-all}
+/* ---- environment selector ---- */
+.env-opt{border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:4px;cursor:pointer;transition:.15s;background:#fff}
+.env-opt input{width:auto;margin:0 0 4px 0}
+.env-opt b{font-size:14px}
+.env-opt small{color:var(--faint);font-size:11px;word-break:break-all}
+.env-opt.on{border-color:var(--brand);background:#f5f6ff;box-shadow:0 0 0 3px rgba(99,102,241,.12)}
+/* ---- token box ---- */
+.trow{display:flex;justify-content:space-between;gap:12px;align-items:center;background:#f8fafc;border-radius:10px;padding:12px 16px;margin-top:10px;font-size:13px;flex-wrap:wrap}
+.trow span{color:var(--muted);font-weight:600}
+.trow b{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:#1e293b;word-break:break-all}
+.badge-env{display:inline-block;border-radius:999px;padding:3px 12px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+.badge-env.sandbox{background:#e0e5ff;color:#4644cf}
+.badge-env.prod{background:#d1fae5;color:#059669}
 </style>
 </head>
 <body>
@@ -112,10 +151,14 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   </div>
 </div>
 
+<!-- ============ HEADER (same as dashboard) ============ -->
 <nav class="topbar">
   <a href="main.php" class="brand"><span class="logo">⚡</span>AZ Kejora <em>SaaS</em></a>
   <div class="top-right">
-    <a class="btn-back" href="main.php">← Back to dashboard</a>
+    <a class="btn-company" href="company.php">🏢 Company profile</a>
+    <span>Welcome, <b><?= htmlspecialchars(explode(' ', $me['name'])[0]) ?></b></span>
+    <span class="avatar"><?= strtoupper(substr($me['name'], 0, 1)) ?></span>
+    <a class="btn-out" href="/public/login.php?logout=1">Sign out</a>
   </div>
 </nav>
 
@@ -129,15 +172,24 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   <?php if (isset($_GET['updated']) && $_GET['updated'] === 'einvoice'): ?>
     <div class="banner success">✓ E-Invoice configuration saved.</div>
   <?php endif; ?>
+  <?php if (isset($_GET['updated']) && $_GET['updated'] === 'env'): ?>
+    <div class="banner success">✓ Submission environment switched to <?= $envLabel ?>.</div>
+  <?php endif; ?>
+  <?php if (isset($_GET['token']) && $_GET['token'] === 'ok'): ?>
+    <div class="banner success">🔑 Access token received from LHDN (<?= $envLabel ?>) and saved securely.</div>
+  <?php endif; ?>
+  <?php if (isset($_GET['token']) && $_GET['token'] === 'err'): ?>
+    <div class="banner error">✗ <?= htmlspecialchars($_GET['msg'] ?? 'Token request failed.') ?></div>
+  <?php endif; ?>
 
-  <!-- Company Profile -->
+  <!-- ============ COMPANY PROFILE ============ -->
   <form method="POST" class="card action-form">
     <input type="hidden" name="action" value="update_company">
     <h2>🏢 Company Information</h2>
     <p class="msub">Basic details about your business.</p>
-    
+
     <div class="field"><label>Company name</label><input type="text" name="name" value="<?= htmlspecialchars($company['name'] ?? '') ?>" placeholder="ABC Sdn Bhd"></div>
-    
+
     <div class="grid2">
       <div class="field"><label>Registration no</label><input type="text" name="registration_no" value="<?= htmlspecialchars($company['registration_no'] ?? '') ?>" placeholder="202001012345"></div>
       <div class="field"><label>Business type</label>
@@ -151,9 +203,9 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
         </select>
       </div>
     </div>
-    
+
     <div class="field"><label>Address</label><textarea name="address" placeholder="No. 1, Jalan Example, Taman Test"><?= htmlspecialchars($company['address'] ?? '') ?></textarea></div>
-    
+
     <div class="grid3">
       <div class="field"><label>Postcode</label><input type="text" name="postcode" value="<?= htmlspecialchars($company['postcode'] ?? '') ?>" placeholder="50000"></div>
       <div class="field"><label>Town / City</label><input type="text" name="town" value="<?= htmlspecialchars($company['town'] ?? '') ?>" placeholder="Kuala Lumpur"></div>
@@ -167,16 +219,38 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
         </select>
       </div>
     </div>
-    
+
     <button type="submit" class="btn-save">Save company profile</button>
   </form>
 
-  <!-- E-Invoice Configuration -->
+  <!-- ============ SUBMISSION ENVIRONMENT ============ -->
+  <form method="POST" class="card action-form">
+    <input type="hidden" name="action" value="update_ei_env">
+    <h2>🌐 Submission Environment</h2>
+    <p class="msub">Choose which LHDN MyInvois gateway receives your e-Invoices.</p>
+
+    <div class="grid2">
+      <label class="env-opt <?= !$envIsProd ? 'on' : '' ?>">
+        <input type="radio" name="ei_env" value="sandbox" <?= !$envIsProd ? 'checked' : '' ?>>
+        <b>🧪 Sandbox (UAT)</b>
+        <small><?= htmlspecialchars($me['ei_url_sandbox'] ?? 'https://preprod-api.myinvois.hasil.gov.my') ?></small>
+      </label>
+      <label class="env-opt <?= $envIsProd ? 'on' : '' ?>">
+        <input type="radio" name="ei_env" value="prod" <?= $envIsProd ? 'checked' : '' ?>>
+        <b>🚀 Production</b>
+        <small><?= htmlspecialchars($me['ei_url_prod'] ?? 'https://api.myinvois.hasil.gov.my') ?></small>
+      </label>
+    </div>
+
+    <button type="submit" class="btn-save">Save environment</button>
+  </form>
+
+  <!-- ============ E-INVOICE CONFIGURATION ============ -->
   <form method="POST" class="card action-form">
     <input type="hidden" name="action" value="update_einvoice">
     <h2>🧾 E-Invoice Configuration</h2>
     <p class="msub">LHDN e-Invoice API credentials and tax identifiers.</p>
-    
+
     <div class="grid2">
       <div class="field"><label>MSIC code</label><input type="text" name="msic_code" value="<?= htmlspecialchars($company['msic_code'] ?? '') ?>" placeholder="62010">
         <p class="hint">Malaysia Standard Industrial Classification</p>
@@ -185,7 +259,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
         <p class="hint">Business activity classification</p>
       </div>
     </div>
-    
+
     <div class="grid2">
       <div class="field"><label>Taxpayer TIN</label><input type="text" name="taxpayer_tin" value="<?= htmlspecialchars($company['taxpayer_tin'] ?? '') ?>" placeholder="C2012345678">
         <p class="hint">Tax Identification Number from LHDN</p>
@@ -194,27 +268,40 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
         <p class="hint">Business Registration Number</p>
       </div>
     </div>
-    
+
     <h3 style="margin-top:24px;font-size:16px;font-weight:700">🧪 Sandbox Credentials</h3>
     <p class="hint" style="margin-bottom:12px">For testing with LHDN sandbox environment</p>
-    
+
     <div class="field"><label>Client ID</label><input type="text" name="sandbox_clientid" value="<?= htmlspecialchars($company['sandbox_clientid'] ?? '') ?>"></div>
     <div class="grid2">
       <div class="field"><label>Client Secret 1</label><input type="password" name="sandbox_secret1" value="<?= htmlspecialchars($company['sandbox_secret1'] ?? '') ?>"></div>
       <div class="field"><label>Client Secret 2</label><input type="password" name="sandbox_secret2" value="<?= htmlspecialchars($company['sandbox_secret2'] ?? '') ?>"></div>
     </div>
-    
+
     <h3 style="margin-top:24px;font-size:16px;font-weight:700">🚀 Production Credentials</h3>
     <p class="hint" style="margin-bottom:12px">For live e-Invoice submissions</p>
-    
+
     <div class="field"><label>Client ID</label><input type="text" name="prod_clientid" value="<?= htmlspecialchars($company['prod_clientid'] ?? '') ?>"></div>
     <div class="grid2">
-      <!-- FIXED TYPO BELOW -->
       <div class="field"><label>Client Secret 1</label><input type="password" name="prod_secret1" value="<?= htmlspecialchars($company['prod_secret1'] ?? '') ?>"></div>
       <div class="field"><label>Client Secret 2</label><input type="password" name="prod_secret2" value="<?= htmlspecialchars($company['prod_secret2'] ?? '') ?>"></div>
     </div>
-    
+
     <button type="submit" class="btn-save">Save e-Invoice config</button>
+  </form>
+
+  <!-- ============ ACCESS TOKEN ============ -->
+  <form method="POST" class="card action-form">
+    <input type="hidden" name="action" value="get_token">
+    <h2>🔑 MyInvois Access Token</h2>
+    <p class="msub">Requests an OAuth 2.0 <code>client_credentials</code> token from LHDN using your saved <?= htmlspecialchars($envLabel) ?> credentials, then stores it on your account.</p>
+
+    <div class="trow"><span>Environment</span><b><span class="badge-env <?= $envIsProd ? 'prod' : 'sandbox' ?>"><?= htmlspecialchars($envLabel) ?></span></b></div>
+    <div class="trow"><span>API URL</span><b><?= htmlspecialchars($envUrl) ?>/connect/token</b></div>
+    <div class="trow"><span>Access token</span><b><?= $maskedTok ? htmlspecialchars($maskedTok) : 'Not generated yet' ?></b></div>
+    <div class="trow"><span>Last token date</span><b><?= !empty($me['ei_token_at']) ? date('M d, Y · H:i', strtotime($me['ei_token_at'])) : '—' ?></b></div>
+
+    <button type="submit" class="btn-save">🔑 Get / Refresh token</button>
   </form>
 </main>
 
@@ -233,6 +320,11 @@ document.querySelectorAll('a[href]').forEach(link => {
     }
   });
 });
+// keep environment cards highlighted when radio changes
+document.querySelectorAll('.env-opt input').forEach(r => r.addEventListener('change', () => {
+  document.querySelectorAll('.env-opt').forEach(o => o.classList.remove('on'));
+  r.closest('.env-opt').classList.add('on');
+}));
 </script>
 </body>
 </html>
