@@ -134,3 +134,20 @@ INSERT INTO bookings (facility_id, user_id, booking_date, slot, status, amount) 
 INSERT INTO bookings (facility_id, user_id, booking_date, slot, status, amount) SELECT f.id, u.id, CURRENT_DATE, '15:00', 'confirmed', f.rate FROM facilities f, users u WHERE f.name = 'Yoga Studio' AND u.email = 'amirul@tanjungsports.my';
 INSERT INTO bookings (facility_id, user_id, booking_date, slot, status, amount) SELECT f.id, u.id, CURRENT_DATE, '16:00', 'confirmed', f.rate FROM facilities f, users u WHERE f.name = 'Event Space C' AND u.email = 'grace@petalworks.sg';
 INSERT INTO bookings (facility_id, user_id, booking_date, slot, status, amount) SELECT f.id, u.id, CURRENT_DATE, '17:00', 'confirmed', f.rate FROM facilities f, users u WHERE f.name = 'Pod Room 1' AND u.email = 'ryan@quicklane.io';
+
+
+-- Extend users table with phone + activation fields
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(30);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS activation_token VARCHAR(64);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS activated_at TIMESTAMP WITH TIME ZONE;
+
+-- E-Invoice items storage (referenced by dashboard)
+CREATE TABLE IF NOT EXISTS einvoice_items (
+ id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+ ref VARCHAR(100), invoice_date DATE, description TEXT, category VARCHAR(100),
+ tin VARCHAR(50), amount DECIMAL(12,2) DEFAULT 0, tax DECIMAL(12,2) DEFAULT 0,
+ status VARCHAR(30) DEFAULT 'pending',
+ created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_einvoice_user ON einvoice_items(user_id);
