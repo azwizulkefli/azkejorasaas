@@ -23,6 +23,340 @@
 <!-- Supabase JS Client CDN (v2) -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
+<!-- Alpine Component Script MUST be defined before Alpine initializes -->
+<script>
+// Initialize Supabase Client using CDN
+const SUPABASE_URL = 'https://jfdpnbkacxnlsquqypsy.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable__1gkmebdNjwiAUhx0cmyAg_f40oMmDS';
+const supabase = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+function kejoraData() {
+  return {
+    view: 'landing', // 'landing', 'admin'
+    adminLoginOpen: false,
+    adminLoginForm: {
+      email: '',
+      password: '',
+      loading: false,
+      error: null
+    },
+    session: null,
+    isAdmin: false,
+    adminTab: 'subscribers', // 'subscribers', 'trial_settings', 'billing'
+
+    // Subscriber Data
+    subscribers: [],
+    subscribersLoading: false,
+    searchSubscriber: '',
+    subscriberFilter: 'all',
+
+    // Trial Setting (Default = 2 Hours)
+    trialHours: 2,
+    trialSaving: false,
+
+    // Billing Data
+    billingList: [],
+    billingLoading: false,
+    searchBilling: '',
+    billingFilterStatus: 'all',
+
+    toasts: [],
+
+    async init() {
+      // 1. Initialize Supabase Auth Listener
+      if (supabase) {
+        try {
+          const { data } = await supabase.auth.getSession();
+          if (data && data.session) {
+            this.session = data.session.user;
+            await this.checkAdminRole(data.session.user.id);
+          }
+
+          supabase.auth.onAuthStateChange(async (event, session) => {
+            if (session) {
+              this.session = session.user;
+              await this.checkAdminRole(session.user.id);
+            } else {
+              this.session = null;
+              this.isAdmin = false;
+            }
+          });
+        } catch (e) {
+          console.warn('Supabase Auth init notice:', e);
+        }
+      }
+
+      // 2. Fetch Initial Database State
+      await this.loadTrialSettings();
+      await this.loadSubscribers();
+      await this.loadBilling();
+    },
+
+    addToast(msg, type = 'success') {
+      const id = Date.now();
+      this.toasts.push({ id, msg, type });
+      setTimeout(() => {
+        this.toasts = this.toasts.filter(t => t.id !== id);
+      }, 4000);
+    },
+
+    async checkAdminRole(userId) {
+      if (!supabase) return;
+      try {
+        const { data } = await supabase
+          .from('user_roles')
+          .select('role')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (data && data.role === 'admin') {
+          this.isAdmin = true;
+        } else if (this.session && this.session.email && (this.session.email.includes('admin') || this.session.email === 'admin@kejora.my')) {
+          this.isAdmin = true;
+        }
+      } catch (err) {
+        console.warn('Role verification notice:', err);
+      }
+    },
+
+    async handleAdminLogin() {
+      this.adminLoginForm.loading = true;
+      this.adminLoginForm.error = null;
+
+      const email = this.adminLoginForm.email.trim();
+      const password = this.adminLoginForm.password;
+
+      if (!email || !password) {
+        this.adminLoginForm.error = 'Please enter both email and password.';
+        this.adminLoginForm.loading = false;
+        return;
+      }
+
+      if (supabase) {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        
+        if (error) {
+          // Demo fallback for instant preview evaluation
+          if (email === 'admin@kejora.my' || email.includes('admin')) {
+            this.session = { id: 'demo-admin-uuid', email: email };
+            this.isAdmin = true;
+            this.adminLoginOpen = false;
+            this.view = 'admin';
+            this.addToast('Authenticated as System Admin (Demo Mode)', 'info');
+            this.adminLoginForm.loading = false;
+            return;
+          }
+          this.adminLoginForm.error = error.message;
+          this.adminLoginForm.loading = false;
+          return;
+        }
+
+        this.session = data.user;
+        await this.checkAdminRole(data.user.id);
+
+        if (this.isAdmin) {
+          this.adminLoginOpen = false;
+          this.view = 'admin';
+          this.addToast('Welcome to System Admin Control Panel!');
+          await this.loadSubscribers();
+          await this.loadBilling();
+        } else {
+          this.adminLoginForm.error = 'Access denied. Account lacks System Admin privileges.';
+        }
+      } else {
+        this.session = { email: email };
+        this.isAdmin = true;
+        this.adminLoginOpen = false;
+        this.view = 'admin';
+        this.addToast('Logged in as System Admin');
+      }
+
+      this.adminLoginForm.loading = false;
+    },
+
+    logout() {
+      if (supabase) supabase.auth.signOut();
+      this.session = null;
+      this.isAdmin = false;
+      this.view = 'landing';
+      this.addToast('Logged out successfully', 'info');
+    },
+
+    async loadTrialSettings() {
+      if (!supabase) return;
+      try {
+        const { data } = await supabase
+          .from('system_settings')
+          .select('value')
+          .eq('key', 'trial_expiration_hours')
+          .maybeSingle();
+
+        if (data && data.value) {
+          this.trialHours = Number(JSON.parse(data.value)) || 2;
+        }
+      } catch (e) {
+        console.log('Using default 2-hour trial limit');
+      }
+    },
+
+    async saveTrialSettings() {
+      this.trialSaving = true;
+      if (supabase) {
+        await supabase
+          .from('system_settings')
+          .upsert({
+            key: 'trial_expiration_hours',
+            value: JSON.stringify(this.trialHours),
+            description: 'Default trial period in hours',
+            updated_at: new Date().toISOString()
+          });
+      }
+      setTimeout(() => {
+        this.trialSaving = false;
+        this.addToast(`Trial expiration updated to ${this.trialHours} hours!`);
+      }, 400);
+    },
+
+    async loadSubscribers() {
+      this.subscribersLoading = true;
+      if (supabase) {
+        try {
+          const { data } = await supabase
+            .from('subscribers')
+            .select('*')
+            .order('created_at', { ascending: false });
+
+          if (data && data.length > 0) {
+            this.subscribers = data;
+            this.subscribersLoading = false;
+            return;
+          }
+        } catch (e) {
+          console.warn('Subscribers fetch notice:', e);
+        }
+      }
+
+      // Initial default records
+      this.subscribers = [
+        { id: '1', company_name: 'Kejora Retail Enterprise', email: 'admin@kejora.my', phone: '+60123456789', plan: 'Quarterly Business Pass', status: 'active', trial_ends_at: new Date(Date.now() + 2*3600*1000).toISOString(), created_at: '2026-08-01' },
+        { id: '2', company_name: 'Ahmad Tech Solutions', email: 'ahmad@tech.com.my', phone: '+60198765432', plan: 'Quarterly Business Pass', status: 'trial', trial_ends_at: new Date(Date.now() + 2*3600*1000).toISOString(), created_at: '2026-08-10' },
+        { id: '3', company_name: 'Mega Mart Trading', email: 'finance@megamart.com', phone: '+601122334455', plan: 'Quarterly Business Pass', status: 'expired', trial_ends_at: new Date(Date.now() - 86400*1000).toISOString(), created_at: '2026-07-15' },
+        { id: '4', company_name: 'Sinar Jaya Logistics', email: 'contact@sinarjaya.com', phone: '+60133445566', plan: 'Quarterly Business Pass', status: 'active', trial_ends_at: new Date(Date.now() + 2*3600*1000).toISOString(), created_at: '2026-08-12' }
+      ];
+      this.subscribersLoading = false;
+    },
+
+    async loadBilling() {
+      this.billingLoading = true;
+      if (supabase) {
+        try {
+          const { data } = await supabase
+            .from('billing')
+            .select('*, subscribers(company_name)')
+            .order('created_at', { ascending: false });
+
+          if (data && data.length > 0) {
+            this.billingList = data.map(b => ({
+              ...b,
+              company_name: b.subscribers ? b.subscribers.company_name : 'Direct Client'
+            }));
+            this.billingLoading = false;
+            return;
+          }
+        } catch (e) {
+          console.warn('Billing fetch notice:', e);
+        }
+      }
+
+      // Initial default records
+      this.billingList = [
+        { id: 'b1', invoice_no: 'INV-2026-001', company_name: 'Kejora Retail Enterprise', amount: 149.00, currency: 'MYR', status: 'Paid', due_date: '2026-08-05', paid_at: '2026-08-05' },
+        { id: 'b2', invoice_no: 'INV-2026-002', company_name: 'Ahmad Tech Solutions', amount: 149.00, currency: 'MYR', status: 'Pending', due_date: '2026-08-20', paid_at: null },
+        { id: 'b3', invoice_no: 'INV-2026-003', company_name: 'Mega Mart Trading', amount: 149.00, currency: 'MYR', status: 'Overdue', due_date: '2026-08-01', paid_at: null },
+        { id: 'b4', invoice_no: 'INV-2026-004', company_name: 'Sinar Jaya Logistics', amount: 149.00, currency: 'MYR', status: 'Paid', due_date: '2026-08-02', paid_at: '2026-08-02' }
+      ];
+      this.billingLoading = false;
+    },
+
+    async updateBillingStatus(billingId, newStatus) {
+      const item = this.billingList.find(b => b.id === billingId);
+      if (item) {
+        item.status = newStatus;
+        if (newStatus === 'Paid') item.paid_at = new Date().toISOString();
+      }
+
+      if (supabase && !billingId.startsWith('b')) {
+        await supabase
+          .from('billing')
+          .update({
+            status: newStatus,
+            paid_at: newStatus === 'Paid' ? new Date().toISOString() : null
+          })
+          .eq('id', billingId);
+      }
+
+      this.addToast(`Invoice ${item ? item.invoice_no : ''} updated to ${newStatus}`);
+    },
+
+    async updateSubscriberStatus(subscriberId, newStatus) {
+      const sub = this.subscribers.find(s => s.id === subscriberId);
+      if (sub) sub.status = newStatus;
+
+      if (supabase && subscriberId.length > 5) {
+        await supabase
+          .from('subscribers')
+          .update({ status: newStatus })
+          .eq('id', subscriberId);
+      }
+
+      this.addToast(`Subscriber status updated to ${newStatus}`);
+    },
+
+    get filteredSubscribers() {
+      return this.subscribers.filter(s => {
+        const matchesSearch = !this.searchSubscriber || 
+          s.company_name.toLowerCase().includes(this.searchSubscriber.toLowerCase()) ||
+          s.email.toLowerCase().includes(this.searchSubscriber.toLowerCase());
+        const matchesFilter = this.subscriberFilter === 'all' || s.status === this.subscriberFilter;
+        return matchesSearch && matchesFilter;
+      });
+    },
+
+    get filteredBilling() {
+      return this.billingList.filter(b => {
+        const matchesSearch = !this.searchBilling ||
+          b.invoice_no.toLowerCase().includes(this.searchBilling.toLowerCase()) ||
+          b.company_name.toLowerCase().includes(this.searchBilling.toLowerCase());
+        const matchesStatus = this.billingFilterStatus === 'all' || b.status === this.billingFilterStatus;
+        return matchesSearch && matchesStatus;
+      });
+    },
+
+    get totalPaidRevenue() {
+      return this.billingList
+        .filter(b => b.status === 'Paid')
+        .reduce((acc, b) => acc + Number(b.amount), 0);
+    },
+
+    get pendingRevenue() {
+      return this.billingList
+        .filter(b => b.status === 'Pending' || b.status === 'Overdue')
+        .reduce((acc, b) => acc + Number(b.amount), 0);
+    }
+  };
+}
+
+// Global window reference for x-data="kejora()"
+window.kejora = kejoraData;
+
+// Alpine v3 data registration
+document.addEventListener('alpine:init', () => {
+  if (window.Alpine) {
+    window.Alpine.data('kejora', kejoraData);
+  }
+});
+</script>
+
 <!-- Alpine.js CDN -->
 <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js" defer></script>
 
@@ -44,6 +378,8 @@ tailwind.config = {
   .card{@apply bg-white rounded-2xl border border-slate-200/70 shadow-card;}
   .input{@apply w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10;}
   .label{@apply mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500;}
+  .th{@apply px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400;}
+  .td{@apply px-4 py-3.5 text-sm text-slate-600;}
   .eyebrow{@apply inline-flex items-center gap-2 rounded-full border border-brand-200 bg-brand-50 px-3.5 py-1.5 text-xs font-bold uppercase tracking-widest text-brand-700;}
   .grad-text{@apply bg-gradient-to-r from-brand-600 via-violet-500 to-fuchsia-500 bg-clip-text text-transparent;}
 </style>
@@ -59,7 +395,7 @@ tailwind.config = {
   .hero-grid{background-image:linear-gradient(rgba(99,102,241,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(99,102,241,.06) 1px,transparent 1px);background-size:44px 44px}
 </style>
 </head>
-<body class="bg-[#F6F7FB] text-ink antialiased" x-data="kejora()" x-init="init()">
+<body class="bg-[#F6F7FB] text-ink antialiased" x-data="kejora()">
 
 <!-- ============ SVG SPRITE ============ -->
 <svg class="hidden" xmlns="http://www.w3.org/2000/svg">
@@ -68,7 +404,6 @@ tailwind.config = {
     <path d="M11.5 8.6v7.2"/>
     <path d="M13.4 10.3c-.4-.7-1.2-1.1-2-1.1-1.2 0-2.1.6-2.1 1.5 0 2 4.2 1.1 4.2 3.1 0 .9-.9 1.5-2.1 1.5-.9 0-1.7-.4-2.1-1.1"/>
   </symbol>
-  <symbol id="i-google" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09C3.26 21.3 7.31 24 12 24z"/><path fill="#FBBC05" d="M5.27 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.98-3.09z"/><path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75z"/></symbol>
   <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6z"/><path d="M9 11.5l2 2 4-4"/></symbol>
   <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="3.5"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/><path d="M15.5 3.13a3.5 3.5 0 0 1 0 6.74"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
@@ -191,10 +526,7 @@ tailwind.config = {
 
 <!-- ================================================== ADMIN LOGIN MODAL ================================================== -->
 <div x-show="adminLoginOpen" 
-     class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm anim-pop"
-     x-transition:enter="transition ease-out duration-200"
-     x-transition:enter-start="opacity-0 scale-95"
-     x-transition:enter-end="opacity-100 scale-100">
+     class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm anim-pop">
   <div class="card w-full max-w-md p-6 sm:p-8 relative shadow-2xl">
     <button class="absolute top-4 right-4 text-slate-400 hover:text-slate-600" @click="adminLoginOpen=false">
       <svg class="h-5 w-5"><use href="#i-x"/></svg>
@@ -536,316 +868,5 @@ tailwind.config = {
   </main>
 </div>
 
-<!-- ================================================== ALPINE.JS COMPONENT ENGINE ================================================== -->
-<script>
-// Initialize Supabase Client using CDN
-const SUPABASE_URL = 'https://jfdpnbkacxnlsquqypsy.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable__1gkmebdNjwiAUhx0cmyAg_f40oMmDS';
-const supabase = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
-
-function kejora() {
-  return {
-    view: 'landing', // 'landing', 'admin'
-    adminLoginOpen: false,
-    adminLoginForm: {
-      email: '',
-      password: '',
-      loading: false,
-      error: null
-    },
-    session: null,
-    isAdmin: false,
-    adminTab: 'subscribers', // 'subscribers', 'trial_settings', 'billing'
-
-    // Subscriber Data
-    subscribers: [],
-    subscribersLoading: false,
-    searchSubscriber: '',
-    subscriberFilter: 'all',
-
-    // Trial Setting (Default = 2 Hours)
-    trialHours: 2,
-    trialSaving: false,
-
-    // Billing Data
-    billingList: [],
-    billingLoading: false,
-    searchBilling: '',
-    billingFilterStatus: 'all',
-
-    toasts: [],
-
-    async init() {
-      // 1. Initialize Supabase Auth Listener
-      if (supabase) {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) {
-          this.session = session.user;
-          await this.checkAdminRole(session.user.id);
-        }
-
-        supabase.auth.onAuthStateChange(async (event, session) => {
-          if (session) {
-            this.session = session.user;
-            await this.checkAdminRole(session.user.id);
-          } else {
-            this.session = null;
-            this.isAdmin = false;
-          }
-        });
-      }
-
-      // 2. Fetch Initial Database State
-      await this.loadTrialSettings();
-      await this.loadSubscribers();
-      await this.loadBilling();
-    },
-
-    addToast(msg, type = 'success') {
-      const id = Date.now();
-      this.toasts.push({ id, msg, type });
-      setTimeout(() => {
-        this.toasts = this.toasts.filter(t => t.id !== id);
-      }, 4000);
-    },
-
-    async checkAdminRole(userId) {
-      if (!supabase) return;
-      try {
-        const { data } = await supabase
-          .from('user_roles')
-          .select('role')
-          .eq('user_id', userId)
-          .maybeSingle();
-
-        if (data && data.role === 'admin') {
-          this.isAdmin = true;
-        } else if (this.session && this.session.email && (this.session.email.includes('admin') || this.session.email === 'admin@kejora.my')) {
-          this.isAdmin = true;
-        }
-      } catch (err) {
-        console.warn('Role verification notice:', err);
-      }
-    },
-
-    async handleAdminLogin() {
-      this.adminLoginForm.loading = true;
-      this.adminLoginForm.error = null;
-
-      const email = this.adminLoginForm.email.trim();
-      const password = this.adminLoginForm.password;
-
-      if (!email || !password) {
-        this.adminLoginForm.error = 'Please enter both email and password.';
-        this.adminLoginForm.loading = false;
-        return;
-      }
-
-      if (supabase) {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        
-        if (error) {
-          // Demo fallback for instant preview evaluation
-          if (email === 'admin@kejora.my' || email.includes('admin')) {
-            this.session = { id: 'demo-admin-uuid', email: email };
-            this.isAdmin = true;
-            this.adminLoginOpen = false;
-            this.view = 'admin';
-            this.addToast('Authenticated as System Admin (Demo Mode)', 'info');
-            this.adminLoginForm.loading = false;
-            return;
-          }
-          this.adminLoginForm.error = error.message;
-          this.adminLoginForm.loading = false;
-          return;
-        }
-
-        this.session = data.user;
-        await this.checkAdminRole(data.user.id);
-
-        if (this.isAdmin) {
-          this.adminLoginOpen = false;
-          this.view = 'admin';
-          this.addToast('Welcome to System Admin Control Panel!');
-          await this.loadSubscribers();
-          await this.loadBilling();
-        } else {
-          this.adminLoginForm.error = 'Access denied. Account lacks System Admin privileges.';
-        }
-      } else {
-        this.session = { email: email };
-        this.isAdmin = true;
-        this.adminLoginOpen = false;
-        this.view = 'admin';
-        this.addToast('Logged in as System Admin');
-      }
-
-      this.adminLoginForm.loading = false;
-    },
-
-    logout() {
-      if (supabase) supabase.auth.signOut();
-      this.session = null;
-      this.isAdmin = false;
-      this.view = 'landing';
-      this.addToast('Logged out successfully', 'info');
-    },
-
-    async loadTrialSettings() {
-      if (!supabase) return;
-      try {
-        const { data } = await supabase
-          .from('system_settings')
-          .select('value')
-          .eq('key', 'trial_expiration_hours')
-          .maybeSingle();
-
-        if (data && data.value) {
-          this.trialHours = Number(JSON.parse(data.value)) || 2;
-        }
-      } catch (e) {
-        console.log('Using default 2-hour trial limit');
-      }
-    },
-
-    async saveTrialSettings() {
-      this.trialSaving = true;
-      if (supabase) {
-        await supabase
-          .from('system_settings')
-          .upsert({
-            key: 'trial_expiration_hours',
-            value: JSON.stringify(this.trialHours),
-            description: 'Default trial period in hours',
-            updated_at: new Date().toISOString()
-          });
-      }
-      setTimeout(() => {
-        this.trialSaving = false;
-        this.addToast(`Trial expiration updated to ${this.trialHours} hours!`);
-      }, 400);
-    },
-
-    async loadSubscribers() {
-      this.subscribersLoading = true;
-      if (supabase) {
-        const { data } = await supabase
-          .from('subscribers')
-          .select('*')
-          .order('created_at', { ascending: false });
-
-        if (data && data.length > 0) {
-          this.subscribers = data;
-          this.subscribersLoading = false;
-          return;
-        }
-      }
-
-      // Initial default records
-      this.subscribers = [
-        { id: '1', company_name: 'Kejora Retail Enterprise', email: 'admin@kejora.my', phone: '+60123456789', plan: 'Quarterly Business Pass', status: 'active', trial_ends_at: new Date(Date.now() + 2*3600*1000).toISOString(), created_at: '2026-08-01' },
-        { id: '2', company_name: 'Ahmad Tech Solutions', email: 'ahmad@tech.com.my', phone: '+60198765432', plan: 'Quarterly Business Pass', status: 'trial', trial_ends_at: new Date(Date.now() + 2*3600*1000).toISOString(), created_at: '2026-08-10' },
-        { id: '3', company_name: 'Mega Mart Trading', email: 'finance@megamart.com', phone: '+601122334455', plan: 'Quarterly Business Pass', status: 'expired', trial_ends_at: new Date(Date.now() - 86400*1000).toISOString(), created_at: '2026-07-15' },
-        { id: '4', company_name: 'Sinar Jaya Logistics', email: 'contact@sinarjaya.com', phone: '+60133445566', plan: 'Quarterly Business Pass', status: 'active', trial_ends_at: new Date(Date.now() + 2*3600*1000).toISOString(), created_at: '2026-08-12' }
-      ];
-      this.subscribersLoading = false;
-    },
-
-    async loadBilling() {
-      this.billingLoading = true;
-      if (supabase) {
-        const { data } = await supabase
-          .from('billing')
-          .select('*, subscribers(company_name)')
-          .order('created_at', { ascending: false });
-
-        if (data && data.length > 0) {
-          this.billingList = data.map(b => ({
-            ...b,
-            company_name: b.subscribers ? b.subscribers.company_name : 'Direct Client'
-          }));
-          this.billingLoading = false;
-          return;
-        }
-      }
-
-      // Initial default records
-      this.billingList = [
-        { id: 'b1', invoice_no: 'INV-2026-001', company_name: 'Kejora Retail Enterprise', amount: 149.00, currency: 'MYR', status: 'Paid', due_date: '2026-08-05', paid_at: '2026-08-05' },
-        { id: 'b2', invoice_no: 'INV-2026-002', company_name: 'Ahmad Tech Solutions', amount: 149.00, currency: 'MYR', status: 'Pending', due_date: '2026-08-20', paid_at: null },
-        { id: 'b3', invoice_no: 'INV-2026-003', company_name: 'Mega Mart Trading', amount: 149.00, currency: 'MYR', status: 'Overdue', due_date: '2026-08-01', paid_at: null },
-        { id: 'b4', invoice_no: 'INV-2026-004', company_name: 'Sinar Jaya Logistics', amount: 149.00, currency: 'MYR', status: 'Paid', due_date: '2026-08-02', paid_at: '2026-08-02' }
-      ];
-      this.billingLoading = false;
-    },
-
-    async updateBillingStatus(billingId, newStatus) {
-      const item = this.billingList.find(b => b.id === billingId);
-      if (item) {
-        item.status = newStatus;
-        if (newStatus === 'Paid') item.paid_at = new Date().toISOString();
-      }
-
-      if (supabase && !billingId.startsWith('b')) {
-        await supabase
-          .from('billing')
-          .update({
-            status: newStatus,
-            paid_at: newStatus === 'Paid' ? new Date().toISOString() : null
-          })
-          .eq('id', billingId);
-      }
-
-      this.addToast(`Invoice ${item ? item.invoice_no : ''} updated to ${newStatus}`);
-    },
-
-    async updateSubscriberStatus(subscriberId, newStatus) {
-      const sub = this.subscribers.find(s => s.id === subscriberId);
-      if (sub) sub.status = newStatus;
-
-      if (supabase && subscriberId.length > 5) {
-        await supabase
-          .from('subscribers')
-          .update({ status: newStatus })
-          .eq('id', subscriberId);
-      }
-
-      this.addToast(`Subscriber status updated to ${newStatus}`);
-    },
-
-    get filteredSubscribers() {
-      return this.subscribers.filter(s => {
-        const matchesSearch = !this.searchSubscriber || 
-          s.company_name.toLowerCase().includes(this.searchSubscriber.toLowerCase()) ||
-          s.email.toLowerCase().includes(this.searchSubscriber.toLowerCase());
-        const matchesFilter = this.subscriberFilter === 'all' || s.status === this.subscriberFilter;
-        return matchesSearch && matchesFilter;
-      });
-    },
-
-    get filteredBilling() {
-      return this.billingList.filter(b => {
-        const matchesSearch = !this.searchBilling ||
-          b.invoice_no.toLowerCase().includes(this.searchBilling.toLowerCase()) ||
-          b.company_name.toLowerCase().includes(this.searchBilling.toLowerCase());
-        const matchesStatus = this.billingFilterStatus === 'all' || b.status === this.billingFilterStatus;
-        return matchesSearch && matchesStatus;
-      });
-    },
-
-    get totalPaidRevenue() {
-      return this.billingList
-        .filter(b => b.status === 'Paid')
-        .reduce((acc, b) => acc + Number(b.amount), 0);
-    },
-
-    get pendingRevenue() {
-      return this.billingList
-        .filter(b => b.status === 'Pending' || b.status === 'Overdue')
-        .reduce((acc, b) => acc + Number(b.amount), 0);
-    }
-  }
-}
-</script>
 </body>
 </html>
