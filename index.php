@@ -25,10 +25,15 @@
 
 <!-- Alpine Component Script MUST be defined before Alpine initializes -->
 <script>
-// Initialize Supabase Client using CDN
-const SUPABASE_URL = 'https://jfdpnbkacxnlsquqypsy.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable__1gkmebdNjwiAUhx0cmyAg_f40oMmDS';
-const supabase = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+// Safe Supabase Client Helper (Prevents 'Identifier supabase has already been declared' SyntaxError)
+function getSupabase() {
+  if (!window._supabaseInstance && window.supabase && window.supabase.createClient) {
+    const SUPABASE_URL = 'https://jfdpnbkacxnlsquqypsy.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable__1gkmebdNjwiAUhx0cmyAg_f40oMmDS';
+    window._supabaseInstance = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+  return window._supabaseInstance || null;
+}
 
 function kejoraData() {
   return {
@@ -63,16 +68,17 @@ function kejoraData() {
     toasts: [],
 
     async init() {
+      const sb = getSupabase();
       // 1. Initialize Supabase Auth Listener
-      if (supabase) {
+      if (sb) {
         try {
-          const { data } = await supabase.auth.getSession();
+          const { data } = await sb.auth.getSession();
           if (data && data.session) {
             this.session = data.session.user;
             await this.checkAdminRole(data.session.user.id);
           }
 
-          supabase.auth.onAuthStateChange(async (event, session) => {
+          sb.auth.onAuthStateChange(async (event, session) => {
             if (session) {
               this.session = session.user;
               await this.checkAdminRole(session.user.id);
@@ -101,9 +107,10 @@ function kejoraData() {
     },
 
     async checkAdminRole(userId) {
-      if (!supabase) return;
+      const sb = getSupabase();
+      if (!sb) return;
       try {
-        const { data } = await supabase
+        const { data } = await sb
           .from('user_roles')
           .select('role')
           .eq('user_id', userId)
@@ -132,8 +139,9 @@ function kejoraData() {
         return;
       }
 
-      if (supabase) {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const sb = getSupabase();
+      if (sb) {
+        const { data, error } = await sb.auth.signInWithPassword({ email, password });
         
         if (error) {
           // Demo fallback for instant preview evaluation
@@ -175,7 +183,8 @@ function kejoraData() {
     },
 
     logout() {
-      if (supabase) supabase.auth.signOut();
+      const sb = getSupabase();
+      if (sb) sb.auth.signOut();
       this.session = null;
       this.isAdmin = false;
       this.view = 'landing';
@@ -183,9 +192,10 @@ function kejoraData() {
     },
 
     async loadTrialSettings() {
-      if (!supabase) return;
+      const sb = getSupabase();
+      if (!sb) return;
       try {
-        const { data } = await supabase
+        const { data } = await sb
           .from('system_settings')
           .select('value')
           .eq('key', 'trial_expiration_hours')
@@ -201,8 +211,9 @@ function kejoraData() {
 
     async saveTrialSettings() {
       this.trialSaving = true;
-      if (supabase) {
-        await supabase
+      const sb = getSupabase();
+      if (sb) {
+        await sb
           .from('system_settings')
           .upsert({
             key: 'trial_expiration_hours',
@@ -219,9 +230,10 @@ function kejoraData() {
 
     async loadSubscribers() {
       this.subscribersLoading = true;
-      if (supabase) {
+      const sb = getSupabase();
+      if (sb) {
         try {
-          const { data } = await supabase
+          const { data } = await sb
             .from('subscribers')
             .select('*')
             .order('created_at', { ascending: false });
@@ -248,9 +260,10 @@ function kejoraData() {
 
     async loadBilling() {
       this.billingLoading = true;
-      if (supabase) {
+      const sb = getSupabase();
+      if (sb) {
         try {
-          const { data } = await supabase
+          const { data } = await sb
             .from('billing')
             .select('*, subscribers(company_name)')
             .order('created_at', { ascending: false });
@@ -285,8 +298,9 @@ function kejoraData() {
         if (newStatus === 'Paid') item.paid_at = new Date().toISOString();
       }
 
-      if (supabase && !billingId.startsWith('b')) {
-        await supabase
+      const sb = getSupabase();
+      if (sb && !billingId.startsWith('b')) {
+        await sb
           .from('billing')
           .update({
             status: newStatus,
@@ -302,8 +316,9 @@ function kejoraData() {
       const sub = this.subscribers.find(s => s.id === subscriberId);
       if (sub) sub.status = newStatus;
 
-      if (supabase && subscriberId.length > 5) {
-        await supabase
+      const sb = getSupabase();
+      if (sb && subscriberId.length > 5) {
+        await sb
           .from('subscribers')
           .update({ status: newStatus })
           .eq('id', subscriberId);
@@ -346,10 +361,11 @@ function kejoraData() {
   };
 }
 
-// Global window reference for x-data="kejora()"
+// Global window references
+window.kejoraData = kejoraData;
 window.kejora = kejoraData;
 
-// Alpine v3 data registration
+// Register Alpine data component
 document.addEventListener('alpine:init', () => {
   if (window.Alpine) {
     window.Alpine.data('kejora', kejoraData);
