@@ -43,6 +43,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             foreach ($pairs as $key => $value) set_setting($pdo, $module, $key, trim((string)$value));
         }
         header("Location: admin.php?saved=1&" . $back); exit;
+
+    } elseif ($_POST['action'] === 'delete_user') {
+        $pdo->beginTransaction();
+        try {
+            // Guard: admins can never be deleted from this console
+            $chk = $pdo->prepare("SELECT role FROM users WHERE id = ?");
+            $chk->execute([$userId]);
+            if ($chk->fetchColumn() === 'customer') {
+                // Remove relational data first (bookings, payments, invoices, subscription)
+                foreach (['bookings', 'transactions', 'einvoice_items', 'subscriptions'] as $tbl) {
+                    if ($pdo->query("SELECT to_regclass('public." . $tbl . "')")->fetchColumn()) {
+                        $pdo->prepare("DELETE FROM " . $tbl . " WHERE user_id = ?")->execute([$userId]);
+                    }
+                }
+                $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$userId]);
+            }
+            $pdo->commit();
+            header("Location: admin.php?deleted=1&" . $back); exit;
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+        }
     }
     header("Location: admin.php?" . $back); exit;
 }
@@ -146,6 +167,7 @@ tbody tr:hover{background:#f8fafc}
 .actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;align-items:center}
 .ibtn{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:14px;background:#f8fafc;border:1px solid var(--line);transition:.15s}
 .ibtn:hover{background:#e2e8f0}
+.ibtn.del:hover{background:#ffe4e6;border-color:#fecdd3}
 .abtn{border-radius:8px;padding:7px 12px;font-size:11px;font-weight:700;transition:.15s}
 .abtn.trial{background:#f1f5f9;color:#475569}.abtn.trial:hover{background:#e2e8f0}
 .abtn.go{background:var(--grad);color:#fff}.abtn.go:hover{opacity:.9}
@@ -180,6 +202,7 @@ tbody tr:hover{background:#f8fafc}
   <h1>Subscriber Management</h1>
   <p class="sub">Default trial period: <b><?= $trialHours ?> hour(s)</b> — configurable in Platform Settings below.</p>
   <?php if (isset($_GET['saved'])): ?><div class="banner">✔ Settings saved successfully.</div><?php endif; ?>
+  <?php if (isset($_GET['deleted'])): ?><div class="banner" style="background:#ffe4e6;color:#e11d48">🗑️ Subscriber and all related data deleted.</div><?php endif; ?>
 
   <div class="stats3">
     <div class="stat"><p>Active Subscriptions</p><b class="g"><?= $stats['active_subs'] ?></b></div>
@@ -232,6 +255,11 @@ tbody tr:hover{background:#f8fafc}
           <td><div class="actions">
             <button class="ibtn" data-edit title="Edit profile">✏️</button>
             <button class="ibtn" title="Impersonate (coming soon)" onclick="impersonate('<?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?>')">🎭</button>
+            <form method="POST" onsubmit="return confirm('Permanently delete <?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?> (<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>) and ALL related bookings, transactions & invoices?\nThis cannot be undone.')">
+              <input type="hidden" name="action" value="delete_user">
+              <input type="hidden" name="user_id" value="<?= $s['id'] ?>">
+              <button class="ibtn del" title="Delete user + related data (testing)">🗑️</button>
+            </form>
             <?php if (in_array($st, ['active_trial','suspended','past_due','none'])): ?>
               <form method="POST"><input type="hidden" name="action" value="extend_trial"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
               <button class="abtn trial" title="Reset trial to configured default">⏱ +<?= $trialHours ?>h</button></form>
