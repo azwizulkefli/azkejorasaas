@@ -182,3 +182,9 @@ CREATE TABLE IF NOT EXISTS companies (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_user ON companies(user_id);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reg_type VARCHAR(20) DEFAULT 'manual';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_picture VARCHAR(500);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google ON users(google_id) WHERE google_id IS NOT NULL;
+UPDATE users SET reg_type = 'manual' WHERE reg_type IS NULL OR reg_type = '';
