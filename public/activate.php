@@ -7,5 +7,5 @@ $res = activateByToken($token);
 if (!$res['ok']) {
     header('Location: index.php?err=' . urlencode($res['error'])); exit;
 }
-header('Location: /../subscriber/main.php?welcome=1');
+header('Location: ../subscriber/main.php?welcome=1');
 exit;
