@@ -1,7 +1,7 @@
 <?php
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../config/database.php';
-require_once __DIR__ . '/../settings.php';
+require_once __DIR__ . '/settings.php';
 
 function login(string $email, string $password): bool {
     global $pdo;
