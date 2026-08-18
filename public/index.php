@@ -30,63 +30,86 @@ a{text-decoration:none;color:inherit}button{font:inherit;cursor:pointer;border:n
 @keyframes pop{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:scale(1)}}
 @keyframes floaty{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
 /* ================= NAV ================= */
 .nav{position:fixed;inset:0 0 auto 0;z-index:40}
 .nav-inner{margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:16px;background:rgba(255,255,255,.8);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.6);border-radius:16px;padding:12px 20px;box-shadow:var(--shadow)}
-.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:-.02em}
-.logo{width:36px;height:36px;border-radius:12px;background:var(--grad);color:#fff;display:grid;place-items:center;box-shadow:0 8px 20px -6px rgba(84,87,229,.5)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:-.02em;flex-shrink:0}
+.logo{width:36px;height:36px;border-radius:12px;background:var(--grad);color:#fff;display:grid;place-items:center;box-shadow:0 8px 20px -6px rgba(84,87,229,.5);flex-shrink:0}
 .brand em{font-style:normal;background:linear-gradient(90deg,var(--brand),var(--violet),var(--fuchsia));-webkit-background-clip:text;background-clip:text;color:transparent}
 .links{display:flex;gap:28px;font-size:14px;font-weight:600;color:var(--muted)}.links a:hover{color:var(--brand-dark)}
-.nav-cta{display:flex;align-items:center;gap:8px}.hi{font-size:13px;font-weight:600;color:var(--muted);margin-right:6px}
-@media(max-width:860px){.links{display:none}}
+.nav-cta{display:flex;align-items:center;gap:8px}
+.hi{font-size:13px;font-weight:600;color:var(--muted);margin-right:6px}
+
+/* Mobile menu toggle */
+.menu-toggle{display:none;width:40px;height:40px;border-radius:10px;background:#f1f5f9;align-items:center;justify-content:center;font-size:20px;color:var(--ink);flex-shrink:0;transition:.15s}
+.menu-toggle:hover{background:#e2e8f0}
+
+/* Mobile drawer */
+.mobile-drawer{position:fixed;top:0;right:0;bottom:0;width:min(320px,85vw);background:#fff;box-shadow:-12px 0 40px rgba(19,19,39,.15);z-index:60;transform:translateX(100%);transition:transform .3s ease;display:flex;flex-direction:column;padding:24px}
+.mobile-drawer.open{transform:translateX(0)}
+.mobile-drawer-overlay{position:fixed;inset:0;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);z-index:55;display:none}
+.mobile-drawer-overlay.open{display:block}
+.drawer-head{display:flex;justify-content:space-between;align-items:center;padding-bottom:20px;border-bottom:1px solid var(--line);margin-bottom:20px}
+.drawer-close{width:36px;height:36px;border-radius:10px;background:#f1f5f9;display:grid;place-items:center;font-size:18px;color:var(--ink)}
+.drawer-nav{display:flex;flex-direction:column;gap:4px;margin-bottom:24px}
+.drawer-nav a{padding:14px 16px;border-radius:12px;font-size:15px;font-weight:600;color:var(--text);transition:.15s}
+.drawer-nav a:hover,.drawer-nav a:active{background:#f8fafc;color:var(--brand-dark)}
+.drawer-cta{margin-top:auto;display:flex;flex-direction:column;gap:10px}
+.drawer-cta .btn{width:100%;justify-content:center}
+.drawer-user{padding:14px 16px;background:#f8fafc;border-radius:12px;margin-bottom:16px}
+.drawer-user b{display:block;font-size:14px;font-weight:700;color:var(--ink)}
+.drawer-user small{font-size:12px;color:var(--muted);margin-top:2px;display:block}
+
 /* ================= BUTTONS ================= */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:12px;padding:10px 18px;font-size:14px;font-weight:600;transition:.2s;white-space:nowrap}
 .btn.primary{background:var(--grad);color:#fff;box-shadow:0 10px 24px -8px rgba(84,87,229,.5)}.btn.primary:hover{transform:translateY(-2px)}
 .btn.ghost{background:#fff;border:1px solid var(--line);color:var(--text)}.btn.ghost:hover{border-color:#a3aeff;color:var(--brand-dark)}
 .btn.white{background:#fff;color:var(--brand-dark);font-weight:700}
 .btn.full{width:100%;margin-top:24px;padding:14px}
+
 /* ================= HERO ================= */
 .hero{position:relative;padding:160px 0 96px;overflow:hidden;background-image:linear-gradient(rgba(99,102,241,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(99,102,241,.06) 1px,transparent 1px);background-size:44px 44px}
 .glow{position:absolute;top:-128px;left:50%;transform:translateX(-50%);width:820px;height:480px;border-radius:50%;background:linear-gradient(90deg,rgba(198,206,255,.6),rgba(221,214,254,.6),rgba(245,208,255,.6));filter:blur(48px);pointer-events:none}
 .hero-grid{position:relative;display:grid;grid-template-columns:1.05fr .95fr;gap:64px;align-items:center}
-@media(max-width:960px){.hero-grid{grid-template-columns:1fr}}
 .eyebrow{display:inline-flex;align-items:center;gap:8px;border:1px solid #c6ceff;background:#eef1ff;color:var(--brand-dark);border-radius:999px;padding:6px 14px;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--emerald);animation:pulse 1.6s infinite}
-h1.big{margin-top:24px;font-size:clamp(38px,5vw,58px);line-height:1.08;letter-spacing:-.02em;font-weight:800}
+h1.big{margin-top:24px;font-size:clamp(32px,5vw,58px);line-height:1.08;letter-spacing:-.02em;font-weight:800}
 .grad-text{background:linear-gradient(90deg,var(--brand),var(--violet),var(--fuchsia));-webkit-background-clip:text;background-clip:text;color:transparent}
-.lead{margin-top:24px;max-width:560px;font-size:18px;line-height:1.7;color:var(--muted)}
+.lead{margin-top:24px;max-width:560px;font-size:clamp(15px,1.5vw,18px);line-height:1.7;color:var(--muted)}
 .cta-row{margin-top:32px;display:flex;flex-wrap:wrap;gap:12px}
 .checks{margin-top:24px;display:flex;flex-wrap:wrap;gap:20px;font-size:14px;color:var(--muted)}
 .checks span::before{content:'✓';color:var(--emerald);font-weight:800;margin-right:6px}
+
 /* hero mock */
 .mock{position:relative}
 .mock-card{background:#fff;border:1px solid var(--line);border-radius:24px;box-shadow:var(--card);padding:20px;animation:fadeUp .6s ease both}
 .mock-top span{width:10px;height:10px;border-radius:50%;background:#e2e8f0;display:inline-block;margin-right:6px}
 .mock-top i{font-style:normal;font-size:11px;color:var(--faint);margin-left:8px}
 .mock-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:16px;text-align:center}
-.mock-kpi{background:#f8fafc;border-radius:12px;padding:14px}.mock-kpi b{font-size:18px;font-weight:800}.mock-kpi p{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin-top:4px}
+.mock-kpi{background:#f8fafc;border-radius:12px;padding:14px}.mock-kpi b{font-size:clamp(14px,2vw,18px);font-weight:800}.mock-kpi p{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin-top:4px}
 .mock-kpi.g b{color:var(--emerald)}.mock-kpi.b b{color:var(--brand)}
 .mock-bars{display:flex;align-items:flex-end;gap:8px;height:120px;margin-top:16px}
 .mock-bars i{flex:1;background:linear-gradient(180deg,#8b5cf6,#5457e5);border-radius:6px 6px 0 0;opacity:.85}
 .chip{position:absolute;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:10px 14px;display:flex;gap:10px;align-items:center;animation:floaty 6s ease-in-out infinite}
 .chip .ic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:15px}
 .chip b{display:block;font-size:12px}.chip small{color:var(--muted);font-size:11px}
+
 /* stats */
 .stats{margin-top:80px;display:grid;grid-template-columns:repeat(4,1fr);gap:24px;background:rgba(255,255,255,.7);border:1px solid var(--line);border-radius:16px;padding:32px;backdrop-filter:blur(8px)}
 .stats b{font-size:30px;font-weight:800;display:block}.stats p{margin-top:4px;font-size:14px;color:var(--muted)}
-@media(max-width:860px){.stats{grid-template-columns:repeat(2,1fr)}}
+
 /* ================= SECTIONS ================= */
 section{padding:96px 0}.sec-head{text-align:center;max-width:640px;margin:0 auto}
-h2.sec{margin-top:20px;font-size:clamp(28px,3.4vw,40px);font-weight:800;letter-spacing:-.02em}
+h2.sec{margin-top:20px;font-size:clamp(26px,3.4vw,40px);font-weight:800;letter-spacing:-.02em}
 .cards4{margin-top:56px;display:grid;grid-template-columns:repeat(4,1fr);gap:24px}
-@media(max-width:1020px){.cards4{grid-template-columns:repeat(2,1fr)}}@media(max-width:640px){.cards4{grid-template-columns:1fr}}
 .card{background:#fff;border:1px solid rgba(226,232,240,.7);border-radius:16px;box-shadow:var(--card);padding:28px;transition:.2s}
 .card:hover{transform:translateY(-4px);box-shadow:var(--shadow)}
 .ic-tile{width:48px;height:48px;border-radius:12px;display:grid;place-items:center;color:#fff;font-size:20px;box-shadow:0 10px 20px -8px rgba(19,19,39,.3)}
 .card h3{margin-top:20px;font-size:18px;font-weight:700}.card p{margin-top:8px;font-size:14px;line-height:1.6;color:var(--muted)}
+
 /* services */
 .svc{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:center}
-@media(max-width:960px){.svc{grid-template-columns:1fr}}
 .svc + .svc{margin-top:96px}
 .svc ul{margin-top:28px;list-style:none;display:grid;gap:16px;color:var(--text);font-size:15px}
 .svc li{display:flex;gap:12px}
@@ -102,17 +125,17 @@ h2.sec{margin-top:20px;font-size:clamp(28px,3.4vw,40px);font-weight:800;letter-s
 .status-pill.invalid{background:#fee2e2;color:#dc2626}
 .status-pill.progress{background:#fef3c7;color:#d97706}
 .status-pill.error{background:#fce7f3;color:#db2777}
-.status-pill b{display:block;font-size:18px;margin-bottom:2px}
+.status-pill b{display:block;font-size:clamp(14px,2vw,18px);margin-bottom:2px}
 .total-row{margin-top:20px;display:flex;justify-content:space-between;align-items:center;background:#f8fafc;border-radius:12px;padding:16px 20px}
+
 /* how it works */
 .steps{margin-top:56px;display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
-@media(max-width:860px){.steps{grid-template-columns:1fr}}
 .step{background:#fff;border:1px solid var(--line);border-radius:20px;padding:32px;text-align:center;box-shadow:var(--card);position:relative}
 .step-num{width:48px;height:48px;border-radius:50%;background:var(--grad);color:#fff;display:grid;place-items:center;font-size:20px;font-weight:800;margin:0 auto 20px;box-shadow:0 10px 24px -8px rgba(84,87,229,.5)}
 .step h3{font-size:20px;font-weight:800;margin-bottom:10px}.step p{font-size:14px;line-height:1.7;color:var(--muted)}
+
 /* pricing */
 .cards3{margin-top:56px;display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
-@media(max-width:960px){.cards3{grid-template-columns:1fr}}
 .plan{position:relative;padding:32px}
 .plan.pop{box-shadow:0 0 0 2px var(--brand),var(--card)}
 .flag{position:absolute;top:-14px;left:50%;transform:translateX(-50%);background:var(--grad);color:#fff;border-radius:999px;padding:4px 16px;font-size:11px;font-weight:800}
@@ -120,24 +143,27 @@ h2.sec{margin-top:20px;font-size:clamp(28px,3.4vw,40px);font-weight:800;letter-s
 .plan ul{margin:24px 0 28px;list-style:none;display:grid;gap:12px;font-size:14px;color:var(--text)}
 .plan li::before{content:'✓';color:var(--emerald);font-weight:800;margin-right:10px}
 .plan .btn{width:100%}
+
 /* faq */
 .faq-list{margin-top:48px}
 details.faq{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--card);overflow:hidden;margin-top:12px}
 details.faq summary{list-style:none;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:20px 24px;font-weight:600;cursor:pointer}
 details.faq summary::-webkit-details-marker{display:none}
-details.faq summary::after{content:'⌄';color:var(--faint);font-size:18px;transition:.2s}
+details.faq summary::after{content:'⌄';color:var(--faint);font-size:18px;transition:.2s;flex-shrink:0}
 details[open].faq summary::after{transform:rotate(180deg)}
 details.faq p{padding:0 24px 20px;font-size:14px;line-height:1.7;color:var(--muted)}
+
 /* cta + footer */
 .cta{position:relative;overflow:hidden;border-radius:24px;background:linear-gradient(90deg,var(--brand-dark),var(--brand),#7c3aed);padding:64px 32px;text-align:center;color:#fff;box-shadow:0 24px 60px -24px rgba(84,87,229,.6)}
-.cta h2{font-size:clamp(26px,3.4vw,38px);font-weight:800}.cta p{margin:16px auto 0;max-width:560px;color:#e0e5ff}.cta .btn{margin-top:32px}
+.cta h2{font-size:clamp(24px,3.4vw,38px);font-weight:800}.cta p{margin:16px auto 0;max-width:560px;color:#e0e5ff}.cta .btn{margin-top:32px}
 footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
 .foot{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between}.foot small{color:var(--faint)}
 .foot nav{display:flex;gap:20px;font-size:13px;font-weight:600;color:var(--muted)}
+
 /* ================= MODAL ================= */
 .modal{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);padding:16px}
 .modal.open{display:grid}
-.modal-card{width:100%;max-width:420px;background:#fff;border-radius:24px;padding:32px;box-shadow:0 30px 80px -20px rgba(19,19,39,.4);animation:pop .25s ease-out}
+.modal-card{width:100%;max-width:420px;background:#fff;border-radius:24px;padding:32px;box-shadow:0 30px 80px -20px rgba(19,19,39,.4);animation:pop .25s ease-out;max-height:calc(100vh - 32px);overflow-y:auto}
 .modal-card .logo{margin:0 auto;width:48px;height:48px;font-size:20px}
 .modal-card h3{margin-top:16px;font-size:20px;font-weight:800;text-align:center}
 .modal-card .sub{margin-top:4px;font-size:14px;color:var(--muted);text-align:center}
@@ -148,6 +174,104 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
 .err{margin-top:16px;background:#fff1f2;color:var(--rose);border-radius:10px;padding:12px;font-size:13px;font-weight:600;text-align:center}
 .hint{margin-top:16px;font-size:12px;color:var(--faint);text-align:center}
 .hint code{background:#f1f5f9;border-radius:4px;padding:2px 6px}
+
+/* ================= DESKTOP ONLY ================= */
+@media(min-width:861px){
+  .menu-toggle{display:none}
+}
+
+/* ================= TABLET ================= */
+@media(max-width:1020px){
+  .cards4{grid-template-columns:repeat(2,1fr)}
+}
+
+/* ================= MOBILE ================= */
+@media(max-width:860px){
+  .links{display:none}
+  .nav-cta{display:none}
+  .menu-toggle{display:flex}
+  .nav-inner{margin-top:10px;padding:10px 14px;border-radius:12px}
+  .logo{width:32px;height:32px;border-radius:10px}
+  .brand{font-size:16px;gap:8px}
+  .wrap{padding:0 16px}
+  
+  .hero{padding:120px 0 64px}
+  .hero-grid{grid-template-columns:1fr;gap:40px}
+  h1.big{margin-top:20px}
+  .cta-row{flex-direction:column;align-items:stretch}
+  .cta-row .btn{width:100%;justify-content:center;padding:14px 20px;font-size:15px}
+  .checks{gap:14px;font-size:13px}
+  
+  .mock{max-width:520px;margin:0 auto}
+  .chip{display:none}
+  .status-row{grid-template-columns:repeat(2,1fr)}
+  
+  .stats{grid-template-columns:repeat(2,1fr);padding:24px;gap:16px}
+  .stats b{font-size:24px}
+  
+  section{padding:64px 0}
+  .cards4{grid-template-columns:1fr;gap:16px;margin-top:36px}
+  .card{padding:22px}
+  
+  .svc{grid-template-columns:1fr;gap:32px}
+  .svc + .svc{margin-top:56px}
+  .svc ul{gap:14px}
+  
+  .steps{grid-template-columns:1fr;gap:16px}
+  .step{padding:26px 22px}
+  
+  .cards3{grid-template-columns:1fr;gap:20px}
+  .plan{padding:28px 24px}
+  .price b{font-size:36px}
+  
+  .cta{padding:48px 24px;border-radius:20px}
+  
+  .foot{flex-direction:column;text-align:center;gap:12px}
+  .foot nav{gap:16px}
+  
+  .modal{padding:0}
+  .modal-card{border-radius:24px 24px 0 0;max-height:90vh;padding:28px 22px;align-self:flex-end}
+  .field input{padding:13px 14px;font-size:16px}
+  .btn.full{padding:15px}
+}
+
+/* ================= SMALL MOBILE ================= */
+@media(max-width:480px){
+  .hero{padding:100px 0 48px}
+  .eyebrow{font-size:10px;padding:5px 12px}
+  h1.big{font-size:28px;line-height:1.12}
+  .lead{font-size:14px;margin-top:18px}
+  .cta-row{gap:10px;margin-top:24px}
+  .checks{gap:10px;font-size:12px;margin-top:18px}
+  .mock-grid{gap:8px}
+  .mock-kpi{padding:10px 8px}
+  .mock-kpi p{font-size:9px}
+  .mock-bars{height:90px;margin-top:12px}
+  .stats{margin-top:48px;gap:12px;padding:20px}
+  .stats b{font-size:20px}
+  .stats p{font-size:12px}
+  section{padding:52px 0}
+  .sec-head h2.sec{font-size:24px}
+  .step-num{width:42px;height:42px;font-size:18px}
+  .price b{font-size:32px}
+  .plan{padding:24px 20px}
+  .plan ul{font-size:13px}
+  details.faq summary{padding:16px 18px;font-size:14px}
+  details.faq p{padding:0 18px 18px;font-size:13px}
+  .cta{padding:40px 20px}
+  .cta h2{font-size:22px}
+  .cta p{font-size:14px}
+  .modal-card{padding:24px 18px}
+  .modal-card h3{font-size:18px}
+  .modal-card .sub{font-size:13px}
+}
+
+/* Prevent iOS zoom on input focus */
+@supports (-webkit-touch-callout: none) {
+  @media(max-width:860px){
+    input, select, textarea{font-size:16px !important}
+  }
+}
 </style>
 </head>
 <body>
@@ -167,7 +291,43 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
       <button class="btn primary" onclick="openSignup()">Start Free Trial</button>
     <?php endif; ?>
   </div>
+  <button class="menu-toggle" onclick="openDrawer()" aria-label="Open menu">☰</button>
 </div></header>
+
+<!-- MOBILE DRAWER -->
+<div class="mobile-drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
+<aside class="mobile-drawer" id="mobileDrawer">
+  <div class="drawer-head">
+    <span class="brand"><span class="logo" style="width:30px;height:30px;font-size:15px">⚡</span>AZ Kejora<em>SaaS</em></span>
+    <button class="drawer-close" onclick="closeDrawer()" aria-label="Close menu">✕</button>
+  </div>
+
+  <?php if($isLoggedIn): ?>
+    <div class="drawer-user">
+      <b><?= htmlspecialchars(explode(' ', $userName)[0]) ?></b>
+      <small><?= htmlspecialchars($userRole) ?></small>
+    </div>
+  <?php endif; ?>
+
+  <nav class="drawer-nav">
+    <a href="#features" onclick="closeDrawer()">Features</a>
+    <a href="#how-it-works" onclick="closeDrawer()">How It Works</a>
+    <a href="#pricing" onclick="closeDrawer()">Pricing</a>
+    <a href="#faq" onclick="closeDrawer()">FAQ</a>
+    <?php if($isLoggedIn): ?>
+      <a href="<?= $userRole==='admin' ? 'admin.php' : 'subscriber/main.php' ?>" onclick="closeDrawer()">Open Dashboard</a>
+      <?php if($userRole==='admin'): ?><a href="admin.php" onclick="closeDrawer()">Admin Console</a><?php endif; ?>
+      <a href="login.php?logout=1">Sign out</a>
+    <?php endif; ?>
+  </nav>
+
+  <div class="drawer-cta">
+    <?php if(!$isLoggedIn): ?>
+      <button class="btn ghost" onclick="closeDrawer();openAuth()">Sign in</button>
+      <button class="btn primary" onclick="closeDrawer();openSignup()">Start Free Trial</button>
+    <?php endif; ?>
+  </div>
+</aside>
 
 <!-- HERO -->
 <section class="hero"><div class="glow"></div>
@@ -356,8 +516,8 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
 </div>
 <?php if($loginError): ?><script>openAuth();</script><?php endif; ?>
 <script>
-function openAuth(){document.getElementById('authModal').classList.add('open')}
-function closeAuth(){document.getElementById('authModal').classList.remove('open')}
+function openAuth(){document.getElementById('authModal').classList.add('open'); document.body.style.overflow='hidden';}
+function closeAuth(){document.getElementById('authModal').classList.remove('open'); document.body.style.overflow='';}
 <?php if($loginError): ?>openAuth();<?php endif; ?>
 </script>
 
@@ -400,7 +560,7 @@ function closeAuth(){document.getElementById('authModal').classList.remove('open
 
 <!-- ============ CHECK-EMAIL MODAL ============ -->
 <?php if (isset($_GET['check'])): ?>
-<div class="modal open" id="checkModal">
+<div class="modal open" id="checkModal" style="display:grid">
   <div class="modal-card" style="text-align:center">
     <span class="logo" style="background:linear-gradient(135deg,#10b981,#14b8a6)">✉</span>
     <h3>Check your inbox</h3>
@@ -414,15 +574,40 @@ function closeAuth(){document.getElementById('authModal').classList.remove('open
         </details>
       <?php endif; ?>
     </div>
-    <button class="btn primary full" onclick="document.getElementById('checkModal').classList.remove('open')">Got it</button>
+    <button class="btn primary full" onclick="document.getElementById('checkModal').classList.remove('open');document.body.style.overflow=''">Got it</button>
   </div>
 </div>
+<script>document.body.style.overflow='hidden';</script>
 <?php endif; ?>
 
 <script>
-function openSignup(){document.getElementById('signupModal').classList.add('open')}
-function closeSignup(){document.getElementById('signupModal').classList.remove('open')}
+function openSignup(){document.getElementById('signupModal').classList.add('open'); document.body.style.overflow='hidden';}
+function closeSignup(){document.getElementById('signupModal').classList.remove('open'); document.body.style.overflow='';}
 <?php if (isset($_GET['signup']) && isset($_GET['err'])): ?>openSignup();<?php endif; ?>
+
+// Mobile drawer
+function openDrawer(){
+  document.getElementById('mobileDrawer').classList.add('open');
+  document.getElementById('drawerOverlay').classList.add('open');
+  document.body.style.overflow='hidden';
+}
+function closeDrawer(){
+  document.getElementById('mobileDrawer').classList.remove('open');
+  document.getElementById('drawerOverlay').classList.remove('open');
+  document.body.style.overflow='';
+}
+document.querySelectorAll('.drawer-nav a').forEach(a => {
+  a.addEventListener('click', () => setTimeout(closeDrawer, 50));
+});
+
+// Close modals on Escape key
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape') {
+    closeAuth(); closeSignup(); closeDrawer();
+    const cm = document.getElementById('checkModal');
+    if (cm) { cm.classList.remove('open'); document.body.style.overflow=''; }
+  }
+});
 </script>
 </body>
 </html>
