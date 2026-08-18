@@ -274,3 +274,75 @@ CREATE INDEX IF NOT EXISTS idx_subs_user_payment_date
 
 CREATE INDEX IF NOT EXISTS idx_subs_receipt 
   ON public.subscriptions (receipt_no);
+
+-- Track uploaded files
+CREATE TABLE IF NOT EXISTS einvoice_uploads (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    filename VARCHAR(255) NOT NULL,
+    file_path VARCHAR(500),
+    total_records INTEGER DEFAULT 0,
+    valid_records INTEGER DEFAULT 0,
+    invalid_records INTEGER DEFAULT 0,
+    status VARCHAR(50) DEFAULT 'pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Individual invoice records from uploads
+CREATE TABLE IF NOT EXISTS einvoice_records (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    upload_id UUID REFERENCES einvoice_uploads(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    document_type VARCHAR(10) DEFAULT '01',
+    sale_no VARCHAR(100),
+    customer_name VARCHAR(255),
+    customer_address TEXT,
+    customer_postcode VARCHAR(20),
+    customer_phone VARCHAR(50),
+    customer_email VARCHAR(255),
+    customer_ic VARCHAR(50),
+    customer_type VARCHAR(50) DEFAULT 'general',
+    sale_title VARCHAR(255),
+    sale_amount DECIMAL(12,2) DEFAULT 0,
+    sale_tax DECIMAL(12,2) DEFAULT 0,
+    total_amount DECIMAL(12,2) DEFAULT 0,
+    sale_datetime TIMESTAMP WITH TIME ZONE,
+    validation_status VARCHAR(50) DEFAULT 'pending',
+    validation_errors TEXT,
+    submission_status VARCHAR(50) DEFAULT 'pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Daily consolidated sales
+CREATE TABLE IF NOT EXISTS einvoice_consolidated (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    sale_date DATE NOT NULL,
+    total_records INTEGER DEFAULT 0,
+    total_amount DECIMAL(12,2) DEFAULT 0,
+    total_tax DECIMAL(12,2) DEFAULT 0,
+    grand_total DECIMAL(12,2) DEFAULT 0,
+    submission_status VARCHAR(50) DEFAULT 'pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- LHDN API submission log
+CREATE TABLE IF NOT EXISTS einvoice_submissions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    record_id UUID REFERENCES einvoice_records(id) ON DELETE CASCADE,
+    consolidated_id UUID REFERENCES einvoice_consolidated(id) ON DELETE CASCADE,
+    submission_type VARCHAR(50), -- 'individual' or 'consolidated'
+    lhdn_uuid VARCHAR(255),
+    submission_datetime TIMESTAMP WITH TIME ZONE,
+    status VARCHAR(50),
+    api_response JSONB,
+    error_message TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_uploads_user ON einvoice_uploads(user_id);
+CREATE INDEX IF NOT EXISTS idx_records_upload ON einvoice_records(upload_id);
+CREATE INDEX IF NOT EXISTS idx_records_user ON einvoice_records(user_id);
+CREATE INDEX IF NOT EXISTS idx_consolidated_user ON einvoice_consolidated(user_id);
+CREATE INDEX IF NOT EXISTS idx_submissions_user ON einvoice_submissions(user_id);
