@@ -27,11 +27,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                 $result = parseInvoiceFile($filePath);
                 
                 if ($result['success']) {
-                    // Create upload record
-                    $pdo->prepare("INSERT INTO einvoice_uploads (user_id, filename, file_path, total_records, status)
-                                   VALUES (?, ?, ?, ?, 'processing') RETURNING id")
-                        ->execute([$uid, $file['name'], $filename, count($result['rows'])]);
-                    $uploadId = $pdo->lastInsertId();
+                    // ✅ FIX 1: Create upload record using fetchColumn()
+                    $stmtUpload = $pdo->prepare("INSERT INTO einvoice_uploads (user_id, filename, file_path, total_records, status)
+                                   VALUES (?, ?, ?, ?, 'processing') RETURNING id");
+                    $stmtUpload->execute([$uid, $file['name'], $filename, count($result['rows'])]);
+                    $uploadId = $stmtUpload->fetchColumn();
                     
                     // Validate and insert records
                     $validCount = 0;
@@ -151,12 +151,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $totalTax = array_sum(array_column($records, 'sale_tax'));
         $grandTotal = array_sum(array_column($records, 'total_amount'));
         
-        // Create consolidated record
-        $pdo->prepare("INSERT INTO einvoice_consolidated 
+        // ✅ FIX 2: Create consolidated record using fetchColumn()
+        $stmtConsol = $pdo->prepare("INSERT INTO einvoice_consolidated 
             (user_id, sale_date, total_records, total_amount, total_tax, grand_total, submission_status)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending') RETURNING id")
-            ->execute([$uid, $date, count($records), $totalAmount, $totalTax, $grandTotal]);
-        $consolidatedId = $pdo->lastInsertId();
+            VALUES (?, ?, ?, ?, ?, ?, 'pending') RETURNING id");
+        $stmtConsol->execute([$uid, $date, count($records), $totalAmount, $totalTax, $grandTotal]);
+        $consolidatedId = $stmtConsol->fetchColumn();
         
         // Submit consolidated invoice
         $consolidatedData = [
