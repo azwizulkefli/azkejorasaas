@@ -398,51 +398,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
     <h1>Welcome back, <span style="background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent"><?= htmlspecialchars(explode(' ',$me['name'])[0]) ?></span> 👋</h1>
     <p class="sub">Here's what's happening across your services today.</p>
 
-    <?php if ($s && $s['status'] === 'active_trial'): ?>
-    <div class="trial-banner">
-      <span class="glow"></span>
-      <p>Active trial · no card required</p>
-      <h2><?= $fmtLeft($trialLeft, 'hours') ?></h2>
-      <p class="sub">Trial ends <?= $fmtDate($s['trial_ends_at']) ?> — subscribe to keep your data & tools.</p>
-      <div class="bar"><i style="width:<?= $trialPct ?>%"></i></div>
-      <div class="cta-row">
-        <a href="#plans" class="btn white">Choose a 3-month plan</a>
-        <a href="#billing" class="btn ghost">View billing portal</a>
-      </div>
-    </div>
-    <?php endif; ?>
-
-    <?php if ($s && $s['status'] === 'past_due'): ?>
-    <div class="past-due">
-      ⚠ Your last payment failed — subscription is past due. Update your method to restore access.
-      <a class="btn primary" style="margin-left:auto" href="#pay">Pay now</a>
-    </div>
-    <?php endif; ?>
-
-    <!-- ========== STATS CARDS ========== -->
-    <div class="stats4">
-      <div class="stat">
-        <p>Plan status</p>
-        <span class="badge <?= $statusBadge($s['status'] ?? 'none') ?>"><?= htmlspecialchars($s['status'] ?? 'No plan') ?></span>
-        <small><?= $s['plan'] ? htmlspecialchars($s['plan']) . ' · RM ' . $s['price'] . ' / 90d' : 'No active plan' ?></small>
-      </div>
-      <div class="stat">
-        <p><?= $s['status'] === 'active_trial' ? 'Trial ends' : 'Renews on' ?></p>
-        <b><?= $fmtDate($s['status'] === 'active_trial' ? $s['trial_ends_at'] : $s['period_ends_at']) ?></b>
-        <small><?= $s['status']==='active' ? $fmtLeft($periodLeft,'days') : '' ?></small>
-      </div>
-      <div class="stat">
-        <p>Invoices processed</p>
-        <b><?= $einCount ?></b>
-        <small>RM <?= number_format((float)$einGrossV, 0) ?> gross value</small>
-      </div>
-      <div class="stat">
-        <p>My bookings</p>
-        <b><?= $bkCountV ?></b>
-        <small>upcoming & past</small>
-      </div>
-    </div>
-
     <!-- ========== E-INVOICE SUMMARIES ========== -->
     <h2 style="font-size:20px;font-weight:700;margin-bottom:16px">📊 E-Invoice Summary</h2>
     
