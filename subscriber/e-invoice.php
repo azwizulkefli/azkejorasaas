@@ -444,44 +444,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
       </div>
     </div>
 
-    <!-- ========== ACTIVITY LOG ========== -->
-    <div class="activity-card">
-      <h3>📜 Recent Activity</h3>
-      <?php if (empty($activities)): ?>
-        <p style="text-align:center;padding:20px;color:var(--faint);font-size:13px">No recent activity yet.</p>
-      <?php else: ?>
-        <?php foreach ($activities as $act): ?>
-          <div class="activity-item">
-            <div class="activity-icon"><?= explode(' ', $act['type'])[0] ?></div>
-            <div class="activity-content">
-              <b><?= htmlspecialchars($act['type']) ?></b>
-              <small><?= htmlspecialchars($act['desc']) ?> · <?= date('M d, H:i', strtotime($act['time'])) ?></small>
-            </div>
-          </div>
-        <?php endforeach; ?>
-      <?php endif; ?>
-    </div>
-
-    <!-- ========== SERVICE CARDS ========== -->
-    <div class="cards2">
-      <div class="svc">
-        <span class="blob" style="background:#fef3c7"></span>
-        <span class="ic-tile" style="background:linear-gradient(135deg,#f59e0b,#f97316)">🧾</span>
-        <h3>E-Invoice for SME</h3>
-        <p>Upload CSV / PDF / JSON, auto-extract line items, compute SST and export compliance reports.</p>
-        <a href="e-invoice.php" class="btn primary">Open tool →</a>
-      </div>
-      <div class="svc">
-        <span class="blob" style="background:#fae8ff"></span>
-        <span class="ic-tile" style="background:linear-gradient(135deg,#d946ef,#ec4899)">📅</span>
-        <h3>Retail Facility Booking</h3>
-        <p>Manage your facilities & rates, or book courts, rooms and halls on the public portal.</p>
-        <div class="cta-row">
-          <a href="#" class="btn primary">Merchant console</a>
-          <a href="#" class="btn ghost" style="background:#f1f5f9;color:#475569;border-color:var(--line)">Public portal</a>
-        </div>
-      </div>
-    </div>
 
   </main>
 
