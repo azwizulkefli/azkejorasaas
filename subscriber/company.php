@@ -189,6 +189,9 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   <nav class="sidebar-nav">
     <a href="main.php" class="menu-item">🏠 Home</a>
     <a href="e-invoice.php" class="menu-item">🧾 E-Invoice</a>
+    <div class="menu-section">Subscription</div>
+    <a href="s_payment.php" class="menu-item">🧾 Payment</a>
+    <a href="s_report.php" class="menu-item">🧾 Report</a>
     <div class="menu-section">Setup</div>
     <a href="company.php" class="menu-item active">🏢 Company</a>
     <a href="users.php" class="menu-item">👥 Users</a>
