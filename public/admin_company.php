@@ -145,9 +145,10 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-brand"><span class="brand"><span class="logo">⚡</span>AZ Kejora <em>Admin</em></span></div>
   <nav class="sidebar-nav">
-    <a href="admin.php" class="menu-item">📊 Dashboard</a>
-    <a href="admin_company.php" class="menu-item active">🏢 Company</a>
+    <a href="admin.php" class="menu-item active">📊 Dashboard</a>
+    <a href="admin_company.php" class="menu-item">🏢 Company</a>
     <a href="admin_users.php" class="menu-item">👥 Admins</a>
+    <a href="admin_report.php" class="menu-item">👥 Report</a>
     <a href="admin_log.php" class="menu-item">📜 Logs</a>
   </nav>
 </aside>
