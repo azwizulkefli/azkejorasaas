@@ -116,26 +116,46 @@ $modCls = ['general'=>'mod-general','einvoice'=>'mod-einvoice','booking'=>'mod-b
 :root{--ink:#131327;--bg:#F6F7FB;--brand:#5457e5;--violet:#8b5cf6;--muted:#64748b;--faint:#94a3b8;--line:#e2e8f0;--grad:linear-gradient(90deg,var(--brand),var(--violet));--card:0 1px 2px rgba(19,19,39,.06),0 12px 32px -16px rgba(19,19,39,.12)}
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink)}
 a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
+
+/* ---------- LOADING OVERLAY ---------- */
 .loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.92);backdrop-filter:blur(4px);display:none;place-items:center;z-index:9999}
 .loading-overlay.active{display:grid}
 .spinner-wrap{text-align:center}
 .spinner{width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner-text{margin-top:16px;font-size:13px;font-weight:600;color:var(--muted)}
+
+/* ---------- SIDEBAR ---------- */
+.sidebar{position:fixed;top:0;left:0;bottom:0;width:260px;background:#fff;border-right:1px solid var(--line);padding:24px 16px;z-index:30;transition:transform .3s ease;display:flex;flex-direction:column}
+.sidebar-brand{padding:0 8px 24px;border-bottom:1px solid var(--line);margin-bottom:16px}
+.sidebar-nav{display:flex;flex-direction:column;gap:4px}
+.menu-item{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:10px;font-size:14px;font-weight:600;color:var(--muted);text-decoration:none;transition:.15s}
+.menu-item:hover{background:#f8fafc;color:var(--ink)}
+.menu-item.active{background:var(--grad);color:#fff;box-shadow:0 4px 12px -4px rgba(84,87,229,.4)}
+.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);z-index:25}
+
+/* ---------- MAIN LAYOUT ---------- */
+.main-wrapper{margin-left:260px;min-height:100vh;display:flex;flex-direction:column}
 .topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10;gap:12px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
 .logo{width:36px;height:36px;border-radius:12px;background:var(--grad);color:#fff;display:grid;place-items:center}
 .brand em{font-style:normal;color:var(--brand)}
 .top-right{display:flex;align-items:center;gap:14px;font-size:13px;color:var(--muted)}
-.main{max-width:1200px;margin:0 auto;padding:32px 24px}
+.menu-toggle{display:none;background:none;border:none;font-size:22px;cursor:pointer;color:var(--ink);padding:4px}
+
+.main{max-width:1200px;margin:0 auto;padding:32px 24px;width:100%}
 h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .sub{color:var(--muted);font-size:14px;margin-top:4px}
 .banner{margin:16px 0 0;background:#d1fae5;color:#059669;border-radius:12px;padding:10px 16px;font-size:13px;font-weight:700}
+
+/* ---------- STATS ---------- */
 .stats3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin:28px 0}
 .stat{background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:var(--card)}
 .stat p{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
 .stat b{display:block;margin-top:8px;font-size:30px;font-weight:800}
 .stat .g{color:#059669}.stat .b{color:var(--brand)}.stat .r{color:#e11d48}
+
+/* ---------- SETTINGS ---------- */
 .set-card{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--card);margin-bottom:28px;overflow:hidden}
 .set-head{padding:16px 24px;border-bottom:1px solid #f1f5f9;font-weight:700;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .set-head small{color:var(--faint);font-weight:500}
@@ -149,6 +169,8 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .set-input:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.1)}
 .btn-save{background:var(--grad);color:#fff;border-radius:10px;padding:10px 18px;font-size:13px;font-weight:700}
 .btn-save:hover{opacity:.9}
+
+/* ---------- TABLE ---------- */
 .table-card{background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--card)}
 .toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 24px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap}
 .toolbar h3{font-weight:700}
@@ -178,9 +200,9 @@ tbody tr:hover{background:#f8fafc}
 .remaining{margin-top:4px;font-size:11px;font-weight:700;color:var(--brand)}
 .remaining.expired{color:#e11d48}
 .actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;align-items:center}
-.ibtn{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:14px;background:#f8fafc;border:1px solid var(--line);transition:.15s}
-.ibtn:hover{background:#e2e8f0}
-.ibtn.del:hover{background:#ffe4e6;border-color:#fecdd3}
+.ibtn{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:14px;background:#f8fafc;border:1px solid var(--line);transition:.15s;text-decoration:none;color:var(--muted)}
+.ibtn:hover{background:#e2e8f0;color:var(--ink)}
+.ibtn.del:hover{background:#ffe4e6;border-color:#fecdd3;color:#e11d48}
 .abtn{border-radius:8px;padding:7px 12px;font-size:11px;font-weight:700;transition:.15s}
 .abtn.trial{background:#f1f5f9;color:#475569}.abtn.trial:hover{background:#e2e8f0}
 .abtn.go{background:var(--grad);color:#fff}.abtn.go:hover{opacity:.9}
@@ -192,6 +214,8 @@ tbody tr:hover{background:#f8fafc}
 .pbtn:hover{background:#e2e8f0}.pbtn.off{opacity:.4;pointer-events:none}
 .pnum{border-radius:8px;padding:7px 11px;font-size:12px;font-weight:700;background:#fff;border:1px solid var(--line);color:#475569}
 .pnum.on{background:var(--grad);color:#fff;border-color:transparent}
+
+/* ---------- MODAL ---------- */
 .modal{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);padding:16px}
 .modal.open{display:grid}
 .modal-card{width:100%;max-width:420px;background:#fff;border-radius:20px;padding:28px;box-shadow:0 30px 80px -20px rgba(19,19,39,.4)}
@@ -203,8 +227,14 @@ tbody tr:hover{background:#f8fafc}
 .field input:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.1)}
 .mrow{display:flex;gap:10px;margin-top:20px}
 .mrow .btn-save{flex:1;text-align:center}.mrow .cancel{flex:1;background:#f1f5f9;color:#475569;border-radius:10px;font-size:13px;font-weight:700}
+
 /* ---------- RESPONSIVE ---------- */
 @media(max-width:900px){
+  .sidebar{transform:translateX(-100%)}
+  .sidebar.open{transform:translateX(0)}
+  .sidebar-overlay.open{display:block}
+  .main-wrapper{margin-left:0}
+  .menu-toggle{display:block}
   table{min-width:860px}
   th,td{padding:12px 16px}
 }
@@ -232,147 +262,172 @@ tbody tr:hover{background:#f8fafc}
   </div>
 </div>
 
-<nav class="topbar">
-  <span class="brand"><span class="logo">⚡</span>AZ Kejora <em>Admin</em></span>
-  <div class="top-right"><span>Logged in as <b><?= htmlspecialchars($_SESSION['user_name']) ?></b></span><a class="btn-out" href="login.php?logout=1">Sign out</a></div>
-</nav>
-<main class="main">
-  <h1>Subscriber Management</h1>
-  <p class="sub">Default trial period: <b><?= $trialHours ?> hour(s)</b> — configurable in Platform Settings below. Passed trials/periods auto-flip to <b>expired</b>.</p>
-  <?php if (isset($_GET['saved'])): ?><div class="banner">✔ Settings saved successfully.</div><?php endif; ?>
-  <?php if (isset($_GET['deleted'])): ?><div class="banner" style="background:#ffe4e6;color:#e11d48">🗑️ Subscriber and all related data deleted.</div><?php endif; ?>
-
-  <div class="stats3">
-    <div class="stat"><p>Active Subscriptions</p><b class="g"><?= $stats['active_subs'] ?></b></div>
-    <div class="stat"><p>Active Trials</p><b class="b"><?= $stats['trials'] ?></b></div>
-    <div class="stat"><p>Past Due / Expired</p><b class="r"><?= $stats['past_due'] ?></b></div>
+<!-- ============ SIDEBAR ============ -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <span class="brand"><span class="logo">⚡</span>AZ Kejora <em>Admin</em></span>
   </div>
+  <nav class="sidebar-nav">
+    <a href="admin.php" class="menu-item active">📊 Dashboard</a>
+    <a href="admin_company.php" class="menu-item">🏢 Company</a>
+    <a href="admin_users.php" class="menu-item">👥 Admins</a>
+    <a href="admin_log.php" class="menu-item">📜 Logs</a>
+  </nav>
+</aside>
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
 
-  <form method="POST" class="set-card action-form">
-    <input type="hidden" name="action" value="save_settings">
-    <div class="set-head"><span>Platform Settings</span><small>Module-based configuration store · <code>settings(module, key, value)</code></small><button class="btn-save">Save settings</button></div>
-    <div class="set-body">
-      <?php foreach ($groups as $module => $items): ?>
-        <?php foreach ($items as $s): ?>
-        <div class="set-row">
-          <span class="mod-chip <?= $modCls[$module] ?? '' ?>"><?= htmlspecialchars($module) ?></span>
-          <div class="set-label"><b><?= htmlspecialchars($s['label'] ?: $s['key']) ?></b><small><?= htmlspecialchars($s['hint'] ?? '') ?></small></div>
-          <input class="set-input" type="text" name="setting[<?= htmlspecialchars($module) ?>][<?= htmlspecialchars($s['key']) ?>]" value="<?= htmlspecialchars($s['value']) ?>">
-        </div>
-        <?php endforeach; ?>
-      <?php endforeach; ?>
+<!-- ============ MAIN WRAPPER ============ -->
+<div class="main-wrapper">
+  <nav class="topbar">
+    <div style="display:flex;align-items:center;gap:12px">
+      <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+      <span class="brand"><span class="logo">⚡</span>AZ Kejora <em>Admin</em></span>
     </div>
-  </form>
+    <div class="top-right">
+      <span>Logged in as <b><?= htmlspecialchars($_SESSION['user_name']) ?></b></span>
+      <a class="btn-out" href="login.php?logout=1">Sign out</a>
+    </div>
+  </nav>
 
-  <div class="table-card">
-    <form method="GET" class="toolbar">
-      <h3>All Subscribers <span><?= $total ?> record(s)<?= $q ? ' · filtered by "'.htmlspecialchars($q).'"' : '' ?></span></h3>
-      <div class="search">
-        <input class="search-in" type="text" name="q" placeholder="Search name or email…" value="<?= htmlspecialchars($q) ?>">
-        <button class="search-btn">Search</button>
-        <?php if ($q): ?><a class="clear-btn" href="admin.php">Clear</a><?php endif; ?>
+  <main class="main">
+    <h1>Subscriber Management</h1>
+    <p class="sub">Default trial period: <b><?= $trialHours ?> hour(s)</b> — configurable in Platform Settings below. Passed trials/periods auto-flip to <b>expired</b>.</p>
+    <?php if (isset($_GET['saved'])): ?><div class="banner">✔ Settings saved successfully.</div><?php endif; ?>
+    <?php if (isset($_GET['deleted'])): ?><div class="banner" style="background:#ffe4e6;color:#e11d48">🗑️ Subscriber and all related data deleted.</div><?php endif; ?>
+
+    <div class="stats3">
+      <div class="stat"><p>Active Subscriptions</p><b class="g"><?= $stats['active_subs'] ?></b></div>
+      <div class="stat"><p>Active Trials</p><b class="b"><?= $stats['trials'] ?></b></div>
+      <div class="stat"><p>Past Due / Expired</p><b class="r"><?= $stats['past_due'] ?></b></div>
+    </div>
+
+    <form method="POST" class="set-card action-form">
+      <input type="hidden" name="action" value="save_settings">
+      <div class="set-head"><span>Platform Settings</span><small>Module-based configuration store · <code>settings(module, key, value)</code></small><button class="btn-save">Save settings</button></div>
+      <div class="set-body">
+        <?php foreach ($groups as $module => $items): ?>
+          <?php foreach ($items as $s): ?>
+          <div class="set-row">
+            <span class="mod-chip <?= $modCls[$module] ?? '' ?>"><?= htmlspecialchars($module) ?></span>
+            <div class="set-label"><b><?= htmlspecialchars($s['label'] ?: $s['key']) ?></b><small><?= htmlspecialchars($s['hint'] ?? '') ?></small></div>
+            <input class="set-input" type="text" name="setting[<?= htmlspecialchars($module) ?>][<?= htmlspecialchars($s['key']) ?>]" value="<?= htmlspecialchars($s['value']) ?>">
+          </div>
+          <?php endforeach; ?>
+        <?php endforeach; ?>
       </div>
     </form>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Customer</th><th>Plan / Status</th><th>Start</th><th>Expiry</th><th>Total Sale</th><th style="text-align:right">Actions</th></tr></thead>
-      <tbody>
-      <?php foreach ($rows as $s):
-        $st = $s['status'] ?? 'none';
-        $now = new DateTime();
-        $expiryDate = null;
-        $remainingText = '';
-        $remainingClass = '';
 
-        if ($st === 'active_trial' && $s['trial_ends_at']) {
-            $expiryDate = new DateTime($s['trial_ends_at']);
-        } elseif ($s['period_ends_at']) {
-            $expiryDate = new DateTime($s['period_ends_at']);
-        }
+    <div class="table-card">
+      <form method="GET" class="toolbar">
+        <h3>All Subscribers <span><?= $total ?> record(s)<?= $q ? ' · filtered by "'.htmlspecialchars($q).'"' : '' ?></span></h3>
+        <div class="search">
+          <input class="search-in" type="text" name="q" placeholder="Search name or email…" value="<?= htmlspecialchars($q) ?>">
+          <button class="search-btn">Search</button>
+          <?php if ($q): ?><a class="clear-btn" href="admin.php">Clear</a><?php endif; ?>
+        </div>
+      </form>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Customer</th><th>Plan / Status</th><th>Start</th><th>Expiry</th><th>Total Sale</th><th style="text-align:right">Actions</th></tr></thead>
+        <tbody>
+        <?php foreach ($rows as $s):
+          $st = $s['status'] ?? 'none';
+          $now = new DateTime();
+          $expiryDate = null;
+          $remainingText = '';
+          $remainingClass = '';
 
-        if ($expiryDate) {
-            $diff = $now->diff($expiryDate);
-            if ($now > $expiryDate) {
-                $remainingText = 'Expired';
-                $remainingClass = 'expired';
-            } else {
-                $remainingText = $diff->days > 0 ? "{$diff->days}d {$diff->h}h left" : "{$diff->h}h {$diff->i}m left";
-            }
-        }
-      ?>
-        <tr data-id="<?= $s['id'] ?>" data-name="<?= htmlspecialchars($s['name'], ENT_QUOTES) ?>" data-email="<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>">
-          <!-- 1 · CUSTOMER -->
-          <td class="name"><b><?= htmlspecialchars($s['name']) ?></b><div class="email"><?= htmlspecialchars($s['email']) ?></div></td>
+          if ($st === 'active_trial' && $s['trial_ends_at']) {
+              $expiryDate = new DateTime($s['trial_ends_at']);
+          } elseif ($s['period_ends_at']) {
+              $expiryDate = new DateTime($s['period_ends_at']);
+          }
 
-          <!-- 2 · PLAN + STATUS (combined) -->
-          <td>
-            <div class="plan-line"><?= $s['plan'] ?: 'No Plan' ?> <span style="color:var(--faint);font-weight:500">(RM <?= $s['price'] ?>)</span></div>
-            <span class="badge <?= htmlspecialchars($st) ?>"><?= htmlspecialchars($st) ?></span>
-          </td>
+          if ($expiryDate) {
+              $diff = $now->diff($expiryDate);
+              if ($now > $expiryDate) {
+                  $remainingText = 'Expired';
+                  $remainingClass = 'expired';
+              } else {
+                  $remainingText = $diff->days > 0 ? "{$diff->days}d {$diff->h}h left" : "{$diff->h}h {$diff->i}m left";
+              }
+          }
+        ?>
+          <tr data-id="<?= $s['id'] ?>" data-name="<?= htmlspecialchars($s['name'], ENT_QUOTES) ?>" data-email="<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>">
+            <!-- 1 · CUSTOMER -->
+            <td class="name"><b><?= htmlspecialchars($s['name']) ?></b><div class="email"><?= htmlspecialchars($s['email']) ?></div></td>
 
-          <!-- 3 · START -->
-          <td class="date-pair">
-            <span><small>Registered:</small> <b class="mono"><?= $s['created_at'] ? date('M d, Y', strtotime($s['created_at'])) : '—' ?></b></span>
-            <span><small>Payment:</small> <b class="mono"><?= $s['first_payment'] ? date('M d, Y', strtotime($s['first_payment'])) : '—' ?></b></span>
-          </td>
+            <!-- 2 · PLAN + STATUS (combined) -->
+            <td>
+              <div class="plan-line"><?= $s['plan'] ?: 'No Plan' ?> <span style="color:var(--faint);font-weight:500">(RM <?= $s['price'] ?>)</span></div>
+              <span class="badge <?= htmlspecialchars($st) ?>"><?= htmlspecialchars($st) ?></span>
+            </td>
 
-          <td class="date-pair">&nbsp;</td>
-          
-          <!-- 4 · EXPIRY -->
-          <td class="sale">
-            <?php if ($expiryDate): ?>
-              <span><b class="mono"><?php
-                if ($st === 'active_trial') echo '⏱ ' . $expiryDate->format('M d, H:i');
-                else echo $expiryDate->format('M d, Y');
-              ?></b></span>
-              <?php if ($remainingText): ?>
-                <span class="remaining <?= $remainingClass ?>"><?= $remainingText ?></span>
+            <!-- 3 · START -->
+            <td class="date-pair">
+              <span><small>Registered:</small> <b class="mono"><?= $s['created_at'] ? date('M d, Y', strtotime($s['created_at'])) : '—' ?></b></span>
+              <span><small>Payment:</small> <b class="mono"><?= $s['first_payment'] ? date('M d, Y', strtotime($s['first_payment'])) : '—' ?></b></span>
+            </td>
+
+            <td class="date-pair">&nbsp;</td>
+            
+            <!-- 4 · EXPIRY -->
+            <td class="sale">
+              <?php if ($expiryDate): ?>
+                <span><b class="mono"><?php
+                  if ($st === 'active_trial') echo '⏱ ' . $expiryDate->format('M d, H:i');
+                  else echo $expiryDate->format('M d, Y');
+                ?></b></span>
+                <?php if ($remainingText): ?>
+                  <span class="remaining <?= $remainingClass ?>"><?= $remainingText ?></span>
+                <?php endif; ?>
+              <?php else: ?>
+                <span class="mono">—</span>
               <?php endif; ?>
-            <?php else: ?>
-              <span class="mono">—</span>
-            <?php endif; ?>
-          </td>
+            </td>
 
-          <!-- 5 · TOTAL SALE -->          
-          <td class="sale">RM <?= number_format((float)$s['total_sale'], 0) ?></td>
+            <!-- 5 · TOTAL SALE -->          
+            <td class="sale">RM <?= number_format((float)$s['total_sale'], 0) ?></td>
 
-          <!-- 6 · ACTIONS -->
-          <td><div class="actions">
-            <button class="ibtn" data-edit title="Edit profile">✏️</button>
-            <button class="ibtn" title="Impersonate (coming soon)" onclick="impersonate('<?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?>')">🎭</button>
-            <form method="POST" class="action-form" onsubmit="return confirm('Permanently delete <?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?> (<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>) and ALL related bookings, transactions & invoices?\nThis cannot be undone.')">
-              <input type="hidden" name="action" value="delete_user">
-              <input type="hidden" name="user_id" value="<?= $s['id'] ?>">
-              <button class="ibtn del" title="Delete user + related data (testing)">🗑️</button>
-            </form>
-            <?php if (in_array($st, ['active_trial','suspended','past_due','expired','none'])): ?>
-              <form method="POST" class="action-form"><input type="hidden" name="action" value="extend_trial"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
-              <button class="abtn trial" title="Reset trial to configured default">⏱ +<?= $trialHours ?>h</button></form>
-            <?php endif; ?>
-            <?php if ($st !== 'active'): ?>
-              <form method="POST" class="action-form"><input type="hidden" name="action" value="activate"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
-              <button class="abtn go">Activate (90d)</button></form>
-            <?php else: ?>
-              <form method="POST" class="action-form"><input type="hidden" name="action" value="suspend"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
-              <button class="abtn stop">Suspend</button></form>
-            <?php endif; ?>
-          </div></td>
-        </tr>
-      <?php endforeach; ?>
-      <?php if (!$rows): ?><tr><td colspan="6" style="text-align:center;padding:40px">No subscribers match your search.</td></tr><?php endif; ?>
-      </tbody>
-    </table></div>
-    <div class="pager">
-      <span>Showing <?= $total ? $offset + 1 : 0 ?>–<?= min($offset + $perPage, $total) ?> of <?= $total ?></span>
-      <nav>
-        <a class="pbtn <?= $page <= 1 ? 'off' : '' ?>" href="?page=<?= $page - 1 ?>&q=<?= urlencode($q) ?>">← Prev</a>
-        <?php for ($i = 1; $i <= $pages; $i++): ?>
-          <a class="pnum <?= $i === $page ? 'on' : '' ?>" href="?page=<?= $i ?>&q=<?= urlencode($q) ?>"><?= $i ?></a>
-        <?php endfor; ?>
-        <a class="pbtn <?= $page >= $pages ? 'off' : '' ?>" href="?page=<?= $page + 1 ?>&q=<?= urlencode($q) ?>">Next →</a>
-      </nav>
+            <!-- 6 · ACTIONS -->
+            <td><div class="actions">
+              <button class="ibtn" data-edit title="Edit profile">✏️</button>
+              <a href="admin_company.php?user_id=<?= $s['id'] ?>" class="ibtn" title="Update subscriber company">🏢</a>
+              <button class="ibtn" title="Impersonate (coming soon)" onclick="impersonate('<?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?>')">🎭</button>
+              <form method="POST" class="action-form" onsubmit="return confirm('Permanently delete <?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?> (<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>) and ALL related bookings, transactions & invoices?\nThis cannot be undone.')">
+                <input type="hidden" name="action" value="delete_user">
+                <input type="hidden" name="user_id" value="<?= $s['id'] ?>">
+                <button class="ibtn del" title="Delete user + related data (testing)">🗑️</button>
+              </form>
+              <?php if (in_array($st, ['active_trial','suspended','past_due','expired','none'])): ?>
+                <form method="POST" class="action-form"><input type="hidden" name="action" value="extend_trial"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
+                <button class="abtn trial" title="Reset trial to configured default">⏱ +<?= $trialHours ?>h</button></form>
+              <?php endif; ?>
+              <?php if ($st !== 'active'): ?>
+                <form method="POST" class="action-form"><input type="hidden" name="action" value="activate"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
+                <button class="abtn go">Activate (90d)</button></form>
+              <?php else: ?>
+                <form method="POST" class="action-form"><input type="hidden" name="action" value="suspend"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
+                <button class="abtn stop">Suspend</button></form>
+              <?php endif; ?>
+            </div></td>
+          </tr>
+        <?php endforeach; ?>
+        <?php if (!$rows): ?><tr><td colspan="6" style="text-align:center;padding:40px">No subscribers match your search.</td></tr><?php endif; ?>
+        </tbody>
+      </table></div>
+      <div class="pager">
+        <span>Showing <?= $total ? $offset + 1 : 0 ?>–<?= min($offset + $perPage, $total) ?> of <?= $total ?></span>
+        <nav>
+          <a class="pbtn <?= $page <= 1 ? 'off' : '' ?>" href="?page=<?= $page - 1 ?>&q=<?= urlencode($q) ?>">← Prev</a>
+          <?php for ($i = 1; $i <= $pages; $i++): ?>
+            <a class="pnum <?= $i === $page ? 'on' : '' ?>" href="?page=<?= $i ?>&q=<?= urlencode($q) ?>"><?= $i ?></a>
+          <?php endfor; ?>
+          <a class="pbtn <?= $page >= $pages ? 'off' : '' ?>" href="?page=<?= $page + 1 ?>&q=<?= urlencode($q) ?>">Next →</a>
+        </nav>
+      </div>
     </div>
-  </div>
-</main>
+  </main>
+</div>
 
 <div class="modal" id="editModal">
   <form method="POST" class="modal-card action-form">
@@ -398,6 +453,11 @@ document.querySelectorAll('button[data-edit]').forEach(b => b.addEventListener('
   modal.classList.add('open');
 }));
 function impersonate(name){ alert('🎭 Impersonation for "' + name + '" is planned — module not built yet.'); }
+
+function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('open');
+    document.getElementById('sidebarOverlay').classList.toggle('open');
+}
 
 const overlay = document.getElementById('loadingOverlay');
 document.querySelectorAll('form').forEach(form => {
