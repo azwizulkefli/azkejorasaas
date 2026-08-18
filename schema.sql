@@ -258,3 +258,19 @@ CREATE TABLE IF NOT EXISTS subscriber_users (
 
 CREATE INDEX IF NOT EXISTS idx_sub_users_owner ON subscriber_users(owner_id);
 CREATE INDEX IF NOT EXISTS idx_sub_users_role  ON subscriber_users(owner_id, role);
+
+-- Add payment-related columns to subscriptions table
+ALTER TABLE public.subscriptions
+  ADD COLUMN IF NOT EXISTS receipt_no    VARCHAR(50),
+  ADD COLUMN IF NOT EXISTS payment_date  TIMESTAMP WITH TIME ZONE,
+  ADD COLUMN IF NOT EXISTS payment_type  VARCHAR(50),
+  ADD COLUMN IF NOT EXISTS ref_no        VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS bank          VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS amount        NUMERIC(10,2);
+
+-- Optional: add indexes for common lookups
+CREATE INDEX IF NOT EXISTS idx_subs_user_payment_date 
+  ON public.subscriptions (user_id, payment_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_subs_receipt 
+  ON public.subscriptions (receipt_no);
