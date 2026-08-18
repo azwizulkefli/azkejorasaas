@@ -201,3 +201,30 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS ei_url_prod    VARCHAR(255) NOT NULL 
 -- 3) OAuth token storage + last token date
 ALTER TABLE users ADD COLUMN IF NOT EXISTS ei_token TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS ei_token_at TIMESTAMP WITH TIME ZONE;
+
+-- 1. Platform Admin Company Profile (For AZ Kejora's own business details)
+CREATE TABLE IF NOT EXISTS admin_company (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL DEFAULT 'AZ Kejora SaaS',
+    registration_no VARCHAR(100),
+    address TEXT,
+    postcode VARCHAR(20),
+    state VARCHAR(100),
+    town VARCHAR(100),
+    email VARCHAR(255),
+    phone VARCHAR(50),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+INSERT INTO admin_company (name) VALUES ('AZ Kejora SaaS') ON CONFLICT DO NOTHING;
+
+-- 2. Admin Users Management (Dedicated table for platform administrators)
+CREATE TABLE IF NOT EXISTS admin_users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255),
+    role VARCHAR(50) DEFAULT 'admin',
+    status VARCHAR(50) DEFAULT 'active',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    last_login TIMESTAMP WITH TIME ZONE
+);
