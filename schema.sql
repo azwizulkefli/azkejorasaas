@@ -239,3 +239,22 @@ CREATE TABLE IF NOT EXISTS activity_logs (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_activity_user ON activity_logs(user_id, created_at DESC);
+
+-- Subscriber Users Management (sub-users under the main customer account)
+CREATE TABLE IF NOT EXISTS subscriber_users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    phone VARCHAR(50),
+    role VARCHAR(20) NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+    position VARCHAR(100),
+    password_hash VARCHAR(255),
+    status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(owner_id, email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sub_users_owner ON subscriber_users(owner_id);
+CREATE INDEX IF NOT EXISTS idx_sub_users_role  ON subscriber_users(owner_id, role);
