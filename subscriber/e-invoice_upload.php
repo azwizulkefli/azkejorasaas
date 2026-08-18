@@ -8,47 +8,57 @@ ensure_settings_table($pdo);
 $uid = currentUserId();
 $me  = currentUser();
 
-// Handle file upload
+/* ================= HANDLE FILE UPLOAD (batch-optimized) ================= */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
+    set_time_limit(600);                 // allow long imports
+    ini_set('memory_limit', '512M');     // headroom for big files
+
     $uploadDir = __DIR__ . '/../storage/uploads/';
     if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
-    
+
     $file = $_FILES['invoice_file'];
     if ($file['error'] === UPLOAD_ERR_OK) {
         $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
         $allowed = ['csv', 'xlsx', 'xls'];
-        
+
         if (in_array($ext, $allowed)) {
             $filename = $uid . '_' . time() . '.' . $ext;
             $filePath = $uploadDir . $filename;
-            
+
             if (move_uploaded_file($file['tmp_name'], $filePath)) {
-                // Parse file
                 $result = parseInvoiceFile($filePath);
-                
+
                 if ($result['success']) {
-                    // ✅ FIX 1: Create upload record using fetchColumn()
-                    $stmtUpload = $pdo->prepare("INSERT INTO einvoice_uploads (user_id, filename, file_path, total_records, status)
-                                   VALUES (?, ?, ?, ?, 'processing') RETURNING id");
-                    $stmtUpload->execute([$uid, $file['name'], $filename, count($result['rows'])]);
-                    $uploadId = $stmtUpload->fetchColumn();
-                    
-                    // Validate and insert records
-                    $validCount = 0;
-                    $invalidCount = 0;
-                    
-                    foreach ($result['rows'] as $row) {
-                        $validation = validateInvoiceRecord($row);
-                        $status = $validation['valid'] ? 'valid' : 'invalid';
-                        $errors = $validation['valid'] ? null : json_encode($validation['errors']);
-                        
-                        $pdo->prepare("INSERT INTO einvoice_records 
+                    if (empty($result['rows'])) {
+                        header("Location: e-invoice_upload.php?err=" . urlencode('File contains no data rows.'));
+                        exit;
+                    }
+
+                    $pdo->beginTransaction();
+                    try {
+                        // Create upload record (UUID-safe)
+                        $stmtUpload = $pdo->prepare("INSERT INTO einvoice_uploads (user_id, filename, file_path, total_records, status)
+                                       VALUES (?, ?, ?, ?, 'processing') RETURNING id");
+                        $stmtUpload->execute([$uid, $file['name'], $filename, count($result['rows'])]);
+                        $uploadId = $stmtUpload->fetchColumn();
+
+                        // ✅ PREPARE ONCE, execute many (fast for 5,000+ rows) inside ONE transaction
+                        $insertRec = $pdo->prepare("INSERT INTO einvoice_records 
                             (upload_id, user_id, document_type, sale_no, customer_name, customer_address,
                              customer_postcode, customer_phone, customer_email, customer_ic, customer_type,
                              sale_title, sale_amount, sale_tax, total_amount, sale_datetime,
                              validation_status, validation_errors)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                            ->execute([
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+
+                        $validCount = 0; $invalidCount = 0;
+
+                        foreach ($result['rows'] as $row) {
+                            $row = normalizeInvoiceRecord($row);          // fixes "1" → "01"
+                            $validation = validateInvoiceRecord($row);
+                            $status = $validation['valid'] ? 'valid' : 'invalid';
+                            $errors = $validation['valid'] ? null : json_encode($validation['errors']);
+
+                            $insertRec->execute([
                                 $uploadId, $uid,
                                 $row['document_type'] ?? '01',
                                 $row['sale_no'] ?? '',
@@ -67,15 +77,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                                 $status,
                                 $errors
                             ]);
-                        
-                        if ($validation['valid']) $validCount++;
-                        else $invalidCount++;
+
+                            $validation['valid'] ? $validCount++ : $invalidCount++;
+                        }
+
+                        $pdo->prepare("UPDATE einvoice_uploads SET valid_records = ?, invalid_records = ?, status = 'completed' WHERE id = ?")
+                            ->execute([$validCount, $invalidCount, $uploadId]);
+
+                        $pdo->commit();
+                    } catch (Throwable $e) {
+                        $pdo->rollBack();
+                        header("Location: e-invoice_upload.php?err=" . urlencode('Upload failed: ' . $e->getMessage()));
+                        exit;
                     }
-                    
-                    // Update upload status
-                    $pdo->prepare("UPDATE einvoice_uploads SET valid_records = ?, invalid_records = ?, status = 'completed' WHERE id = ?")
-                        ->execute([$validCount, $invalidCount, $uploadId]);
-                    
+
                     header("Location: e-invoice_upload.php?upload=" . $uploadId);
                     exit;
                 } else {
@@ -90,75 +105,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
     }
 }
 
-// Handle submission
+/* ================= HANDLE SUBMISSIONS ================= */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+
     if ($_POST['action'] === 'submit_individual') {
+        set_time_limit(600);
         $recordIds = $_POST['record_ids'] ?? [];
-        $submitted = 0;
-        $failed = 0;
-        
+        $submitted = 0; $failed = 0;
+
         foreach ($recordIds as $recordId) {
-            // Get record
             $stmt = $pdo->prepare("SELECT * FROM einvoice_records WHERE id = ? AND user_id = ?");
             $stmt->execute([$recordId, $uid]);
             $record = $stmt->fetch();
-            
+
             if ($record) {
                 $result = submitToLHDN($pdo, $uid, $record);
-                
-                // Log submission
+
                 $pdo->prepare("INSERT INTO einvoice_submissions 
                     (user_id, record_id, submission_type, lhdn_uuid, submission_datetime, status, api_response, error_message)
                     VALUES (?, ?, 'individual', ?, NOW(), ?, ?, ?)")
                     ->execute([
-                        $uid,
-                        $recordId,
+                        $uid, $recordId,
                         $result['response']['submissionUUID'] ?? null,
                         $result['success'] ? 'submitted' : 'failed',
                         json_encode($result['response'] ?? []),
                         $result['error'] ?? null
                     ]);
-                
-                // Update record status
+
                 $pdo->prepare("UPDATE einvoice_records SET submission_status = ? WHERE id = ?")
                     ->execute([$result['success'] ? 'submitted' : 'failed', $recordId]);
-                
-                if ($result['success']) $submitted++;
-                else $failed++;
+
+                $result['success'] ? $submitted++ : $failed++;
             }
         }
-        
+
         header("Location: e-invoice_upload.php?submitted=individual&count=$submitted&failed=$failed");
         exit;
     }
-    
+
     if ($_POST['action'] === 'submit_consolidated') {
         $date = $_POST['consolidate_date'] ?? date('Y-m-d');
-        
-        // Get all valid records for this date
+
         $stmt = $pdo->prepare("SELECT * FROM einvoice_records 
             WHERE user_id = ? AND DATE(sale_datetime) = ? AND validation_status = 'valid' AND submission_status = 'pending'");
         $stmt->execute([$uid, $date]);
         $records = $stmt->fetchAll();
-        
+
         if (empty($records)) {
-            header("Location: e-invoice_upload.php?err=" . urlencode('No valid records for this date'));
+            header("Location: e-invoice_upload.php?err=" . urlencode('No valid pending records for this date'));
             exit;
         }
-        
-        // Calculate totals
+
         $totalAmount = array_sum(array_column($records, 'sale_amount'));
-        $totalTax = array_sum(array_column($records, 'sale_tax'));
-        $grandTotal = array_sum(array_column($records, 'total_amount'));
-        
-        // ✅ FIX 2: Create consolidated record using fetchColumn()
+        $totalTax    = array_sum(array_column($records, 'sale_tax'));
+        $grandTotal  = array_sum(array_column($records, 'total_amount'));
+
         $stmtConsol = $pdo->prepare("INSERT INTO einvoice_consolidated 
             (user_id, sale_date, total_records, total_amount, total_tax, grand_total, submission_status)
             VALUES (?, ?, ?, ?, ?, ?, 'pending') RETURNING id");
         $stmtConsol->execute([$uid, $date, count($records), $totalAmount, $totalTax, $grandTotal]);
         $consolidatedId = $stmtConsol->fetchColumn();
-        
-        // Submit consolidated invoice
+
         $consolidatedData = [
             'document_type' => '01',
             'sale_no' => 'CONSOL-' . $date . '-' . substr($uid, 0, 8),
@@ -175,53 +182,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             'total_amount' => $grandTotal,
             'sale_datetime' => $date . ' 23:59:59'
         ];
-        
+
         $result = submitToLHDN($pdo, $uid, $consolidatedData);
-        
-        // Log submission
+
         $pdo->prepare("INSERT INTO einvoice_submissions 
             (user_id, consolidated_id, submission_type, lhdn_uuid, submission_datetime, status, api_response, error_message)
             VALUES (?, ?, 'consolidated', ?, NOW(), ?, ?, ?)")
             ->execute([
-                $uid,
-                $consolidatedId,
+                $uid, $consolidatedId,
                 $result['response']['submissionUUID'] ?? null,
                 $result['success'] ? 'submitted' : 'failed',
                 json_encode($result['response'] ?? []),
                 $result['error'] ?? null
             ]);
-        
-        // Update consolidated status
+
         $pdo->prepare("UPDATE einvoice_consolidated SET submission_status = ? WHERE id = ?")
             ->execute([$result['success'] ? 'submitted' : 'failed', $consolidatedId]);
-        
-        // Mark all records as submitted
+
         foreach ($records as $record) {
             $pdo->prepare("UPDATE einvoice_records SET submission_status = 'consolidated' WHERE id = ?")
                 ->execute([$record['id']]);
         }
-        
+
         header("Location: e-invoice_upload.php?submitted=consolidated&status=" . ($result['success'] ? 'success' : 'failed'));
         exit;
     }
 }
 
-// Load data
+/* ================= LOAD DATA ================= */
 $uploads = $pdo->prepare("SELECT * FROM einvoice_uploads WHERE user_id = ? ORDER BY created_at DESC LIMIT 10");
 $uploads->execute([$uid]);
 $uploadsList = $uploads->fetchAll();
 
-$currentUpload = null;
-$records = [];
+$currentUpload = null; $records = [];
+$recTotal = 0; $recPage = 1; $recPerPage = 100; $recPages = 1; $recOffset = 0;
+$agg = ['valid' => 0, 'invalid' => 0, 'amount' => 0, 'submittable' => 0];
+
 if (isset($_GET['upload'])) {
     $stmt = $pdo->prepare("SELECT * FROM einvoice_uploads WHERE id = ? AND user_id = ?");
     $stmt->execute([$_GET['upload'], $uid]);
     $currentUpload = $stmt->fetch();
-    
+
     if ($currentUpload) {
-        $stmt = $pdo->prepare("SELECT * FROM einvoice_records WHERE upload_id = ? ORDER BY created_at");
-        $stmt->execute([$_GET['upload']]);
-        $records = $stmt->fetchAll();
+        // Aggregates via SQL (no need to load all rows)
+        $a = $pdo->prepare("SELECT 
+                COUNT(*) FILTER (WHERE validation_status='valid') AS valid,
+                COUNT(*) FILTER (WHERE validation_status='invalid') AS invalid,
+                COALESCE(SUM(total_amount),0) AS amount,
+                COUNT(*) FILTER (WHERE validation_status='valid' AND submission_status='pending') AS submittable
+            FROM einvoice_records WHERE upload_id = ?");
+        $a->execute([$currentUpload['id']]);
+        $agg = $a->fetch();
+
+        // ✅ Paginated records (100/page) — handles 5,000+ rows smoothly
+        $recTotal   = (int)$currentUpload['total_records'];
+        $recPage    = max(1, (int)($_GET['rpage'] ?? 1));
+        $recPages   = max(1, (int)ceil($recTotal / $recPerPage));
+        $recPage    = min($recPage, $recPages);
+        $recOffset  = ($recPage - 1) * $recPerPage;
+
+        $r = $pdo->prepare("SELECT * FROM einvoice_records WHERE upload_id = ? ORDER BY sale_no LIMIT $recPerPage OFFSET $recOffset");
+        $r->execute([$currentUpload['id']]);
+        $records = $r->fetchAll();
     }
 }
 
@@ -301,11 +323,13 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .btn.ghost{background:#f1f5f9;color:#475569}
 .btn.ghost:hover{background:#e2e8f0}
 .btn.success{background:#d1fae5;color:#059669}
+.btn.warn{background:#fef3c7;color:#d97706}
 
 table{width:100%;border-collapse:collapse;font-size:14px}
 th{padding:12px 16px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}
-td{padding:12px 16px;border-bottom:1px solid #f1f5f9;color:var(--muted);vertical-align:middle}
+td{padding:12px 16px;border-bottom:1px solid #f1f5f9;color:var(--muted);vertical-align:top}
 tbody tr:hover{background:#f8fafc}
+.err-text{color:#e11d48;font-size:11px;font-weight:600;line-height:1.5}
 
 .badge{display:inline-block;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
 .badge.valid{background:#d1fae5;color:#059669}
@@ -322,6 +346,18 @@ tbody tr:hover{background:#f8fafc}
 
 .action-bar{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap}
 .checkbox-label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
+
+.submit-box{margin-top:20px;background:#f5f6ff;border:1px solid #c6ceff;border-radius:16px;padding:20px}
+.submit-box h3{font-size:16px;font-weight:700;margin-bottom:6px}
+.submit-box p{font-size:13px;color:var(--muted);margin-bottom:16px}
+.submit-row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.field-sm label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.field-sm input{padding:9px 14px;border:1px solid var(--line);border-radius:10px;font-size:14px}
+
+.pager-rec{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0 0;font-size:13px;color:var(--muted);flex-wrap:wrap}
+.pager-rec nav{display:flex;gap:8px}
+.pbtn{border-radius:8px;padding:7px 14px;font-size:12px;font-weight:700;background:#f1f5f9;color:#475569;text-decoration:none}
+.pbtn:hover{background:#e2e8f0}.pbtn.off{opacity:.4;pointer-events:none}
 
 @media(max-width:900px){
   .sidebar{transform:translateX(-100%)}
@@ -385,7 +421,7 @@ tbody tr:hover{background:#f8fafc}
     <?php if (isset($_GET['err'])): ?>
       <div class="banner error">✗ <?= htmlspecialchars($_GET['err']) ?></div>
     <?php endif; ?>
-    
+
     <?php if (isset($_GET['submitted'])): ?>
       <?php if ($_GET['submitted'] === 'individual'): ?>
         <div class="banner success">✓ Submitted <?= (int)$_GET['count'] ?> invoice(s)<?= (int)$_GET['failed'] > 0 ? ', ' . (int)$_GET['failed'] . ' failed' : '' ?>.</div>
@@ -407,12 +443,12 @@ tbody tr:hover{background:#f8fafc}
       <div class="step">
         <div class="step-num">2</div>
         <h3>Fill Your Data</h3>
-        <p>Add your invoice records to the template. Ensure all mandatory fields are filled.</p>
+        <p>Add your invoice records. Ensure all mandatory fields are filled correctly.</p>
       </div>
       <div class="step">
         <div class="step-num">3</div>
         <h3>Upload & Submit</h3>
-        <p>Upload the completed file, validate, and submit to LHDN MyInvois.</p>
+        <p>Upload the file, review validation, then submit to LHDN MyInvois.</p>
       </div>
     </div>
 
@@ -420,8 +456,8 @@ tbody tr:hover{background:#f8fafc}
       <!-- Upload form -->
       <div class="card">
         <h2>Upload Invoice File</h2>
-        <p class="msub">Select your completed Excel or CSV file to begin validation.</p>
-        
+        <p class="msub">Select your completed Excel or CSV file to begin validation. Supports large files (5,000+ rows).</p>
+
         <form method="POST" enctype="multipart/form-data" id="uploadForm">
           <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
             <div class="upload-icon">📤</div>
@@ -450,15 +486,7 @@ tbody tr:hover{background:#f8fafc}
           <p class="msub">Your last 10 uploaded files.</p>
           <table>
             <thead>
-              <tr>
-                <th>Filename</th>
-                <th>Date</th>
-                <th>Total</th>
-                <th>Valid</th>
-                <th>Invalid</th>
-                <th>Status</th>
-                <th>Action</th>
-              </tr>
+              <tr><th>Filename</th><th>Date</th><th>Total</th><th>Valid</th><th>Invalid</th><th>Status</th><th>Action</th></tr>
             </thead>
             <tbody>
               <?php foreach ($uploadsList as $up): ?>
@@ -478,51 +506,66 @@ tbody tr:hover{background:#f8fafc}
       <?php endif; ?>
 
     <?php else: ?>
-      <!-- Validation results -->
+      <!-- ============ VALIDATION RESULTS ============ -->
       <div class="card">
         <h2>Validation Results</h2>
         <p class="msub"><?= htmlspecialchars($currentUpload['filename']) ?> · Uploaded <?= date('M d, H:i', strtotime($currentUpload['created_at'])) ?></p>
-        
+
         <div class="summary-grid">
-          <div class="summary-card">
-            <b><?= $currentUpload['total_records'] ?></b>
-            <p>Total Records</p>
-          </div>
-          <div class="summary-card">
-            <b style="color:#059669"><?= $currentUpload['valid_records'] ?></b>
-            <p>Valid</p>
-          </div>
-          <div class="summary-card">
-            <b style="color:#e11d48"><?= $currentUpload['invalid_records'] ?></b>
-            <p>Invalid</p>
-          </div>
-          <div class="summary-card">
-            <b><?= number_format(array_sum(array_column($records, 'total_amount')), 2) ?></b>
-            <p>Total Amount (RM)</p>
-          </div>
+          <div class="summary-card"><b><?= $recTotal ?></b><p>Total Records</p></div>
+          <div class="summary-card"><b style="color:#059669"><?= $agg['valid'] ?></b><p>Valid</p></div>
+          <div class="summary-card"><b style="color:#e11d48"><?= $agg['invalid'] ?></b><p>Invalid</p></div>
+          <div class="summary-card"><b><?= number_format((float)$agg['amount'], 2) ?></b><p>Total Amount (RM)</p></div>
         </div>
 
-        <?php if ($currentUpload['valid_records'] > 0): ?>
-          <div class="action-bar">
-            <label class="checkbox-label">
-              <input type="checkbox" id="selectAll">
-              <span>Select all valid records</span>
-            </label>
-            <div style="display:flex;gap:8px">
+        <?php if ((int)$agg['invalid'] > 0): ?>
+          <!-- ❌ INVALID: show errors + re-upload -->
+          <div class="banner error">✗ <?= (int)$agg['invalid'] ?> record(s) failed validation. Review the errors in the table below, fix your file, and re-upload.</div>
+          <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+            <a href="e-invoice_upload.php" class="btn primary">🔄 Re-upload corrected file</a>
+          </div>
+        <?php else: ?>
+          <!-- ✅ ALL VALID -->
+          <div class="banner success">✓ All records verified — ready for LHDN submission.</div>
+        <?php endif; ?>
+
+        <?php if ((int)$agg['submittable'] > 0): ?>
+          <!-- ============ SUBMIT ACTIONS ============ -->
+          <div class="submit-box">
+            <h3>🚀 Submit e-Invoices to LHDN</h3>
+            <p><b><?= (int)$agg['submittable'] ?></b> valid record(s) ready. Submit individually (selected rows) or as a consolidated daily invoice.</p>
+            <div class="submit-row">
               <form method="POST" style="display:inline">
                 <input type="hidden" name="action" value="submit_individual">
                 <div id="selectedIds"></div>
-                <button type="submit" class="btn primary" id="submitSelected" disabled>Submit Selected</button>
+                <button type="submit" class="btn primary" id="submitSelected" disabled>Submit Selected (Individual)</button>
+              </form>
+              <form method="POST" class="submit-row" style="margin:0">
+                <input type="hidden" name="action" value="submit_consolidated">
+                <div class="field-sm">
+                  <label>Consolidation Date</label>
+                  <input type="date" name="consolidate_date" value="<?= date('Y-m-d') ?>" required>
+                </div>
+                <button type="submit" class="btn success">Submit Consolidated (<?= (int)$agg['submittable'] ?> records)</button>
               </form>
             </div>
           </div>
         <?php endif; ?>
 
+        <!-- ============ RECORDS TABLE (paginated, with errors) ============ -->
+        <div class="action-bar" style="margin-top:20px">
+          <label class="checkbox-label">
+            <input type="checkbox" id="checkAll">
+            <span>Select all valid (this page)</span>
+          </label>
+          <span style="font-size:12px;color:var(--faint)">Showing <?= $recTotal ? $recOffset + 1 : 0 ?>–<?= min($recOffset + $recPerPage, $recTotal) ?> of <?= $recTotal ?> records</span>
+        </div>
+
         <div style="overflow-x:auto">
-          <table>
+          <table style="min-width:1150px">
             <thead>
               <tr>
-                <th><input type="checkbox" id="checkAll"></th>
+                <th style="width:36px"><input type="checkbox" id="checkAllHead" style="display:none"></th>
                 <th>Sale No</th>
                 <th>Customer</th>
                 <th>Amount</th>
@@ -530,6 +573,7 @@ tbody tr:hover{background:#f8fafc}
                 <th>Total</th>
                 <th>Date</th>
                 <th>Status</th>
+                <th style="min-width:220px">Validation Errors</th>
                 <th>Submission</th>
               </tr>
             </thead>
@@ -549,8 +593,15 @@ tbody tr:hover{background:#f8fafc}
                   <td>RM <?= number_format($rec['sale_amount'], 2) ?></td>
                   <td>RM <?= number_format($rec['sale_tax'], 2) ?></td>
                   <td><b>RM <?= number_format($rec['total_amount'], 2) ?></b></td>
-                  <td><?= date('M d, H:i', strtotime($rec['sale_datetime'])) ?></td>
+                  <td><?= $rec['sale_datetime'] ? date('M d, H:i', strtotime($rec['sale_datetime'])) : '—' ?></td>
                   <td><span class="badge <?= $rec['validation_status'] ?>"><?= $rec['validation_status'] ?></span></td>
+                  <td>
+                    <?php if ($rec['validation_status'] === 'invalid' && $rec['validation_errors']): ?>
+                      <span class="err-text">• <?= htmlspecialchars(implode(' • ', json_decode($rec['validation_errors'], true) ?: ['Validation failed'])) ?></span>
+                    <?php else: ?>
+                      <span style="color:var(--faint)">—</span>
+                    <?php endif; ?>
+                  </td>
                   <td><span class="badge <?= $rec['submission_status'] ?>"><?= $rec['submission_status'] ?></span></td>
                 </tr>
               <?php endforeach; ?>
@@ -558,18 +609,14 @@ tbody tr:hover{background:#f8fafc}
           </table>
         </div>
 
-        <?php if ($currentUpload['valid_records'] > 0): ?>
-          <div class="card" style="margin-top:24px;background:#f8fafc">
-            <h3 style="font-size:16px;font-weight:700;margin-bottom:12px">Or Submit as Consolidated</h3>
-            <p style="font-size:13px;color:var(--muted);margin-bottom:16px">Group all valid records by date into a single consolidated invoice.</p>
-            <form method="POST" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
-              <input type="hidden" name="action" value="submit_consolidated">
-              <div>
-                <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Consolidation Date</label>
-                <input type="date" name="consolidate_date" value="<?= date('Y-m-d') ?>" required style="padding:9px 14px;border:1px solid var(--line);border-radius:10px;font-size:14px">
-              </div>
-              <button type="submit" class="btn success">Submit Consolidated</button>
-            </form>
+        <!-- Records pagination -->
+        <?php if ($recPages > 1): ?>
+          <div class="pager-rec">
+            <span>Page <?= $recPage ?> of <?= $recPages ?></span>
+            <nav>
+              <a class="pbtn <?= $recPage <= 1 ? 'off' : '' ?>" href="?upload=<?= $currentUpload['id'] ?>&rpage=<?= $recPage - 1 ?>">← Prev</a>
+              <a class="pbtn <?= $recPage >= $recPages ? 'off' : '' ?>" href="?upload=<?= $currentUpload['id'] ?>&rpage=<?= $recPage + 1 ?>">Next →</a>
+            </nav>
           </div>
         <?php endif; ?>
 
@@ -587,14 +634,7 @@ tbody tr:hover{background:#f8fafc}
         <div style="overflow-x:auto">
           <table>
             <thead>
-              <tr>
-                <th>Type</th>
-                <th>Reference</th>
-                <th>LHDN UUID</th>
-                <th>Status</th>
-                <th>Date</th>
-                <th>Response</th>
-              </tr>
+              <tr><th>Type</th><th>Reference</th><th>LHDN UUID</th><th>Status</th><th>Date</th><th>Response</th></tr>
             </thead>
             <tbody>
               <?php foreach ($submissionsList as $sub): ?>
@@ -643,7 +683,7 @@ function toggleSidebar(){
   document.getElementById('sidebarOverlay').classList.toggle('open');
 }
 
-// File upload
+// File upload preview
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const fileInfo = document.getElementById('fileInfo');
@@ -658,54 +698,39 @@ fileInput?.addEventListener('change', function(e) {
   }
 });
 
-['dragenter', 'dragover'].forEach(evt => {
-  dropZone?.addEventListener(evt, e => {
-    e.preventDefault();
-    dropZone.classList.add('dragover');
-  });
+['dragenter','dragover'].forEach(evt => {
+  dropZone?.addEventListener(evt, e => { e.preventDefault(); dropZone.classList.add('dragover'); });
 });
-
-['dragleave', 'drop'].forEach(evt => {
-  dropZone?.addEventListener(evt, e => {
-    e.preventDefault();
-    dropZone.classList.remove('dragover');
-  });
+['dragleave','drop'].forEach(evt => {
+  dropZone?.addEventListener(evt, e => { e.preventDefault(); dropZone.classList.remove('dragover'); });
 });
-
 dropZone?.addEventListener('drop', e => {
   const files = e.dataTransfer.files;
-  if (files.length > 0) {
-    fileInput.files = files;
-    fileInput.dispatchEvent(new Event('change'));
-  }
+  if (files.length > 0) { fileInput.files = files; fileInput.dispatchEvent(new Event('change')); }
 });
 
-// Select all checkbox
+// Checkbox selection
 document.getElementById('checkAll')?.addEventListener('change', function(e) {
   document.querySelectorAll('.record-check').forEach(cb => cb.checked = e.target.checked);
   updateSelected();
 });
-
-document.querySelectorAll('.record-check').forEach(cb => {
-  cb.addEventListener('change', updateSelected);
-});
+document.querySelectorAll('.record-check').forEach(cb => cb.addEventListener('change', updateSelected));
 
 function updateSelected() {
   const checked = document.querySelectorAll('.record-check:checked');
   const ids = Array.from(checked).map(cb => cb.value);
-  document.getElementById('selectedIds').innerHTML = ids.map(id => `<input type="hidden" name="record_ids[]" value="${id}">`).join('');
-  document.getElementById('submitSelected').disabled = ids.length === 0;
+  const holder = document.getElementById('selectedIds');
+  if (holder) holder.innerHTML = ids.map(id => `<input type="hidden" name="record_ids[]" value="${id}">`).join('');
+  const btn = document.getElementById('submitSelected');
+  if (btn) btn.disabled = ids.length === 0;
 }
 
-// JSON response modal
+// JSON modal
 function showResponse(json) {
   document.getElementById('jsonContent').textContent = JSON.stringify(JSON.parse(json), null, 2);
   document.getElementById('responseModal').style.display = 'grid';
 }
-
-function closeResponse() {
-  document.getElementById('responseModal').style.display = 'none';
-}
+function closeResponse() { document.getElementById('responseModal').style.display = 'none'; }
 
 // Loading overlay
 const overlay = document.getElementById('loadingOverlay');
