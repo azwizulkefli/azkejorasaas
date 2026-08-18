@@ -18,7 +18,7 @@ $loginError = isset($_GET['err']);
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AZ Kejora SaaS — E-Invoice & Facility Booking</title>
+<title>AZ Kejora SaaS — LHDN e-Invoice Compliance, Automated</title>
 <style>
 /* ================= TOKENS / BASE ================= */
 :root{--ink:#131327;--bg:#F6F7FB;--brand:#5457e5;--brand-dark:#4644cf;--violet:#8b5cf6;--fuchsia:#d946ef;--text:#334155;--muted:#64748b;--faint:#94a3b8;--line:#e2e8f0;--emerald:#10b981;--rose:#e11d48;--grad:linear-gradient(90deg,var(--brand),var(--violet));--shadow:0 8px 30px -12px rgba(19,19,39,.15);--card:0 1px 2px rgba(19,19,39,.06),0 12px 32px -16px rgba(19,19,39,.12)}
@@ -96,11 +96,20 @@ h2.sec{margin-top:20px;font-size:clamp(28px,3.4vw,40px);font-weight:800;letter-s
 .mini-stats{margin-top:20px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;text-align:center}
 .mini-stats div{background:#f8fafc;border-radius:12px;padding:16px}.mini-stats b{font-size:20px;font-weight:800}
 .mini-stats p{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin-top:4px}
-.slots{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
-.slot{border:1px solid var(--line);border-radius:8px;padding:8px 0;text-align:center;font-size:12px;font-weight:600;color:var(--muted)}
-.slot.on{background:var(--brand);border-color:var(--brand);color:#fff;box-shadow:0 6px 14px -6px rgba(84,87,229,.6)}
-.slot.off{background:#f1f5f9;border-color:#f1f5f9;color:#cbd5e1;text-decoration:line-through}
+.status-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:16px}
+.status-pill{border-radius:10px;padding:10px 8px;text-align:center;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.status-pill.valid{background:#d1fae5;color:#059669}
+.status-pill.invalid{background:#fee2e2;color:#dc2626}
+.status-pill.progress{background:#fef3c7;color:#d97706}
+.status-pill.error{background:#fce7f3;color:#db2777}
+.status-pill b{display:block;font-size:18px;margin-bottom:2px}
 .total-row{margin-top:20px;display:flex;justify-content:space-between;align-items:center;background:#f8fafc;border-radius:12px;padding:16px 20px}
+/* how it works */
+.steps{margin-top:56px;display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+@media(max-width:860px){.steps{grid-template-columns:1fr}}
+.step{background:#fff;border:1px solid var(--line);border-radius:20px;padding:32px;text-align:center;box-shadow:var(--card);position:relative}
+.step-num{width:48px;height:48px;border-radius:50%;background:var(--grad);color:#fff;display:grid;place-items:center;font-size:20px;font-weight:800;margin:0 auto 20px;box-shadow:0 10px 24px -8px rgba(84,87,229,.5)}
+.step h3{font-size:20px;font-weight:800;margin-bottom:10px}.step p{font-size:14px;line-height:1.7;color:var(--muted)}
 /* pricing */
 .cards3{margin-top:56px;display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
 @media(max-width:960px){.cards3{grid-template-columns:1fr}}
@@ -146,16 +155,16 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
 <!-- NAV -->
 <header class="nav"><div class="wrap nav-inner">
   <a class="brand" href="#"><span class="logo">⚡</span>AZ Kejora<em>SaaS</em></a>
-  <nav class="links"><a href="#features">Features</a><a href="#services">Services</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></nav>
+  <nav class="links"><a href="#features">Features</a><a href="#how-it-works">How It Works</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></nav>
   <div class="nav-cta">
     <?php if($isLoggedIn): ?>
       <span class="hi">Hi, <?= htmlspecialchars(explode(' ',$userName)[0]) ?></span>
       <?php if($userRole==='admin'): ?><a class="btn ghost" href="admin.php">Admin Console</a><?php endif; ?>
       <a class="btn ghost" href="login.php?logout=1">Sign out</a>
-      <a class="btn primary" href="<?= $userRole==='admin' ? 'admin.php' : 'subscriber/main.php' ?>">Get started</a>
+      <a class="btn primary" href="<?= $userRole==='admin' ? 'admin.php' : 'subscriber/main.php' ?>">Open Dashboard</a>
     <?php else: ?>
       <button class="btn ghost" onclick="openAuth()">Sign in</button>
-      <button class="btn primary" onclick="openSignup()">Get started</button>
+      <button class="btn primary" onclick="openSignup()">Start Free Trial</button>
     <?php endif; ?>
   </div>
 </div></header>
@@ -164,107 +173,120 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
 <section class="hero"><div class="glow"></div>
   <div class="wrap hero-grid">
     <div>
-      <span class="eyebrow"><span class="dot"></span>LHDN e-Invoice ready</span>
-      <h1 class="big">Run your whole service business on <span class="grad-text">one elegant platform.</span></h1>
-      <p class="lead">AZ Kejora SaaS pairs smart e-Invoicing for SMEs with a beautiful facility-booking engine — wrapped in a simple 3-month subscription. Sign in and start free.</p>
+      <span class="eyebrow"><span class="dot"></span>LHDN e-Invoice Ready · MyTax Compliant</span>
+      <h1 class="big">Automate your LHDN e-Invoice compliance in <span class="grad-text">minutes, not days.</span></h1>
+      <p class="lead">Stop juggling spreadsheets and worrying about validation errors. AZ Kejora SaaS handles every submission, tracks every status, and delivers official LHDN e-invoices — all from one elegant dashboard.</p>
       <div class="cta-row">
-        <?php if($isLoggedIn): ?><a class="btn primary" href="<?= $userRole==='admin' ? 'admin.php' : '#' ?>" style="padding:14px 28px;font-size:16px">Open dashboard →</a>
-        <?php else: ?><button class="btn primary" style="padding:14px 28px;font-size:16px" onclick="openAuth()">Start 30-day free trial →</button><?php endif; ?>
-        <a class="btn ghost" style="padding:14px 24px;font-size:16px" href="#pricing">View 3-month plans</a>
+        <?php if($isLoggedIn): ?><a class="btn primary" href="<?= $userRole==='admin' ? 'admin.php' : 'subscriber/main.php' ?>" style="padding:14px 28px;font-size:16px">Open Dashboard →</a>
+        <?php else: ?><button class="btn primary" style="padding:14px 28px;font-size:16px" onclick="openSignup()">Start Free Trial →</button><?php endif; ?>
+        <a class="btn ghost" style="padding:14px 24px;font-size:16px" href="#pricing">View Monthly Plans</a>
       </div>
-      <!--<div class="checks"><span>No credit card</span><span>Secure login</span><span>Stripe · FPX · ToyyibPay</span></div>-->
+      <div class="checks"><span>No credit card required</span><span>LHDN validated</span><span>Cancel anytime</span></div>
     </div>
     <div class="mock">
       <div class="mock-card">
-        <div class="mock-top"><span></span><span></span><span></span><i>app.azkejora.io</i></div>
+        <div class="mock-top"><span></span><span></span><span></span><i>app.azkejora.io / dashboard</i></div>
         <div class="mock-grid">
-          <div class="mock-kpi"><b>RM 48.2k</b><p>Gross</p></div>
-          <div class="mock-kpi g"><b>RM 3.4k</b><p>SST</p></div>
-          <div class="mock-kpi b"><b>96%</b><p>Compliant</p></div>
+          <div class="mock-kpi"><b>1,248</b><p>Submitted</p></div>
+          <div class="mock-kpi g"><b>98.4%</b><p>Validated</p></div>
+          <div class="mock-kpi b"><b>RM 342k</b><p>Billed</p></div>
+        </div>
+        <div class="status-row">
+          <div class="status-pill valid"><b>1,228</b>Valid</div>
+          <div class="status-pill invalid"><b>12</b>Invalid</div>
+          <div class="status-pill progress"><b>6</b>In Progress</div>
+          <div class="status-pill error"><b>2</b>Error</div>
         </div>
         <div class="mock-bars"><i style="height:35%"></i><i style="height:52%"></i><i style="height:44%"></i><i style="height:66%"></i><i style="height:58%"></i><i style="height:78%"></i><i style="height:70%"></i><i style="height:92%"></i></div>
       </div>
-      <div class="chip" style="left:-20px;top:28px"><span class="ic" style="background:#d1fae5;color:#059669">✓</span><div><b>Invoice validated</b><small>SST 8% · TIN OK · +RM 1,240</small></div></div>
-      <div class="chip" style="right:-14px;bottom:36px;animation-delay:1.4s"><span class="ic" style="background:#e0e5ff;color:var(--brand)">📅</span><div><b>Booking confirmed</b><small>Badminton Court · 18:00 · RM 36</small></div></div>
+      <div class="chip" style="left:-20px;top:28px"><span class="ic" style="background:#d1fae5;color:#059669">✓</span><div><b>Invoice validated by LHDN</b><small>TIN OK · TIN verified · Batch #A204</small></div></div>
+      <div class="chip" style="right:-14px;bottom:36px;animation-delay:1.4s"><span class="ic" style="background:#e0e5ff;color:var(--brand)">📄</span><div><b>Credit note issued</b><small>Linked to INV-2026-0842 · Auto-submitted</small></div></div>
     </div>
   </div>
-  <!--<div class="wrap"><div class="stats">
-    <div><b>1,240+</b><p>SMEs onboarded</p></div>
-    <div><b>RM 4.2M</b><p>Invoices processed</p></div>
-    <div><b>99.98%</b><p>Platform uptime</p></div>
-    <div><b>4.9★</b><p>Merchant rating</p></div>
-  </div></div>-->
 </section>
 
-<!-- FEATURES -->
-<section id="features"><div class="wrap">
-  <div class="sec-head"><span class="eyebrow">Why AZ Kejora</span><h2 class="sec">Everything a modern SME needs, nothing it doesn't.</h2></div>
-  <div class="cards4">
-    <div class="card"><span class="ic-tile" style="background:var(--grad)">🔐</span><h3>Secure Sign-On</h3><p>Session-based authentication with bcrypt-hashed credentials stored on Supabase PostgreSQL.</p></div>
-    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#10b981,#14b8a6)">🔄</span><h3>90-Day Billing</h3><p>Predictable 3-month cycles with webhook-driven renewals — <code>invoice.paid</code> extends your period automatically.</p></div>
-    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#f59e0b,#f97316)">🧾</span><h3>Smart E-Invoicing</h3><p>Upload CSV, PDF or JSON — extraction, SST totals, compliance scoring and one-click exports.</p></div>
-    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#d946ef,#ec4899)">📅</span><h3>Facility Booking</h3><p>Courts, rooms and halls with live slot availability, instant checkout and a full merchant console.</p></div>
+<!-- THE PROBLEM -->
+<section style="background:#fff"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">The Compliance Challenge</span>
+    <h2 class="sec">LHDN e-invoicing shouldn't keep you up at night.</h2>
+    <p style="margin-top:20px;font-size:17px;line-height:1.7;color:var(--muted)">
+      Manual data entry takes hours. Validation errors slip through. Deadlines get missed. And the fear of penalties? It's always there. Malaysian businesses need a smarter way to stay compliant — one that removes the guesswork and gives you absolute confidence in every submission.
+    </p>
+  </div>
+  <div class="cards4" style="margin-top:40px">
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#dc2626,#e11d48)">⏱</span><h3>Hours Lost to Manual Entry</h3><p>Typing each invoice by hand is slow, boring, and error-prone. Your team's time is worth more.</p></div>
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#f59e0b,#f97316)">⚠</span><h3>Hidden Validation Errors</h3><p>One wrong TIN or missing field can invalidate a submission — and you won't know until it's too late.</p></div>
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#64748b,#475569)">📊</span><h3>No Central Visibility</h3><p>Scattered spreadsheets mean no single view of your compliance status, pending submissions, or audit trail.</p></div>
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#8b5cf6,#6366f1)">🔐</span><h3>Penalty Risk</h3><p>Missed deadlines or repeated errors attract LHDN fines. The cost of non-compliance is real — and avoidable.</p></div>
   </div>
 </div></section>
 
-<!-- SERVICES -->
-<section id="services" style="background:#fff"><div class="wrap">
-  <div class="svc">
-    <div>
-      <span class="eyebrow">Service 01 · E-Invoice for SME</span>
-      <h2 class="sec" style="text-align:left;margin-top:20px">From messy files to audit-ready reports in seconds.</h2>
-      <ul>
-        <li><span class="tick">✓</span>Drag-and-drop extraction for <b>CSV, PDF & JSON</b> invoice files.</li>
-        <li><span class="tick">✓</span>Automated SST 6% / 8% tax totals and category summaries.</li>
-        <li><span class="tick">✓</span>LHDN TIN & compliance status checks with a live score.</li>
-        <li><span class="tick">✓</span>Downloadable <b>PDF & Excel</b> export reports.</li>
-      </ul>
-    </div>
-    <div class="card">
-      <div class="drop">⬆ Drop invoice files here<small>CSV · PDF · JSON</small></div>
-      <div class="mini-stats">
-        <div><b>RM 48.2k</b><p>Gross</p></div>
-        <div><b style="color:var(--emerald)">RM 3.4k</b><p>SST</p></div>
-        <div><b style="color:var(--brand)">96%</b><p>Compliant</p></div>
-      </div>
-    </div>
+<!-- KEY FEATURES -->
+<section id="features"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">Built for Malaysian SMEs</span>
+    <h2 class="sec">Everything you need for effortless LHDN compliance.</h2>
   </div>
-  <div class="svc">
-    <div class="card">
-      <div class="slots">
-        <span class="slot">10:00</span><span class="slot on">11:00</span><span class="slot">12:00</span><span class="slot off">14:00</span><span class="slot">15:00</span>
-        <span class="slot">16:00</span><span class="slot on">18:00</span><span class="slot on">19:00</span><span class="slot">20:00</span><span class="slot">21:00</span>
-      </div>
-      <div class="total-row"><div><small style="color:var(--muted)">3 slots · Badminton Court</small><br><b style="font-size:18px">RM 54</b></div><span class="btn primary" style="padding:8px 16px;font-size:12px">Instant checkout</span></div>
+  <div class="cards4" style="grid-template-columns:repeat(3,1fr)">
+    <div class="card"><span class="ic-tile" style="background:var(--grad)">📤</span><h3>Flexible Submission</h3><p>Manual entry for one-off invoices or bulk batch uploads for hundreds at once. Work the way that suits your business best.</p></div>
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#10b981,#14b8a6)">📊</span><h3>Comprehensive Dashboard</h3><p>One centralized hub with real-time reports, submission trends, and actionable statistics — always at your fingertips.</p></div>
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#f59e0b,#f97316)">🔔</span><h3>Live Status Tracking</h3><p>Crystal-clear visibility on every submission: Valid, Invalid, In Progress, or Error. Nothing slips through the cracks.</p></div>
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#5457e5,#7c3aed)">🏛</span><h3>Official LHDN Integration</h3><p>View and download the official LHDN e-invoice for every validated submission. Perfect audit trails, guaranteed.</p></div>
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#d946ef,#ec4899)">🔄</span><h3>Streamlined Credit Notes</h3><p>Generate and submit credit note e-invoices directly linked to previously validated invoices — no complexity, no hassle.</p></div>
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#06b6d4,#0891b2)">📥</span><h3>One-Click Exporting</h3><p>Export audit-ready reports to Excel or PDF instantly. Perfect for management reviews, tax audits, and record-keeping.</p></div>
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#84cc16,#65a30d)">💰</span><h3>Affordable Monthly Plans</h3><p>Subscription-based pricing designed for SMEs. Start small, scale as you grow, cancel anytime. No long-term contracts.</p></div>
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#0ea5e9,#0284c7)">🇲🇾</span><h3>Malaysian-First Design</h3><p>Built specifically for Malaysian tax structures, SST, TIN formats, and LHDN workflows — not a generic global tool.</p></div>
+    <div class="card"><span class="ic-tile" style="background:linear-gradient(135deg,#ef4444,#dc2626)">🛡</span><h3>Bank-Grade Security</h3><p>Encrypted data storage, secure session management, and role-based access keep your financial data safe at all times.</p></div>
+  </div>
+</div></section>
+
+<!-- HOW IT WORKS -->
+<section id="how-it-works" style="background:#fff"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">Simple 3-Step Workflow</span>
+    <h2 class="sec">From invoice to LHDN validation in minutes.</h2>
+    <p style="margin-top:16px;color:var(--muted);font-size:16px">No complex onboarding. No steep learning curves. Just three simple steps to full compliance.</p>
+  </div>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <h3>Submit</h3>
+      <p>Enter a single invoice manually or upload a batch file containing hundreds. Our smart engine handles CSV, PDF, and JSON formats with automatic field extraction.</p>
     </div>
-    <div>
-      <span class="eyebrow">Service 02 · Retail Facility Booking</span>
-      <h2 class="sec" style="text-align:left;margin-top:20px">Fill your courts, rooms and halls — on autopilot.</h2>
-      <ul>
-        <li><span class="tick">✓</span>Merchants add facilities, hourly rates and availability windows.</li>
-        <li><span class="tick">✓</span>Public booking portal with a real-time slot calendar.</li>
-        <li><span class="tick">✓</span>Instant payment checkout & approve / decline workflow.</li>
-      </ul>
+    <div class="step">
+      <div class="step-num">2</div>
+      <h3>Validate</h3>
+      <p>Watch submissions flow through in real-time. Instant status updates — Valid, Invalid, In Progress, or Error — with detailed diagnostics for anything that needs fixing.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <h3>Comply</h3>
+      <p>Download official LHDN e-invoices, issue linked credit notes, and export comprehensive PDF/Excel reports — all with a single click. Audit-ready, always.</p>
     </div>
   </div>
 </div></section>
 
 <!-- PRICING -->
 <section id="pricing"><div class="wrap">
-  <div class="sec-head"><span class="eyebrow">Pricing matrix</span><h2 class="sec">One simple 3-month subscription.</h2><p style="margin-top:16px;color:var(--muted)">Billed every 90 days · cancel anytime · prices in MYR (RM).</p></div>
+  <div class="sec-head">
+    <span class="eyebrow">Simple Monthly Pricing</span>
+    <h2 class="sec">Affordable plans that scale with your business.</h2>
+    <p style="margin-top:16px;color:var(--muted)">No long-term contracts · No hidden fees · Cancel anytime · Prices in MYR (RM)</p>
+  </div>
   <div class="cards3">
-    <div class="card plan"><h3>Starter</h3><p style="color:var(--muted);font-size:14px;margin-top:4px">For solo operators</p>
-      <div class="price"><b>RM90</b><span>/ 3 months</span></div>
-      <ul><li>1 business entity</li><li>E-Invoice: 200 docs / cycle</li><li>1 bookable facility</li><li>Standard reports (PDF)</li><li>Email support</li></ul>
-      <button class="btn ghost" onclick="openAuth()">Subscribe</button></div>
-    <div class="card plan pop"><span class="flag">MOST POPULAR</span><h3>Growth</h3><p style="color:var(--muted);font-size:14px;margin-top:4px">For growing SMEs</p>
-      <div class="price"><b>RM210</b><span>/ 3 months</span></div>
-      <ul><li>3 business entities</li><li>E-Invoice: unlimited docs</li><li>10 facilities + public portal</li><li>SST & compliance exports</li><li>Priority support</li></ul>
-      <button class="btn primary" onclick="openAuth()">Subscribe</button></div>
-    <div class="card plan"><h3>Scale</h3><p style="color:var(--muted);font-size:14px;margin-top:4px">For multi-site retailers</p>
-      <div class="price"><b>RM450</b><span>/ 3 months</span></div>
-      <ul><li>Unlimited entities</li><li>Unlimited facilities</li><li>API + webhook access</li><li>Custom roles & audit log</li><li>Dedicated manager</li></ul>
-      <button class="btn ghost" onclick="openAuth()">Subscribe</button></div>
+    <div class="card plan"><h3>Starter</h3><p style="color:var(--muted);font-size:14px;margin-top:4px">Perfect for sole proprietors & micro businesses</p>
+      <div class="price"><b>RM49</b><span>/ month</span></div>
+      <ul><li>Up to 200 e-invoices / month</li><li>Manual entry + CSV upload</li><li>Live status tracking</li><li>LHDN invoice downloads</li><li>Email support</li></ul>
+      <button class="btn ghost" onclick="openSignup()">Start Free Trial</button></div>
+    <div class="card plan pop"><span class="flag">MOST POPULAR</span><h3>Growth</h3><p style="color:var(--muted);font-size:14px;margin-top:4px">Ideal for growing SMEs with regular invoicing</p>
+      <div class="price"><b>RM129</b><span>/ month</span></div>
+      <ul><li>Up to 1,000 e-invoices / month</li><li>Bulk batch uploads</li><li>Credit note automation</li><li>Excel & PDF report exports</li><li>Priority support</li></ul>
+      <button class="btn primary" onclick="openSignup()">Start Free Trial</button></div>
+    <div class="card plan"><h3>Scale</h3><p style="color:var(--muted);font-size:14px;margin-top:4px">For multi-outlet retailers & large operations</p>
+      <div class="price"><b>RM299</b><span>/ month</span></div>
+      <ul><li>Unlimited e-invoices</li><li>API + webhook integration</li><li>Custom user roles</li><li>Dedicated account manager</li><li>Advanced audit log</li></ul>
+      <button class="btn ghost" onclick="openSignup()">Start Free Trial</button></div>
   </div>
 </div></section>
 
@@ -272,22 +294,27 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
 <section id="faq" style="background:#fff"><div class="wrap" style="max-width:760px">
   <div class="sec-head"><span class="eyebrow">FAQ</span><h2 class="sec">Questions, answered.</h2></div>
   <div class="faq-list">
-    <details class="faq" open><summary>How does the free trial work?</summary><p>Sign in and your customer record is provisioned instantly (status <code>active_trial</code>, <code>trial_ends_at = now + 2 hours</code> by default, configurable by admin). Full access to E-Invoice and Booking tools — no credit card required.</p></details>
-    <details class="faq"><summary>Why a 3-month billing cycle?</summary><p>Quarterly billing keeps pricing predictable for SMEs and cuts admin overhead. On every successful payment, webhooks (<code>invoice.paid</code>, <code>payment_intent.succeeded</code>) advance <code>period_ends_at</code> by 90 days automatically.</p></details>
-    <details class="faq"><summary>Which invoice file formats are supported?</summary><p>CSV, PDF and JSON. Our extraction engine parses line items, computes SST 6%/8% totals, validates LHDN TINs and produces downloadable PDF / Excel compliance reports.</p></details>
-    <details class="faq"><summary>Which payment methods do you accept?</summary><p>Cards via Stripe (3-D Secure), FPX online banking (Maybank2u, CIMB Clicks, Public Bank and more) and ToyyibPay DuitNow QR — all with local compliance built in.</p></details>
-    <details class="faq"><summary>Can I cancel or change plans?</summary><p>Yes. Upgrades apply immediately and prorate into your next cycle; cancellations stop auto-renewal at period end. Admins can also extend trials or suspend accounts manually.</p></details>
+    <details class="faq" open><summary>Is AZ Kejora fully compliant with LHDN e-Invoice requirements?</summary><p>Yes. Our platform is built specifically for the Malaysian e-invoicing mandate. We support all required TIN validation, SST calculations, and official LHDN submission protocols. Every validated invoice generates an official LHDN e-invoice document for your records.</p></details>
+    <details class="faq"><summary>What file formats do you support for bulk uploads?</summary><p>We support CSV, JSON, and structured PDF formats for batch submissions. Our extraction engine automatically parses line items, tax totals, and customer TINs — so you can upload hundreds of invoices in one go.</p></details>
+    <details class="faq"><summary>How does live status tracking work?</summary><p>Every submission flows through four clear statuses: Valid, Invalid, In Progress, or Error. You get real-time updates on your dashboard with detailed diagnostics, so you can fix issues fast and resubmit without delay.</p></details>
+    <details class="faq"><summary>Can I issue credit notes through the platform?</summary><p>Absolutely. You can generate credit note e-invoices directly linked to any previously validated submission. The platform handles the LHDN submission automatically, with full audit trail integrity.</p></details>
+    <details class="faq"><summary>What if I need to change plans or cancel?</summary><p>You can upgrade, downgrade, or cancel anytime from your dashboard. Upgrades apply immediately; downgrades and cancellations take effect at the end of your current billing cycle. No penalty, no hidden fees.</p></details>
+    <details class="faq"><summary>Do you offer a free trial?</summary><p>Yes. Every new account starts with a <?= $trialHours ?>-hour free trial with full access to all features. No credit card required. If you love it, pick a monthly plan. If not, walk away — no questions asked.</p></details>
   </div>
 </div></section>
 
-<!-- CTA + FOOTER -->
+<!-- FINAL CTA -->
 <section><div class="wrap">
-  <div class="cta"><h2>Start your 30-day free trial today.</h2><p>Sign in — your trial is provisioned instantly on Supabase PostgreSQL. No card required.</p>
-  <button class="btn white" onclick="openAuth()">Create my account →</button></div>
+  <div class="cta">
+    <h2>Ready to make LHDN compliance effortless?</h2>
+    <p>Join hundreds of Malaysian businesses who've automated their e-invoicing. Start your <?= $trialHours ?>-hour free trial today — no credit card, no commitment.</p>
+    <button class="btn white" onclick="openSignup()">Start My Free Trial →</button>
+  </div>
 </div></section>
+
 <footer><div class="wrap foot">
   <span class="brand" style="font-size:15px"><span class="logo" style="width:28px;height:28px;border-radius:8px;font-size:13px">⚡</span>AZ Kejora SaaS</span>
-  <small>© 2026 AZ Kejora SaaS . Copyright Protected</small>
+  <small>© 2026 AZ Kejora SaaS · LHDN e-Invoice Compliant · Copyright Protected</small>
   <nav><a href="#features">Features</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></nav>
 </div></footer>
 
@@ -296,9 +323,8 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
   <div class="modal-card">
     <form action="login.php" method="POST">
       <span class="logo">⚡</span>
-
       <h3>Sign in to AZ Kejora</h3>
-      <p class="sub">Enter your credentials to continue</p>
+      <p class="sub">Access your compliance dashboard</p>
 <?php if($loginError): ?>
   <div class="err"><?= ($_GET['err'] ?? '') === '2'
       ? 'Account not activated yet — open the activation link we emailed you.'
@@ -340,8 +366,8 @@ function closeAuth(){document.getElementById('authModal').classList.remove('open
   <div class="modal-card">
     <form action="signup.php" method="POST">
       <span class="logo">⚡</span>
-      <h3>Create your account</h3>
-      <p class="sub">Start your free trial — no card required</p>
+      <h3>Start your free trial</h3>
+      <p class="sub">Full access to LHDN e-Invoice compliance tools — no credit card required</p>
       <?php if (isset($_GET['signup']) && isset($_GET['err'])): ?>
         <div class="err"><?= htmlspecialchars($_GET['err']) ?></div>
       <?php endif; ?>
@@ -365,7 +391,7 @@ function closeAuth(){document.getElementById('authModal').classList.remove('open
       <div class="field"><label>Email address</label><input type="email" name="email" placeholder="aina@company.com" required></div>
       <div class="field"><label>Phone (Malaysia)</label><input type="tel" name="phone" placeholder="+60 12-345 6789" pattern="[\+\d\s\-]{8,20}" required></div>
       <div class="field"><label>Password</label><input type="password" name="password" placeholder="At least 6 characters" minlength="6" required></div>
-      <button type="submit" class="btn primary full">Send activation link →</button>
+      <button type="submit" class="btn primary full">Start Free Trial →</button>
       <p class="hint">Already have an account? <a href="#" onclick="closeSignup();openAuth();return false" style="color:var(--brand);font-weight:700">Sign in</a></p>
     </form>
     <button class="btn ghost full" style="margin-top:12px" onclick="closeSignup()">Cancel</button>
