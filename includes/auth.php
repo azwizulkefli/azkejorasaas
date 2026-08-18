@@ -16,20 +16,36 @@ function needsPasswordSetup(): bool {
 
 function login(string $email, string $password): bool {
     global $pdo;
+
+    /* 1) Dedicated admin store (admin_users) */
+    try {
+        $a = $pdo->prepare("SELECT * FROM admin_users WHERE LOWER(email) = LOWER(?)");
+        $a->execute([$email]);
+        $admin = $a->fetch();
+        if ($admin && ($admin['status'] ?? 'active') === 'active' && !empty($admin['password_hash'])) {
+            $ok = password_verify($password, $admin['password_hash'])
+               || crypt($password, $admin['password_hash']) === $admin['password_hash'];
+            if ($ok) {
+                $pdo->prepare("UPDATE admin_users SET last_login = NOW() WHERE id = ?")->execute([$admin['id']]);
+                $_SESSION['user_id']    = $admin['id'];
+                $_SESSION['user_name']  = $admin['name'];
+                $_SESSION['user_email'] = $admin['email'];
+                $_SESSION['user_role']  = $admin['role'] ?: 'admin';
+                return true;
+            }
+            return false; // admin account exists → wrong password, stop here
+        }
+    } catch (Throwable $e) { /* admin_users missing → fall back */ }
+
+    /* 2) Fallback: users table (customers + legacy admin) */
     $stmt = $pdo->prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?)");
     $stmt->execute([$email]);
     $user = $stmt->fetch();
-    
     if (!$user) return false;
-
-    // ✅ Allow admins to bypass email activation check
-    if ($user['role'] !== 'admin' && empty($user['activated_at'])) {
-        return false;
-    }
+    if ($user['role'] !== 'admin' && empty($user['activated_at'])) return false;
 
     $ok = password_verify($password, $user['password_hash'])
        || crypt($password, $user['password_hash']) === $user['password_hash'];
-       
     if ($ok) {
         $_SESSION['user_id']    = $user['id'];
         $_SESSION['user_name']  = $user['name'];
@@ -38,6 +54,12 @@ function login(string $email, string $password): bool {
         return true;
     }
     return false;
+}
+
+function requireAdmin() {
+    if (!isset($_SESSION['user_id']) || !in_array($_SESSION['user_role'] ?? '', ['admin', 'superadmin'], true)) {
+        header('Location: index.php?err=auth'); exit;
+    }
 }
 
 function registerCustomer(array $data): array {
@@ -116,9 +138,5 @@ function requireCustomer() {
         header('Location: /public/index.php?err=auth'); exit;
     }
 }
-function requireAdmin() {
-    if (!currentUserId() || ($_SESSION['user_role'] ?? '') !== 'admin') {
-        header('Location: /public/index.php?err=auth'); exit;
-    }
-}
+
 function logout() { session_unset(); session_destroy(); header('Location: /public/index.php'); exit; }
