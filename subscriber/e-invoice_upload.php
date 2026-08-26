@@ -50,13 +50,10 @@ function buildLHDNPayload($record, $company, $jsonSendTemplate, $jsonConvertTemp
         '*|ei_cninvoice_uuid|*'       => $record['reference_uuid'] ?? 'NA'
     ];
 
-    // Step 5 & 6: Generate JSON from setting + replace parameters (start with *| end with |*)
     $jsonStr = str_replace(array_keys($map), array_values($map), $jsonSendTemplate);
-    
     $base64Doc = base64_encode($jsonStr);
     $sha256 = hash('sha256', $jsonStr);
     
-    // Step 7 & 8: Convert format from setting + replace parameters (start with *| end with |*)
     $convertMap = [
         '*|ei_convertbase64|*'  => $base64Doc,
         '*|ei_convertsha256|*' => $sha256,
@@ -136,7 +133,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
 /* ================= HANDLE ACTIONS (Step 3-12 + Delete) ================= */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     
-    // ===== FIXED: Properly fetch company data =====
     $stmtCompany = $pdo->prepare("SELECT * FROM companies WHERE user_id = ? LIMIT 1");
     $stmtCompany->execute([$uid]);
     $company = $stmtCompany->fetch(PDO::FETCH_ASSOC);
@@ -146,7 +142,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 
-    // ===== Step 4: Check Token Expiry from company table =====
     $sandboxToken      = $company['sandbox_token'] ?? null;
     $sandboxTokenExp   = $company['sandbox_token_expiry'] ?? null;
     $prodToken         = $company['prod_token'] ?? null;
@@ -207,7 +202,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $tokenWarningThreshold = $currentTime + 3600;
     $tokenWarning = ($expiryTimestamp && $expiryTimestamp <= $tokenWarningThreshold);
 
-    // ===== Step 5-8: Fetch JSON templates from settings table =====
     $stmtSend = $pdo->prepare("SELECT value FROM settings WHERE module = 'einvoice' AND key = 'json_send'");
     $stmtSend->execute(); 
     $jsonSendTemplate = $stmtSend->fetchColumn();
@@ -232,7 +226,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if ($upload) {
                 $pdo->beginTransaction();
                 try {
-                    // 1. Get record IDs associated with this upload
                     $stmtRec = $pdo->prepare("SELECT id FROM einvoice_records WHERE upload_id = ?");
                     $stmtRec->execute([$uploadId]);
                     $recordIds = $stmtRec->fetchAll(PDO::FETCH_COLUMN);
@@ -240,20 +233,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     if (!empty($recordIds)) {
                         $placeholders = implode(',', array_fill(0, count($recordIds), '?'));
                         
-                        // 2. Delete logs for these submissions
                         $pdo->prepare("DELETE FROM einvoice_logs WHERE submission_id IN (SELECT id FROM einvoice_submissions WHERE record_id IN ($placeholders))")
                             ->execute($recordIds);
                         
-                        // 3. Delete submissions for these records
                         $pdo->prepare("DELETE FROM einvoice_submissions WHERE record_id IN ($placeholders)")
                             ->execute($recordIds);
                         
-                        // 4. Delete queue jobs for these records
                         $pdo->prepare("DELETE FROM einvoice_queue WHERE record_id IN ($placeholders)")
                             ->execute($recordIds);
                     }
                     
-                    // 5. Delete the physical file
                     if (!empty($upload['file_path'])) {
                         $fullPath = __DIR__ . '/../storage/uploads/' . $upload['file_path'];
                         if (file_exists($fullPath)) {
@@ -261,7 +250,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         }
                     }
                     
-                    // 6. Delete the upload record (CASCADE will automatically delete einvoice_records)
                     $pdo->prepare("DELETE FROM einvoice_uploads WHERE id = ?")->execute([$uploadId]);
                     
                     $pdo->commit();
@@ -569,7 +557,6 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
     <h1>Upload E-Invoice 📤</h1>
     <p class="sub">Bulk upload your invoices from Excel or CSV files.</p>
 
-    <!-- ===== Token Status Box ===== -->
     <div class="token-box <?= $tokenStatusDisplay['status'] ?>">
       <div class="token-info">
         <div class="token-icon">
@@ -780,7 +767,6 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
   </main>
 </div>
 
-<!-- Step 12: Modal to show error/response JSON -->
 <div class="modal" id="responseModal" style="position:fixed;inset:0;z-index:70;display:none;place-items:center;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);padding:16px">
   <div class="modal-card" style="width:100%;max-width:720px;background:#fff;border-radius:20px;padding:28px;box-shadow:0 30px 80px -20px rgba(19,19,39,.4);max-height:85vh;overflow-y:auto">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -788,13 +774,11 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
       <button class="btn ghost" style="padding:6px 12px;font-size:11px" onclick="closeResponse()">✕</button>
     </div>
     
-    <!-- Internal Logs Section (Step 11) -->
     <div id="logsSection" style="margin-bottom:20px">
       <h4 style="font-size:13px;font-weight:700;text-transform:uppercase;color:var(--faint);margin-bottom:12px">Internal Logs</h4>
       <div id="logsContent"></div>
     </div>
     
-    <!-- JSON Response Section (Step 12) -->
     <div>
       <h4 style="font-size:13px;font-weight:700;text-transform:uppercase;color:var(--faint);margin-bottom:12px">API Responses</h4>
       <pre id="jsonContent" style="background:#f8fafc;padding:16px;border-radius:10px;font-size:12px;overflow-x:auto;white-space:pre-wrap;max-height:300px;overflow-y:auto"></pre>
@@ -815,30 +799,18 @@ document.getElementById('checkAll')?.addEventListener('change',function(e){docum
 document.querySelectorAll('.record-check').forEach(cb=>cb.addEventListener('change',updateSelected));
 function updateSelected(){const checked=document.querySelectorAll('.record-check:checked');const ids=Array.from(checked).map(cb=>cb.value);const holder=document.getElementById('selectedIds');if(holder)holder.innerHTML=ids.map(id=>`<input type="hidden" name="record_ids[]" value="${id}">`).join('');const btn=document.getElementById('submitSelected');if(btn)btn.disabled=ids.length===0;}
 
-// Step 11 & 12: Show response and logs in modal
 function showResponse(sub, logs){
     let c = "";
-    
-    // Display API Response
     if(sub.api_response){
-        try {
-            c += "=== SUBMISSION RESPONSE ===\n" + JSON.stringify(JSON.parse(sub.api_response), null, 2) + "\n\n";
-        } catch(e) {
-            c += "=== SUBMISSION RESPONSE ===\n" + sub.api_response + "\n\n";
-        }
+        try { c += "=== SUBMISSION RESPONSE ===\n" + JSON.stringify(JSON.parse(sub.api_response), null, 2) + "\n\n"; } 
+        catch(e) { c += "=== SUBMISSION RESPONSE ===\n" + sub.api_response + "\n\n"; }
     }
-    
     if(sub.document_status_response){
-        try {
-            c += "=== DOCUMENT STATUS RESPONSE ===\n" + JSON.stringify(JSON.parse(sub.document_status_response), null, 2);
-        } catch(e) {
-            c += "=== DOCUMENT STATUS RESPONSE ===\n" + sub.document_status_response;
-        }
+        try { c += "=== DOCUMENT STATUS RESPONSE ===\n" + JSON.stringify(JSON.parse(sub.document_status_response), null, 2); } 
+        catch(e) { c += "=== DOCUMENT STATUS RESPONSE ===\n" + sub.document_status_response; }
     }
-    
     document.getElementById('jsonContent').textContent = c || 'No API response available.';
     
-    // Display Internal Logs
     const logsDiv = document.getElementById('logsContent');
     if(logs && logs.length > 0){
         let logsHtml = '';
@@ -846,7 +818,7 @@ function showResponse(sub, logs){
             const statusClass = log.status || 'info';
             const time = new Date(log.created_at.replace(' ', 'T')).toLocaleString();
             logsHtml += `<div class="log-entry ${statusClass}">
-                <div class="log-time">${time} · <span class="log-step">${log.step}</span></div>
+                <div class="log-time">${time} · <span class="log-step">${log.step || 'N/A'}</span></div>
                 <div class="log-msg">${log.message}</div>
                 ${log.payload ? `<div style="font-size:11px;color:var(--faint);margin-top:4px;font-family:monospace">${log.payload}</div>` : ''}
             </div>`;
@@ -857,7 +829,6 @@ function showResponse(sub, logs){
         logsDiv.innerHTML = '<div style="color:var(--faint);font-size:13px">No internal logs available.</div>';
         document.getElementById('logsSection').style.display = 'block';
     }
-    
     document.getElementById('responseModal').style.display='grid';
 }
 function closeResponse(){document.getElementById('responseModal').style.display='none';}
