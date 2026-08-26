@@ -346,3 +346,52 @@ CREATE INDEX IF NOT EXISTS idx_records_upload ON einvoice_records(upload_id);
 CREATE INDEX IF NOT EXISTS idx_records_user ON einvoice_records(user_id);
 CREATE INDEX IF NOT EXISTS idx_consolidated_user ON einvoice_consolidated(user_id);
 CREATE INDEX IF NOT EXISTS idx_submissions_user ON einvoice_submissions(user_id);
+
+
+-- 1. Add Token & Expiry Columns to Companies
+ALTER TABLE public.companies 
+ADD COLUMN IF NOT EXISTS sandbox_token text,
+ADD COLUMN IF NOT EXISTS sandbox_token_expiry timestamp with time zone,
+ADD COLUMN IF NOT EXISTS prod_token text,
+ADD COLUMN IF NOT EXISTS prod_token_expiry timestamp with time zone,
+ADD COLUMN IF NOT EXISTS phone character varying(50),
+ADD COLUMN IF NOT EXISTS email character varying(100);
+
+-- 2. Add Document Status Columns to Submissions
+ALTER TABLE public.einvoice_submissions
+ADD COLUMN IF NOT EXISTS long_id character varying(255),
+ADD COLUMN IF NOT EXISTS document_status character varying(50),
+ADD COLUMN IF NOT EXISTS document_status_response jsonb;
+
+-- 3. Add Missing Customer Fields to Records (for JSON mapping)
+ALTER TABLE public.einvoice_records
+ADD COLUMN IF NOT EXISTS customer_tin character varying(100),
+ADD COLUMN IF NOT EXISTS customer_town character varying(100),
+ADD COLUMN IF NOT EXISTS reference_no character varying(100),
+ADD COLUMN IF NOT EXISTS reference_uuid character varying(255);
+
+-- 4. Create Queue Table for Async Processing
+CREATE TABLE IF NOT EXISTS public.einvoice_queue (
+  id uuid not null default gen_random_uuid(),
+  user_id uuid null,
+  submission_id uuid null,
+  record_id uuid null,
+  consolidated_id uuid null,
+  payload jsonb null,
+  status character varying(50) default 'pending', -- pending, processing, completed, failed
+  attempts integer default 0,
+  last_error text,
+  created_at timestamp with time zone default now(),
+  processed_at timestamp with time zone
+);
+
+-- 5. Create Internal Logs Table for Monitoring
+CREATE TABLE IF NOT EXISTS public.einvoice_logs (
+  id uuid not null default gen_random_uuid(),
+  user_id uuid null,
+  submission_id uuid null,
+  action character varying(100),
+  message text,
+  response jsonb,
+  created_at timestamp with time zone default now()
+);
