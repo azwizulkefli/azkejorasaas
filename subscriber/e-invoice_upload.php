@@ -66,6 +66,47 @@ function buildLHDNPayload($record, $company, $jsonSendTemplate, $jsonConvertTemp
     return str_replace(array_keys($convertMap), array_values($convertMap), $jsonConvertTemplate);
 }
 
+/* ================= HANDLE DELETE UPLOAD (New Feature) ================= */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_upload') {
+    $uploadId = $_POST['upload_id'] ?? null;
+    
+    if ($uploadId) {
+        $pdo->beginTransaction();
+        try {
+            // Get upload info for file deletion
+            $stmt = $pdo->prepare("SELECT * FROM einvoice_uploads WHERE id = ? AND user_id = ?");
+            $stmt->execute([$uploadId, $uid]);
+            $upload = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($upload) {
+                // Delete related records (will cascade due to foreign key)
+                $pdo->prepare("DELETE FROM einvoice_records WHERE upload_id = ?")->execute([$uploadId]);
+                
+                // Delete the upload record
+                $pdo->prepare("DELETE FROM einvoice_uploads WHERE id = ?")->execute([$uploadId]);
+                
+                // Delete physical file
+                $uploadDir = __DIR__ . '/../storage/uploads/';
+                $filePath = $uploadDir . $upload['file_path'];
+                if (file_exists($filePath)) {
+                    unlink($filePath);
+                }
+                
+                $pdo->commit();
+                header("Location: e-invoice_upload.php?deleted=1");
+                exit;
+            }
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            header("Location: e-invoice_upload.php?err=" . urlencode('Delete failed: ' . $e->getMessage()));
+            exit;
+        }
+    }
+    
+    header("Location: e-invoice_upload.php?err=" . urlencode('Invalid upload ID'));
+    exit;
+}
+
 /* ================= HANDLE FILE UPLOAD (Step 1, 2) ================= */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
     set_time_limit(600); ini_set('memory_limit', '512M');
@@ -135,6 +176,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
 
 /* ================= HANDLE SUBMISSIONS (Step 3-12) ================= */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    
+    // Skip if it's a delete action (already handled above)
+    if ($_POST['action'] === 'delete_upload') {
+        // Already handled above, this is just a safeguard
+        exit;
+    }
     
     // ===== FIXED: Properly fetch company data =====
     $stmtCompany = $pdo->prepare("SELECT * FROM companies WHERE user_id = ? LIMIT 1");
@@ -368,11 +415,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 VALUES (?, ?, ?, ?, 'queued', NOW())")
                 ->execute([$uid, $subId, $consolidatedId, $payload]);
 
-            // Link records to consolidated submission
+            // Link records to consolidated submission - FIXED: Removed consolidated_id column
             foreach ($records as $record) {
                 $pdo->prepare("UPDATE einvoice_records 
-                    SET submission_status = 'queued', consolidated_id = ? 
-                    WHERE id = ?")->execute([$consolidatedId, $record['id']]);
+                    SET submission_status = 'queued' 
+                    WHERE id = ?")->execute([$record['id']]);
             }
             
             // Step 11: Internal log
@@ -518,7 +565,7 @@ if ($companyTokenCheck) {
 .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:28px;box-shadow:var(--card);margin-bottom:24px}.card h2{font-size:20px;font-weight:800;margin-bottom:4px}.card .msub{font-size:13px;color:var(--muted);margin-bottom:20px}
 .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:32px}.step{background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;text-align:center;position:relative}.step-num{width:40px;height:40px;border-radius:50%;background:var(--grad);color:#fff;display:grid;place-items:center;font-weight:800;font-size:18px;margin:0 auto 12px}.step h3{font-size:16px;font-weight:700;margin-bottom:8px}.step p{font-size:13px;color:var(--muted);line-height:1.5}
 .upload-zone{border:2px dashed var(--line);border-radius:16px;padding:48px;text-align:center;transition:.2s;cursor:pointer}.upload-zone:hover{border-color:var(--brand);background:#f8fafc}.upload-zone.dragover{border-color:var(--brand);background:#e0e5ff}.upload-icon{width:64px;height:64px;border-radius:16px;background:var(--grad);color:#fff;display:grid;place-items:center;font-size:28px;margin:0 auto 16px}
-.btn{display:inline-flex;align-items:center;gap:8px;border-radius:12px;padding:11px 18px;font-size:13px;font-weight:700;transition:.15s;text-decoration:none}.btn.primary{background:var(--grad);color:#fff;box-shadow:0 10px 24px -8px rgba(84,87,229,.5)}.btn.ghost{background:#f1f5f9;color:#475569}.btn.ghost:hover{background:#e2e8f0}.btn.success{background:#d1fae5;color:#059669}.btn.warn{background:#fef3c7;color:#d97706}
+.btn{display:inline-flex;align-items:center;gap:8px;border-radius:12px;padding:11px 18px;font-size:13px;font-weight:700;transition:.15s;text-decoration:none}.btn.primary{background:var(--grad);color:#fff;box-shadow:0 10px 24px -8px rgba(84,87,229,.5)}.btn.ghost{background:#f1f5f9;color:#475569}.btn.ghost:hover{background:#e2e8f0}.btn.success{background:#d1fae5;color:#059669}.btn.warn{background:#fef3c7;color:#d97706}.btn.danger{background:#ffe4e6;color:#e11d48}.btn.danger:hover{background:#fecdd3}
 table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}td{padding:12px 16px;border-bottom:1px solid #f1f5f9;color:var(--muted);vertical-align:top}tbody tr:hover{background:#f8fafc}.err-text{color:#e11d48;font-size:11px;font-weight:600;line-height:1.5}
 .badge{display:inline-block;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.badge.valid{background:#d1fae5;color:#059669}.badge.invalid{background:#ffe4e6;color:#e11d48}.badge.pending{background:#fef3c7;color:#d97706}.badge.submitted{background:#d1fae5;color:#059669}.badge.queued{background:#e0e5ff;color:#4644cf}.badge.failed{background:#ffe4e6;color:#e11d48}.badge.consolidated{background:#e0e5ff;color:#4644cf}.badge.processing{background:#dbeafe;color:#3b82f6}.badge.validated{background:#d1fae5;color:#059669}
 .summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}.summary-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center}.summary-card b{display:block;font-size:28px;font-weight:800;color:var(--brand)}.summary-card p{font-size:12px;font-weight:600;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
@@ -604,6 +651,10 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
       <div class="banner warn">⚠️ LHDN API Token is expiring soon (within 1 hour). Please refresh your token in Company Settings.</div>
     <?php endif; ?>
 
+    <?php if (isset($_GET['deleted'])): ?>
+      <div class="banner success">✓ Upload history deleted successfully including file and records.</div>
+    <?php endif; ?>
+
     <div class="steps">
       <div class="step"><div class="step-num">1</div><h3>Download Template</h3><p>Download our Excel template with all required fields pre-formatted.</p><a href="download_template.php" class="btn ghost" style="margin-top:12px">📥 Download</a></div>
       <div class="step"><div class="step-num">2</div><h3>Fill Your Data</h3><p>Add your invoice records. Ensure all mandatory fields are filled correctly.</p></div>
@@ -636,7 +687,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
         <div class="card">
           <h2>Recent Uploads</h2>
           <table>
-            <thead><tr><th>Filename</th><th>Date</th><th>Total</th><th>Valid</th><th>Invalid</th><th>Status</th><th>Action</th></tr></thead>
+            <thead><tr><th>Filename</th><th>Date</th><th>Total</th><th>Valid</th><th>Invalid</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody>
               <?php foreach ($uploadsList as $up): ?>
                 <tr>
@@ -646,7 +697,14 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
                   <td style="color:#059669"><?= $up['valid_records'] ?></td>
                   <td style="color:#e11d48"><?= $up['invalid_records'] ?></td>
                   <td><span class="badge <?= $up['status'] ?>"><?= $up['status'] ?></span></td>
-                  <td><a href="?upload=<?= $up['id'] ?>" class="btn ghost" style="padding:6px 12px;font-size:11px">View</a></td>
+                  <td>
+                    <a href="?upload=<?= $up['id'] ?>" class="btn ghost" style="padding:6px 12px;font-size:11px">View</a>
+                    <form method="POST" style="display:inline" onsubmit="return confirm('Delete this upload history, file, and all related records?')">
+                      <input type="hidden" name="action" value="delete_upload">
+                      <input type="hidden" name="upload_id" value="<?= $up['id'] ?>">
+                      <button type="submit" class="btn danger" style="padding:6px 12px;font-size:11px">Delete</button>
+                    </form>
+                  </td>
                 </tr>
               <?php endforeach; ?>
             </tbody>
@@ -781,63 +839,35 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
 </div>
 
 <script>
-function toggleSidebar(){document.getElementById('sidebar').classList.toggle('open');document.getElementById('sidebarOverlay').classList.toggle('open');}
-const dropZone=document.getElementById('dropZone'),fileInput=document.getElementById('fileInput'),fileInfo=document.getElementById('fileInfo');
-fileInput?.addEventListener('change',function(e){const f=e.target.files[0];if(f){document.getElementById('fileName').textContent=f.name;document.getElementById('fileSize').textContent=(f.size/1024).toFixed(2)+' KB';fileInfo.style.display='block';dropZone.style.display='none';}});
-['dragenter','dragover'].forEach(evt=>{dropZone?.addEventListener(evt,e=>{e.preventDefault();dropZone.classList.add('dragover');});});
-['dragleave','drop'].forEach(evt=>{dropZone?.addEventListener(evt,e=>{e.preventDefault();dropZone.classList.remove('dragover');});});
-dropZone?.addEventListener('drop',e=>{const files=e.dataTransfer.files;if(files.length>0){fileInput.files=files;fileInput.dispatchEvent(new Event('change'));}});
-document.getElementById('checkAll')?.addEventListener('change',function(e){document.querySelectorAll('.record-check').forEach(cb=>cb.checked=e.target.checked);updateSelected();});
-document.querySelectorAll('.record-check').forEach(cb=>cb.addEventListener('change',updateSelected));
-function updateSelected(){const checked=document.querySelectorAll('.record-check:checked');const ids=Array.from(checked).map(cb=>cb.value);const holder=document.getElementById('selectedIds');if(holder)holder.innerHTML=ids.map(id=>`<input type="hidden" name="record_ids[]" value="${id}">`).join('');const btn=document.getElementById('submitSelected');if(btn)btn.disabled=ids.length===0;}
+function toggleSidebar(){document.getElementById('sidebar').classList.toggle('open');document.getElementById('sidebarOverlay').classList.toggle('open')}
 
-// Step 11 & 12: Show response and logs in modal
-function showResponse(sub, logs){
-    let c = "";
-    
-    // Display API Response
-    if(sub.api_response){
-        try {
-            c += "=== SUBMISSION RESPONSE ===\n" + JSON.stringify(JSON.parse(sub.api_response), null, 2) + "\n\n";
-        } catch(e) {
-            c += "=== SUBMISSION RESPONSE ===\n" + sub.api_response + "\n\n";
-        }
-    }
-    
-    if(sub.document_status_response){
-        try {
-            c += "=== DOCUMENT STATUS RESPONSE ===\n" + JSON.stringify(JSON.parse(sub.document_status_response), null, 2);
-        } catch(e) {
-            c += "=== DOCUMENT STATUS RESPONSE ===\n" + sub.document_status_response;
-        }
-    }
-    
-    document.getElementById('jsonContent').textContent = c || 'No API response available.';
-    
-    // Display Internal Logs
-    const logsDiv = document.getElementById('logsContent');
-    if(logs && logs.length > 0){
-        let logsHtml = '';
-        logs.forEach(log => {
-            const statusClass = log.status || 'info';
-            const time = new Date(log.created_at.replace(' ', 'T')).toLocaleString();
-            logsHtml += `<div class="log-entry ${statusClass}">
-                <div class="log-time">${time} · <span class="log-step">${log.step}</span></div>
-                <div class="log-msg">${log.message}</div>
-                ${log.payload ? `<div style="font-size:11px;color:var(--faint);margin-top:4px;font-family:monospace">${log.payload}</div>` : ''}
-            </div>`;
-        });
-        logsDiv.innerHTML = logsHtml;
-        document.getElementById('logsSection').style.display = 'block';
-    } else {
-        logsDiv.innerHTML = '<div style="color:var(--faint);font-size:13px">No internal logs available.</div>';
-        document.getElementById('logsSection').style.display = 'block';
-    }
-    
-    document.getElementById('responseModal').style.display='grid';
-}
-function closeResponse(){document.getElementById('responseModal').style.display='none';}
-const overlay=document.getElementById('loadingOverlay');document.querySelectorAll('form').forEach(form=>{form.addEventListener('submit',function(e){if(this.onsubmit&&!this.onsubmit(e))return;overlay.classList.add('active');});});
+// File upload handling
+const dropZone=document.getElementById('dropZone'),fileInput=document.getElementById('fileInput'),fileInfo=document.getElementById('fileInfo'),fileName=document.getElementById('fileName'),fileSize=document.getElementById('fileSize');
+['dragenter','dragover'].forEach(e=>dropZone.addEventListener(e,ev=>{ev.preventDefault();dropZone.classList.add('dragover')}));
+['dragleave','drop'].forEach(e=>dropZone.addEventListener(e,ev=>{ev.preventDefault();dropZone.classList.remove('dragover')}));
+dropZone.addEventListener('drop',ev=>{const f=ev.dataTransfer.files;if(f.length)fileInput.files=f;handleFileSelect()});
+fileInput.addEventListener('change',handleFileSelect);
+function handleFileSelect(){const f=fileInput.files[0];if(f){fileName.textContent=f.name;fileSize.textContent=(f.size/1024/1024).toFixed(2)+' MB';fileInfo.style.display='block'}}
+
+// Checkbox handling
+const checkAll=document.getElementById('checkAll'),submitSelected=document.getElementById('submitSelected'),selectedIds=document.getElementById('selectedIds');
+if(checkAll){checkAll.addEventListener('change',function(){document.querySelectorAll('.record-check').forEach(cb=>{cb.checked=this.checked;updateSelectedCount()})})}
+document.addEventListener('change',function(e){if(e.target.classList.contains('record-check'))updateSelectedCount()});
+function updateSelectedCount(){const checked=document.querySelectorAll('.record-check:checked');if(submitSelected){submitSelected.disabled=checked.length===0;submitSelected.textContent='Submit Selected ('+checked.length+')'}
+selectedIds.innerHTML='';checked.forEach(cb=>{const inp=document.createElement('input');inp.type='hidden';inp.name='record_ids[]';inp.value=cb.value;selectedIds.appendChild(inp)})}
+
+// Form submission with loading
+document.querySelectorAll('form[method="POST"]').forEach(form=>{form.addEventListener('submit',function(e){if(this.querySelector('[name="action"]')&&this.querySelector('[name="action"]').value.includes('submit')){document.getElementById('loadingOverlay').classList.add('active')}})});
+
+// Modal functions
+function showResponse(sub,logs){const modal=document.getElementById('responseModal');const logsContent=document.getElementById('logsContent');const jsonContent=document.getElementById('jsonContent');
+logsContent.innerHTML='';if(logs&&logs.length){logs.forEach(log=>{const div=document.createElement('div');div.className='log-entry '+log.status;div.innerHTML='<div class="log-time">'+log.created_at+'</div><div class="log-step">'+log.step+' — '+log.status.toUpperCase()+'</div><div class="log-msg">'+log.message+'</div>';if(log.payload){try{const p=JSON.parse(log.payload);div.innerHTML+='<pre style="margin-top:8px;font-size:11px;color:var(--faint);white-space:pre-wrap">'+JSON.stringify(p,null,2)+'</pre>'}catch(e){div.innerHTML+='<div style="margin-top:8px;font-size:11px;color:var(--faint)">'+log.payload+'</div>'}}logsContent.appendChild(div)})}else{logsContent.innerHTML='<div style="padding:12px;color:var(--faint);font-size:13px">No internal logs available</div>'}
+jsonContent.textContent=sub.response_json?JSON.stringify(JSON.parse(sub.response_json),null,2):(sub.error_message||'No API response recorded');modal.style.display='grid'}
+function closeResponse(){document.getElementById('responseModal').style.display='none'}
+document.getElementById('responseModal').addEventListener('click',function(e){if(e.target===this)closeResponse()});
+
+// Auto-hide banners
+setTimeout(()=>{document.querySelectorAll('.banner').forEach(b=>{b.style.transition='opacity .3s';b.style.opacity='0';setTimeout(()=>b.remove(),300)})},8000);
 </script>
 </body>
 </html>
