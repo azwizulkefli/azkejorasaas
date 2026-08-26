@@ -412,3 +412,10 @@ ALTER TABLE public.einvoice_consolidated ADD COLUMN IF NOT EXISTS ei_uuid charac
 ALTER TABLE public.einvoice_consolidated ADD COLUMN IF NOT EXISTS lhdn_status character varying(50);
 ALTER TABLE public.einvoice_consolidated ADD COLUMN IF NOT EXISTS lhdn_response jsonb;
 ALTER TABLE public.einvoice_consolidated ADD COLUMN IF NOT EXISTS lhdn_response_2 jsonb;
+
+ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS sandbox_token text;
+ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS sandbox_token_expiry timestamp with time zone;
+ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS prod_token text;
+ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS prod_token_expiry timestamp with time zone;
+ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS phone character varying(50);
+ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS email character varying(100);
