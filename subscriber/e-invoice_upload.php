@@ -58,29 +58,33 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
     return ['send' => $jsonStr, 'convert' => $convertStr];
 }
 
-/* ================= HELPER: cURL API Calls ================= */
-function submitToLHDN($url, $token, $payload) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Authorization: Bearer ' . $token]);
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    return ['code' => $httpCode, 'response' => $response];
+/* ================= HELPER: cURL API Calls (Safe from redeclaration) ================= */
+if (!function_exists('submitToLHDN')) {
+    function submitToLHDN($url, $token, $payload) {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Authorization: Bearer ' . $token]);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        return ['code' => $httpCode, 'response' => $response];
+    }
 }
 
-function getStatusFromLHDN($url, $token) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Authorization: Bearer ' . $token]);
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    return ['code' => $httpCode, 'response' => $response];
+if (!function_exists('getStatusFromLHDN')) {
+    function getStatusFromLHDN($url, $token) {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Authorization: Bearer ' . $token]);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        return ['code' => $httpCode, 'response' => $response];
+    }
 }
 
 /* ================= HANDLE FILE UPLOAD ================= */
@@ -224,7 +228,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                 $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
 
-                // 4. Save JSON formats to consolidated table BEFORE submit
+                // 4. Save JSON formats to consolidated table BEFORE submit (Step g)
                 $pdo->prepare("UPDATE einvoice_consolidated SET ei_json = ?, ei_convert = ? WHERE id = ?")->execute([$payloads['send'], $payloads['convert'], $consolidatedId]);
                 $pdo->commit();
             } catch (Throwable $e) {
@@ -233,7 +237,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 continue;
             }
 
-            // 5. Submit to LHDN
+            // 5. Submit to LHDN (Step f)
             $submitResult = submitToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $tokenValue, $payloads['convert']);
             $submitResponse = json_decode($submitResult['response'], true);
             
@@ -244,13 +248,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
 
             $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300) ? 'Submitted' : 'Error';
+            
+            // Update return status and json response (Step h)
             $pdo->prepare("UPDATE einvoice_consolidated SET ei_submission_id = ?, ei_uuid = ?, lhdn_status = ?, lhdn_response = ? WHERE id = ?")
                 ->execute([$submissionUid, $uuid, $lhdnStatus, json_encode($submitResponse), $consolidatedId]);
             
             if ($lhdnStatus === 'Submitted') $summary['submitted']++;
             else $summary['error']++;
 
-            // 6. Interval 5 seconds, then get document status
+            // 6. Interval 5 seconds, then get document status (Step i)
             sleep(5);
 
             if ($submissionUid && $uuid) {
@@ -269,11 +275,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 elseif (stripos($docStatus, 'invalid') !== false) $summary['invalid']++;
                 else $summary['in_progress']++;
 
+                // Update return status 2 and json response 2 (Step j)
                 $pdo->prepare("UPDATE einvoice_consolidated SET lhdn_response_2 = ?, lhdn_status = ? WHERE id = ?")
                     ->execute([json_encode(['submission' => $statusResponse, 'details' => $detailsResponse]), $docStatus, $consolidatedId]);
             }
 
-            // 7. Interval 5 seconds before next date's data
+            // 7. Interval 5 seconds before next date's data (Step k)
             sleep(5);
         }
 
