@@ -397,3 +397,18 @@ CREATE TABLE IF NOT EXISTS public.einvoice_logs (
 );
 
 ALTER TABLE public.einvoice_logs ADD COLUMN IF NOT EXISTS step VARCHAR(50);
+
+-- 1. Add missing 'step' column to einvoice_logs (if not exists)
+ALTER TABLE public.einvoice_logs ADD COLUMN IF NOT EXISTS step VARCHAR(50);
+
+-- 2. Add consolidated_id to einvoice_records to link detail records to a consolidated submission
+ALTER TABLE public.einvoice_records ADD COLUMN IF NOT EXISTS consolidated_id uuid REFERENCES public.einvoice_consolidated(id) ON DELETE SET NULL;
+
+-- 3. Add payload and response tracking columns to einvoice_consolidated
+ALTER TABLE public.einvoice_consolidated ADD COLUMN IF NOT EXISTS ei_json text;
+ALTER TABLE public.einvoice_consolidated ADD COLUMN IF NOT EXISTS ei_convert text;
+ALTER TABLE public.einvoice_consolidated ADD COLUMN IF NOT EXISTS ei_submission_id character varying(255);
+ALTER TABLE public.einvoice_consolidated ADD COLUMN IF NOT EXISTS ei_uuid character varying(255);
+ALTER TABLE public.einvoice_consolidated ADD COLUMN IF NOT EXISTS lhdn_status character varying(50);
+ALTER TABLE public.einvoice_consolidated ADD COLUMN IF NOT EXISTS lhdn_response jsonb;
+ALTER TABLE public.einvoice_consolidated ADD COLUMN IF NOT EXISTS lhdn_response_2 jsonb;
