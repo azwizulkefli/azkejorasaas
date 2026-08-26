@@ -4,13 +4,13 @@ require_once __DIR__ . '/../includes/settings.php';
 require_once __DIR__ . '/../includes/myinvois.php';
 requireCustomer();
 ensure_settings_table($pdo);
- $uid = currentUserId();
- $me  = currentUser();
+$uid = currentUserId();
+$me  = currentUser();
 
 // Load or create company record
- $co = $pdo->prepare("SELECT * FROM companies WHERE user_id = ?");
- $co->execute([$uid]);
- $company = $co->fetch();
+$co = $pdo->prepare("SELECT * FROM companies WHERE user_id = ?");
+$co->execute([$uid]);
+$company = $co->fetch();
 
 if (!$company) {
     $pdo->prepare("INSERT INTO companies (user_id) VALUES (?)")->execute([$uid]);
@@ -25,7 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     if ($_POST['action'] === 'update_company') {
         $pdo->prepare("UPDATE companies SET 
             name = ?, registration_no = ?, address = ?, business_type = ?,
-            postcode = ?, state = ?, town = ?, updated_at = NOW()
+            postcode = ?, state = ?, town = ?, phone = ?, email = ?, updated_at = NOW()
             WHERE user_id = ?")
             ->execute([
                 trim($_POST['name'] ?? ''),
@@ -35,6 +35,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 trim($_POST['postcode'] ?? ''),
                 trim($_POST['state'] ?? ''),
                 trim($_POST['town'] ?? ''),
+                trim($_POST['phone'] ?? ''),
+                trim($_POST['email'] ?? ''),
                 $uid
             ]);
         header("Location: company.php?updated=company"); exit;
@@ -70,7 +72,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         header("Location: company.php?updated=env"); exit;
     }
 
-        /* ---------- Get Token (FIXED: proper OAuth format + scope) ---------- */
+    /* ---------- Get Token (FIXED: Saves ONLY to companies table) ---------- */
     if ($_POST['action'] === 'get_token') {
         // Determine environment
         $envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
@@ -101,7 +103,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $tokenUrl = rtrim($baseUrl, '/') . '/connect/token';
 
         // Build POST data manually (NOT http_build_query — to avoid encoding issues)
-        // LHDN requires: grant_type, client_id, client_secret, scope
         $postData = 'grant_type=client_credentials'
                   . '&client_id=' . rawurlencode($clientId)
                   . '&client_secret=' . rawurlencode($clientSecret)
@@ -122,82 +123,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         curl_setopt($ch, CURLOPT_TIMEOUT, 30);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
         curl_setopt($ch, CURLOPT_FAILONERROR, false);
-        curl_setopt($ch, CURLOPT_VERBOSE, true);
-
-        // Capture verbose output for debugging
-        $verboseLog = fopen('php://temp', 'w+');
-        curl_setopt($ch, CURLOPT_STDERR, $verboseLog);
 
         $response  = curl_exec($ch);
         $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlError = curl_error($ch);
         $curlErrno = curl_errno($ch);
-
-        // Get verbose log
-        rewind($verboseLog);
-        $verboseInfo = stream_get_contents($verboseLog);
-        fclose($verboseLog);
-
         curl_close($ch);
 
         // Handle cURL connection errors
         if ($curlError) {
             $errDetails = "Error #{$curlErrno}: {$curlError}";
-            if ($curlErrno == CURLE_COULDNT_RESOLVE_HOST) {
-                $errDetails .= " — Cannot resolve LHDN server. Check internet/DNS.";
-            } elseif ($curlErrno == CURLE_SSL_CONNECT_ERROR) {
-                $errDetails .= " — SSL/TLS handshake failed.";
-            } elseif ($curlErrno == CURLE_OPERATION_TIMEOUTED) {
-                $errDetails .= " — Connection timed out (30s).";
-            }
             header("Location: company.php?token=err&msg=" . urlencode("Connection failed: {$errDetails}"));
             exit;
         }
 
         // Parse JSON response
         $tokenData = json_decode($response, true);
-        $jsonError = json_last_error_msg();
 
         // Check for API errors
         if ($httpCode !== 200 || !isset($tokenData['access_token'])) {
             $errorMsg = "HTTP {$httpCode} from {$envLabel} LHDN API";
-
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                $errorMsg .= " — Invalid JSON ({$jsonError}). Raw: " . substr($response, 0, 500);
-            } else {
-                if (isset($tokenData['error'])) {
-                    $errorMsg .= " — Error: " . $tokenData['error'];
-                }
-                if (isset($tokenData['error_description'])) {
-                    $errorMsg .= " — " . $tokenData['error_description'];
-                }
-                if (isset($tokenData['message'])) {
-                    $errorMsg .= " — " . $tokenData['message'];
-                }
-                if (!isset($tokenData['error']) && !isset($tokenData['message'])) {
-                    $errorMsg .= " — Response: " . substr($response, 0, 500);
-                }
+            if (isset($tokenData['error'])) {
+                $errorMsg .= " — Error: " . $tokenData['error'];
             }
-
-            // Log verbose info for debugging
-            error_log("LHDN Token Request Debug:");
-            error_log("  URL: {$tokenUrl}");
-            error_log("  Client ID length: " . strlen($clientId));
-            error_log("  Client Secret length: " . strlen($clientSecret));
-            error_log("  HTTP Code: {$httpCode}");
-            error_log("  Response: " . substr($response, 0, 1000));
-            error_log("  Verbose: " . substr($verboseInfo, 0, 2000));
-
+            if (isset($tokenData['error_description'])) {
+                $errorMsg .= " — " . $tokenData['error_description'];
+            }
             header("Location: company.php?token=err&msg=" . urlencode($errorMsg));
             exit;
         }
 
-        // SUCCESS — Calculate expiry time
+        // SUCCESS — Calculate expiry time (1 minute buffer)
         $expiresIn  = (int)($tokenData['expires_in'] ?? 3600);
         $expiryTs   = time() + $expiresIn - 60;
         $expiryTime = date('Y-m-d H:i:s', $expiryTs);
 
-        // Save token to COMPANIES table
+        // FIXED: Save token to COMPANIES table ONLY (matches provided schema)
         if ($envIsProd) {
             $pdo->prepare("UPDATE companies SET 
                 prod_token = ?, 
@@ -214,13 +175,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 ->execute([$tokenData['access_token'], $expiryTime, $uid]);
         }
 
-        // Also save to users table for backward compatibility
-        $pdo->prepare("UPDATE users SET 
-            ei_token = ?, 
-            ei_token_at = NOW() 
-            WHERE id = ?")
-            ->execute([$tokenData['access_token'], $uid]);
-
         // Refresh company data
         $co->execute([$uid]);
         $company = $co->fetch();
@@ -231,9 +185,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 }
 
 /* ================= REFRESH DATA AFTER UPDATES ================= */
- $me       = currentUser();
- $envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
- $envLabel  = $envIsProd ? 'Production' : 'Sandbox (UAT)';
+$me        = currentUser();
+$envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
+$envLabel  = $envIsProd ? 'Production' : 'Sandbox (UAT)';
 
 // Determine LHDN base URL
 if ($envIsProd) {
@@ -243,47 +197,44 @@ if ($envIsProd) {
 }
 
 /* ================= TOKEN STATUS FROM COMPANIES TABLE ================= */
-// Get token for CURRENT environment from companies table
 if ($envIsProd) {
-    $currentToken      = $company['prod_token'] ?? null;
+    $currentToken       = $company['prod_token'] ?? null;
     $currentTokenExpiry = $company['prod_token_expiry'] ?? null;
 } else {
-    $currentToken      = $company['sandbox_token'] ?? null;
+    $currentToken       = $company['sandbox_token'] ?? null;
     $currentTokenExpiry = $company['sandbox_token_expiry'] ?? null;
 }
 
- $maskedTok = !empty($currentToken) ? substr($currentToken, 0, 10) . '••••••••••••' : null;
+$maskedTok = !empty($currentToken) ? substr($currentToken, 0, 10) . '••••••••••••' : null;
 
-// Determine token status
- $tokenStatus     = 'none';
- $tokenStatusMsg  = 'No token generated yet';
- $tokenStatusColor = '#f59e0b'; // amber
- $tokenExpiryTs   = null;
+$tokenStatus      = 'none';
+$tokenStatusMsg   = 'No token generated yet';
+$tokenStatusColor = '#f59e0b'; // amber
+$tokenExpiryTs    = null;
 
 if (!empty($currentToken)) {
     if (!empty($currentTokenExpiry)) {
         $tokenExpiryTs = strtotime($currentTokenExpiry);
         if ($tokenExpiryTs === false) {
-            $tokenStatus     = 'unknown';
-            $tokenStatusMsg  = 'Cannot parse expiry date: ' . $currentTokenExpiry;
+            $tokenStatus      = 'unknown';
+            $tokenStatusMsg   = 'Cannot parse expiry date: ' . $currentTokenExpiry;
             $tokenStatusColor = '#f59e0b';
         } elseif ($tokenExpiryTs <= time()) {
-            $tokenStatus     = 'expired';
-            $tokenStatusMsg  = 'Expired on ' . date('M d, Y · H:i', $tokenExpiryTs);
+            $tokenStatus      = 'expired';
+            $tokenStatusMsg   = 'Expired on ' . date('M d, Y · H:i', $tokenExpiryTs);
             $tokenStatusColor = '#ef4444'; // red
         } else {
-            $tokenStatus     = 'valid';
-            $tokenStatusMsg  = 'Valid until ' . date('M d, Y · H:i', $tokenExpiryTs);
+            $tokenStatus      = 'valid';
+            $tokenStatusMsg   = 'Valid until ' . date('M d, Y · H:i', $tokenExpiryTs);
             $tokenStatusColor = '#10b981'; // green
-            // Check if expiring soon (within 1 hour)
             if ($tokenExpiryTs <= time() + 3600) {
                 $tokenStatusMsg .= ' (expiring soon!)';
                 $tokenStatusColor = '#f59e0b';
             }
         }
     } else {
-        $tokenStatus     = 'unknown';
-        $tokenStatusMsg  = 'Token exists but no expiry date';
+        $tokenStatus      = 'unknown';
+        $tokenStatusMsg   = 'Token exists but no expiry date';
         $tokenStatusColor = '#f59e0b';
     }
 }
@@ -298,8 +249,8 @@ if ($envIsProd) {
     $otherEnvExpiry = $company['prod_token_expiry'] ?? null;
     $otherEnvLabel  = 'Production';
 }
- $otherEnvMasked = !empty($otherEnvToken) ? substr($otherEnvToken, 0, 10) . '••••••••••••' : null;
- $otherEnvStatus = 'none';
+$otherEnvMasked = !empty($otherEnvToken) ? substr($otherEnvToken, 0, 10) . '••••••••••••' : null;
+$otherEnvStatus = 'none';
 if (!empty($otherEnvToken)) {
     if (!empty($otherEnvExpiry)) {
         $otherExpiryTs = strtotime($otherEnvExpiry);
@@ -323,16 +274,12 @@ if (!empty($otherEnvToken)) {
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink)}
 a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
-
-/* ---------- LOADING OVERLAY ---------- */
 .loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.92);backdrop-filter:blur(4px);display:none;place-items:center;z-index:9999}
 .loading-overlay.active{display:grid}
 .spinner-wrap{text-align:center}
 .spinner{width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner-text{margin-top:16px;font-size:13px;font-weight:600;color:var(--muted)}
-
-/* ---------- SIDEBAR ---------- */
 .sidebar{position:fixed;top:0;left:0;bottom:0;width:260px;background:#fff;border-right:1px solid var(--line);padding:24px 16px;z-index:30;transition:transform .3s ease;display:flex;flex-direction:column}
 .sidebar-brand{padding:0 8px 24px;border-bottom:1px solid var(--line);margin-bottom:16px}
 .sidebar-nav{display:flex;flex-direction:column;gap:4px}
@@ -341,8 +288,6 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 .menu-item:hover{background:#f8fafc;color:var(--ink)}
 .menu-item.active{background:var(--grad);color:#fff;box-shadow:0 4px 12px -4px rgba(84,87,229,.4)}
 .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);z-index:25}
-
-/* ---------- MAIN LAYOUT ---------- */
 .main-wrapper{margin-left:260px;min-height:100vh;display:flex;flex-direction:column}
 .topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10;gap:12px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
@@ -352,7 +297,6 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 .menu-toggle{display:none;background:none;border:none;font-size:22px;cursor:pointer;color:var(--ink);padding:4px}
 .avatar{width:36px;height:36px;border-radius:50%;background:var(--grad);color:#fff;display:grid;place-items:center;font-weight:800;font-size:13px}
 .btn-out{background:#fff1f2;color:#e11d48;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700}
-
 .main{max-width:900px;margin:0 auto;padding:32px 24px;width:100%}
 h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .sub{color:var(--muted);font-size:14px;margin-top:4px}
@@ -372,23 +316,17 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .btn-save{background:var(--grad);color:#fff;border-radius:10px;padding:11px 24px;font-size:13px;font-weight:700;margin-top:20px}
 .btn-save:hover{opacity:.9}
 .hint{font-size:11px;color:var(--faint);margin-top:4px;word-break:break-all}
-
-/* ---- environment selector ---- */
 .env-opt{border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:4px;cursor:pointer;transition:.15s;background:#fff}
 .env-opt input{width:auto;margin:0 0 4px 0}
 .env-opt b{font-size:14px}
 .env-opt small{color:var(--faint);font-size:11px;word-break:break-all}
 .env-opt.on{border-color:var(--brand);background:#f5f6ff;box-shadow:0 0 0 3px rgba(99,102,241,.12)}
-
-/* ---- token box ---- */
 .trow{display:flex;justify-content:space-between;gap:12px;align-items:center;background:#f8fafc;border-radius:10px;padding:12px 16px;margin-top:10px;font-size:13px;flex-wrap:wrap}
 .trow span{color:var(--muted);font-weight:600}
 .trow b{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:#1e293b;word-break:break-all}
 .badge-env{display:inline-block;border-radius:999px;padding:3px 12px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
 .badge-env.sandbox{background:#e0e5ff;color:#4644cf}
 .badge-env.prod{background:#d1fae5;color:#059669}
-
-/* ---- token status badge ---- */
 .token-status-box{border-radius:12px;padding:16px 18px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .token-status-box.valid{background:#d1fae5;border:1px solid #6ee7b7}
 .token-status-box.expired{background:#ffe4e6;border:1px solid #fda4af}
@@ -397,8 +335,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .token-status-text{flex:1;min-width:200px}
 .token-status-title{font-size:14px;font-weight:700;color:var(--ink)}
 .token-status-sub{font-size:12px;color:var(--muted);margin-top:2px}
-
-/* ---------- RESPONSIVE ---------- */
 @media(max-width:900px){
   .sidebar{transform:translateX(-100%)}
   .sidebar.open{transform:translateX(0)}
@@ -423,7 +359,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   </div>
 </div>
 
-<!-- ============ SIDEBAR ============ -->
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-brand">
     <span class="brand"><span class="logo">⚡</span>AZ Kejora <em>SaaS</em></span>
@@ -442,7 +377,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 </aside>
 <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
 
-<!-- ============ MAIN WRAPPER ============ -->
 <div class="main-wrapper">
   <nav class="topbar">
     <div style="display:flex;align-items:center;gap:12px">
@@ -512,6 +446,11 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
             <?php endforeach; ?>
           </select>
         </div>
+      </div>
+
+      <div class="grid2">
+        <div class="field"><label>Phone</label><input type="text" name="phone" value="<?= htmlspecialchars($company['phone'] ?? '') ?>" placeholder="+60123456789"></div>
+        <div class="field"><label>Email</label><input type="email" name="email" value="<?= htmlspecialchars($company['email'] ?? '') ?>" placeholder="admin@company.com"></div>
       </div>
 
       <button type="submit" class="btn-save">Save company profile</button>
@@ -590,7 +529,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
       <h2>🔑 MyInvois Access Token</h2>
       <p class="msub">Requests an OAuth 2.0 <code>client_credentials</code> token from LHDN using your saved <?= htmlspecialchars($envLabel) ?> credentials, then stores it in your company profile.</p>
 
-      <!-- Token Status Display -->
       <div class="token-status-box <?= $tokenStatus ?>">
         <div class="token-status-icon">
           <?php if ($tokenStatus === 'valid'): ?>✅
@@ -633,12 +571,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
         <span>Token expiry</span>
         <b><?= !empty($currentTokenExpiry) ? date('M d, Y · H:i:s', strtotime($currentTokenExpiry)) : '—' ?></b>
       </div>
-      <div class="trow">
-        <span>Raw expiry (debug)</span>
-        <b style="font-size:11px"><?= htmlspecialchars($currentTokenExpiry ?? 'NULL') ?></b>
-      </div>
 
-      <!-- Other environment token status -->
       <div class="trow" style="margin-top:14px;background:#f1f5f9">
         <span><?= $otherEnvLabel ?> token</span>
         <b>
@@ -661,7 +594,6 @@ function toggleSidebar(){
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('sidebarOverlay').classList.toggle('open');
 }
-
 const overlay = document.getElementById('loadingOverlay');
 document.querySelectorAll('form').forEach(form => {
   form.addEventListener('submit', function(e) {
@@ -669,14 +601,6 @@ document.querySelectorAll('form').forEach(form => {
     overlay.classList.add('active');
   });
 });
-document.querySelectorAll('a[href]').forEach(link => {
-  link.addEventListener('click', function() {
-    if (!this.href.includes('#') && !this.target) {
-      overlay.classList.add('active');
-    }
-  });
-});
-// keep environment cards highlighted when radio changes
 document.querySelectorAll('.env-opt input').forEach(r => r.addEventListener('change', () => {
   document.querySelectorAll('.env-opt').forEach(o => o.classList.remove('on'));
   r.closest('.env-opt').classList.add('on');
