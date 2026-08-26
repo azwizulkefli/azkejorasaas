@@ -70,14 +70,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         header("Location: company.php?updated=env"); exit;
     }
 
-    /* ---------- Get Token (FIXED: saves to companies table) ---------- */
+        /* ---------- Get Token (FIXED: proper OAuth format + scope) ---------- */
     if ($_POST['action'] === 'get_token') {
-        // Determine environment from user settings
+        // Determine environment
         $envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
         $env       = $envIsProd ? 'prod' : 'sandbox';
         $envLabel  = $envIsProd ? 'Production' : 'Sandbox';
 
-        // Get credentials FROM companies table (not users table)
+        // Get credentials FROM companies table
         if ($envIsProd) {
             $clientId     = trim($company['prod_clientid'] ?? '');
             $clientSecret = trim($company['prod_secret1'] ?? '');
@@ -100,12 +100,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
         $tokenUrl = rtrim($baseUrl, '/') . '/connect/token';
 
-        // Build OAuth 2.0 client_credentials POST body
-        $postData = http_build_query([
-            'grant_type'    => 'client_credentials',
-            'client_id'     => $clientId,
-            'client_secret' => $clientSecret
-        ]);
+        // Build POST data manually (NOT http_build_query — to avoid encoding issues)
+        // LHDN requires: grant_type, client_id, client_secret, scope
+        $postData = 'grant_type=client_credentials'
+                  . '&client_id=' . rawurlencode($clientId)
+                  . '&client_secret=' . rawurlencode($clientSecret)
+                  . '&scope=InvoicingAPI';
 
         // Initialize cURL
         $ch = curl_init();
@@ -117,34 +117,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             'Content-Type: application/x-www-form-urlencoded',
             'Accept: application/json'
         ]);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);   // Temporarily disable for sandbox
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);       // Temporarily disable for sandbox
         curl_setopt($ch, CURLOPT_TIMEOUT, 30);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
         curl_setopt($ch, CURLOPT_FAILONERROR, false);
+        curl_setopt($ch, CURLOPT_VERBOSE, true);
+
+        // Capture verbose output for debugging
+        $verboseLog = fopen('php://temp', 'w+');
+        curl_setopt($ch, CURLOPT_STDERR, $verboseLog);
 
         $response  = curl_exec($ch);
         $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlError = curl_error($ch);
         $curlErrno = curl_errno($ch);
+
+        // Get verbose log
+        rewind($verboseLog);
+        $verboseInfo = stream_get_contents($verboseLog);
+        fclose($verboseLog);
+
         curl_close($ch);
 
         // Handle cURL connection errors
         if ($curlError) {
             $errDetails = "Error #{$curlErrno}: {$curlError}";
-            // Provide helpful hints based on common errors
             if ($curlErrno == CURLE_COULDNT_RESOLVE_HOST) {
-                $errDetails .= " — Cannot resolve LHDN server. Check your internet/DNS.";
+                $errDetails .= " — Cannot resolve LHDN server. Check internet/DNS.";
             } elseif ($curlErrno == CURLE_SSL_CONNECT_ERROR) {
-                $errDetails .= " — SSL/TLS handshake failed. Check server SSL certificate.";
+                $errDetails .= " — SSL/TLS handshake failed.";
             } elseif ($curlErrno == CURLE_OPERATION_TIMEOUTED) {
-                $errDetails .= " — Connection timed out (30s). LHDN server may be slow or unreachable.";
+                $errDetails .= " — Connection timed out (30s).";
             }
-            header("Location: company.php?token=err&msg=" . urlencode("Connection failed to {$envLabel} LHDN API. {$errDetails}"));
+            header("Location: company.php?token=err&msg=" . urlencode("Connection failed: {$errDetails}"));
             exit;
         }
 
-        // Parse JSON response from LHDN
+        // Parse JSON response
         $tokenData = json_decode($response, true);
         $jsonError = json_last_error_msg();
 
@@ -153,69 +163,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $errorMsg = "HTTP {$httpCode} from {$envLabel} LHDN API";
 
             if (json_last_error() !== JSON_ERROR_NONE) {
-                // Non-JSON response (could be HTML error page)
-                $errorMsg .= " — Invalid JSON response ({$jsonError}). Raw: " . substr($response, 0, 300);
+                $errorMsg .= " — Invalid JSON ({$jsonError}). Raw: " . substr($response, 0, 500);
             } else {
-                // JSON error response from LHDN
                 if (isset($tokenData['error'])) {
                     $errorMsg .= " — Error: " . $tokenData['error'];
                 }
                 if (isset($tokenData['error_description'])) {
                     $errorMsg .= " — " . $tokenData['error_description'];
                 }
-                if (!isset($tokenData['error']) && !isset($tokenData['error_description'])) {
+                if (isset($tokenData['message'])) {
+                    $errorMsg .= " — " . $tokenData['message'];
+                }
+                if (!isset($tokenData['error']) && !isset($tokenData['message'])) {
                     $errorMsg .= " — Response: " . substr($response, 0, 500);
                 }
             }
+
+            // Log verbose info for debugging
+            error_log("LHDN Token Request Debug:");
+            error_log("  URL: {$tokenUrl}");
+            error_log("  Client ID length: " . strlen($clientId));
+            error_log("  Client Secret length: " . strlen($clientSecret));
+            error_log("  HTTP Code: {$httpCode}");
+            error_log("  Response: " . substr($response, 0, 1000));
+            error_log("  Verbose: " . substr($verboseInfo, 0, 2000));
 
             header("Location: company.php?token=err&msg=" . urlencode($errorMsg));
             exit;
         }
 
         // SUCCESS — Calculate expiry time
-        // LHDN returns expires_in in seconds (typically 3600 = 1 hour)
         $expiresIn  = (int)($tokenData['expires_in'] ?? 3600);
-        // Subtract 60 seconds buffer to avoid edge case of using token right at expiry
         $expiryTs   = time() + $expiresIn - 60;
         $expiryTime = date('Y-m-d H:i:s', $expiryTs);
 
-        // Save token to COMPANIES table (this is the key fix!)
+        // Save token to COMPANIES table
         if ($envIsProd) {
-            $stmtToken = $pdo->prepare("UPDATE companies SET 
+            $pdo->prepare("UPDATE companies SET 
                 prod_token = ?, 
                 prod_token_expiry = ?, 
                 updated_at = NOW() 
-                WHERE user_id = ?");
-            $stmtToken->execute([
-                $tokenData['access_token'],
-                $expiryTime,
-                $uid
-            ]);
+                WHERE user_id = ?")
+                ->execute([$tokenData['access_token'], $expiryTime, $uid]);
         } else {
-            $stmtToken = $pdo->prepare("UPDATE companies SET 
+            $pdo->prepare("UPDATE companies SET 
                 sandbox_token = ?, 
                 sandbox_token_expiry = ?, 
                 updated_at = NOW() 
-                WHERE user_id = ?");
-            $stmtToken->execute([
-                $tokenData['access_token'],
-                $expiryTime,
-                $uid
-            ]);
+                WHERE user_id = ?")
+                ->execute([$tokenData['access_token'], $expiryTime, $uid]);
         }
 
         // Also save to users table for backward compatibility
-        // (in case other code reads from users.ei_token)
         $pdo->prepare("UPDATE users SET 
             ei_token = ?, 
             ei_token_at = NOW() 
             WHERE id = ?")
-            ->execute([
-                $tokenData['access_token'],
-                $uid
-            ]);
+            ->execute([$tokenData['access_token'], $uid]);
 
-        // Refresh company data so the display below shows the new token
+        // Refresh company data
         $co->execute([$uid]);
         $company = $co->fetch();
 
