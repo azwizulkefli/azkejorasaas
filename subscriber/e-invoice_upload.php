@@ -19,7 +19,7 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
     $map = [
         '*|ei_invoiceno|*'           => $record['sale_no'] ?? '',
         '*|ei_invoicedate|*'         => date('Y-m-d', strtotime($record['sale_datetime'])),
-        '*|ei_invoicetype|*'         => $record['document_type'] ?? '03', // 03 = Consolidated e-Invoice
+        '*|ei_invoicetype|*'         => $record['document_type'] ?? '03',
         '*|ei_invoicecurrency|*'     => 'MYR',
         '*|ei_msiccode|*'            => $company['msic_code'] ?? '',
         '*|ei_msicname|*'            => $company['business_type'] ?? '',
@@ -30,14 +30,14 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
         '*|ei_suppliertown|*'        => $company['town'] ?? '',
         '*|ei_supplierphone|*'       => $company['phone'] ?? '',
         '*|ei_supplieremail|*'       => $company['email'] ?? '',
-        '*|ei_customertin|*'         => $record['customer_tin'] ?? 'EI00000000010', // General TIN
+        '*|ei_customertin|*'         => $record['customer_tin'] ?? 'EI00000000010',
         '*|ei_customername|*'        => $record['customer_name'] ?? 'Consolidated Sales',
         '*|ei_customeradd1|*'        => $record['customer_address'] ?? 'Multiple Customers',
         '*|ei_customerpostcode|*'    => $record['customer_postcode'] ?? '00000',
         '*|ei_customertown|*'        => $record['customer_town'] ?? 'N/A',
         '*|ei_customerphone|*'       => $record['customer_phone'] ?? '0000000000',
         '*|ei_customeremail|*'       => $record['customer_email'] ?? 'na@na.com',
-        '*|ei_customeric|*'          => $record['customer_ic'] ?? '000000000000', // General IC/NRIC
+        '*|ei_customeric|*'          => $record['customer_ic'] ?? '000000000000',
         '*|ei_invoicetotalamount|*'  => number_format((float)$record['total_amount'], 2, '.', ''),
         '*|ei_cninvoice_referenceno|*' => $record['reference_no'] ?? 'NA',
         '*|ei_cninvoice_uuid|*'      => $record['reference_uuid'] ?? 'NA'
@@ -58,7 +58,7 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
     return ['send' => $jsonStr, 'convert' => $convertStr];
 }
 
-/* ================= HELPER: cURL API Calls (Safe from redeclaration) ================= */
+/* ================= HELPER: cURL API Calls ================= */
 if (!function_exists('submitToLHDN')) {
     function submitToLHDN($url, $token, $payload) {
         $ch = curl_init();
@@ -153,6 +153,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         header("Location: e-invoice_upload.php?err=" . urlencode('Company profile not found.')); exit;
     }
 
+    // FIXED: Get API URLs from settings table instead of users table
+    $stmtSandboxUrl = $pdo->prepare("SELECT value FROM settings WHERE module = 'einvoice' AND key = 'sandbox_url'");
+    $stmtSandboxUrl->execute();
+    $sandboxUrl = $stmtSandboxUrl->fetchColumn() ?: 'https://preprod-api.myinvois.hasil.gov.my';
+    
+    $stmtProdUrl = $pdo->prepare("SELECT value FROM settings WHERE module = 'einvoice' AND key = 'prod_url'");
+    $stmtProdUrl->execute();
+    $prodUrl = $stmtProdUrl->fetchColumn() ?: 'https://api.myinvois.hasil.gov.my';
+
     $sandboxToken = $company['sandbox_token'] ?? null;
     $prodToken = $company['prod_token'] ?? null;
     
@@ -160,7 +169,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $tokenValue = $isSandbox ? $sandboxToken : $prodToken;
     $tokenExpiry = $isSandbox ? ($company['sandbox_token_expiry'] ?? null) : ($company['prod_token_expiry'] ?? null);
     $envLabel = $isSandbox ? 'Sandbox' : 'Production';
-    $apiBaseUrl = $isSandbox ? $me['ei_url_sandbox'] : $me['ei_url_prod'];
+    
+    // Use the correct URL from settings
+    $apiBaseUrl = $isSandbox ? $sandboxUrl : $prodUrl;
 
     if (empty($tokenValue) || empty($tokenExpiry) || strtotime($tokenExpiry) <= time()) {
         header("Location: e-invoice_upload.php?err=" . urlencode("LHDN {$envLabel} API Token expired or missing. Please refresh in Company Settings.")); exit;
@@ -178,7 +189,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     // ===== PROCESS CONSOLIDATED SUBMISSION =====
     if ($_POST['action'] === 'process_consolidated') {
-        set_time_limit(0); // Prevent timeout during looping
+        set_time_limit(0);
         ignore_user_abort(true);
 
         $stmt = $pdo->prepare("SELECT DATE(sale_datetime) as sale_date FROM einvoice_records WHERE user_id = ? AND validation_status = 'valid' AND submission_status = 'pending' GROUP BY DATE(sale_datetime) ORDER BY sale_date ASC");
@@ -203,24 +214,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             $pdo->beginTransaction();
             try {
-                // 1. Create consolidated record
                 $stmtConsol = $pdo->prepare("INSERT INTO einvoice_consolidated (user_id, sale_date, total_records, total_amount, total_tax, grand_total, submission_status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'processing', NOW()) RETURNING id");
                 $stmtConsol->execute([$uid, $saleDate, count($records), $totalAmount, $totalTax, $grandTotal]);
                 $consolidatedId = $stmtConsol->fetchColumn();
 
-                // 2. Update detail records with consolidated_id
                 $recordIds = array_column($records, 'id');
                 $placeholders = implode(',', array_fill(0, count($recordIds), '?'));
                 $pdo->prepare("UPDATE einvoice_records SET consolidated_id = ?, submission_status = 'queued' WHERE id IN ($placeholders)")->execute(array_merge([$consolidatedId], $recordIds));
 
-                // 3. Build Payloads
                 $consolidatedData = [
                     'sale_no'         => 'CONSOL-' . str_replace('-', '', $saleDate) . '-' . substr($uid, 0, 8),
                     'customer_name'   => 'Consolidated Sales',
                     'customer_address'=> 'Multiple Customers',
                     'customer_email'  => $me['email'] ?? 'na@na.com',
-                    'customer_tin'    => 'EI00000000010', // General TIN
-                    'customer_ic'     => '000000000000',   // General IC
+                    'customer_tin'    => 'EI00000000010',
+                    'customer_ic'     => '000000000000',
                     'total_amount'    => $grandTotal,
                     'sale_datetime'   => $saleDate . ' 23:59:59',
                     'document_type'   => '03'
@@ -228,7 +236,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                 $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
 
-                // 4. Save JSON formats to consolidated table BEFORE submit (Step g)
                 $pdo->prepare("UPDATE einvoice_consolidated SET ei_json = ?, ei_convert = ? WHERE id = ?")->execute([$payloads['send'], $payloads['convert'], $consolidatedId]);
                 $pdo->commit();
             } catch (Throwable $e) {
@@ -237,7 +244,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 continue;
             }
 
-            // 5. Submit to LHDN (Step f)
             $submitResult = submitToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $tokenValue, $payloads['convert']);
             $submitResponse = json_decode($submitResult['response'], true);
             
@@ -249,14 +255,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300) ? 'Submitted' : 'Error';
             
-            // Update return status and json response (Step h)
             $pdo->prepare("UPDATE einvoice_consolidated SET ei_submission_id = ?, ei_uuid = ?, lhdn_status = ?, lhdn_response = ? WHERE id = ?")
                 ->execute([$submissionUid, $uuid, $lhdnStatus, json_encode($submitResponse), $consolidatedId]);
             
             if ($lhdnStatus === 'Submitted') $summary['submitted']++;
             else $summary['error']++;
 
-            // 6. Interval 5 seconds, then get document status (Step i)
             sleep(5);
 
             if ($submissionUid && $uuid) {
@@ -275,12 +279,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 elseif (stripos($docStatus, 'invalid') !== false) $summary['invalid']++;
                 else $summary['in_progress']++;
 
-                // Update return status 2 and json response 2 (Step j)
                 $pdo->prepare("UPDATE einvoice_consolidated SET lhdn_response_2 = ?, lhdn_status = ? WHERE id = ?")
                     ->execute([json_encode(['submission' => $statusResponse, 'details' => $detailsResponse]), $docStatus, $consolidatedId]);
             }
 
-            // 7. Interval 5 seconds before next date's data (Step k)
             sleep(5);
         }
 
@@ -438,7 +440,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
         <p class="msub">Select your completed Excel or CSV file to begin validation.</p>
         <form method="POST" enctype="multipart/form-data" id="uploadForm">
           <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-            <div class="upload-icon">📤</div>
+            <div class="upload-icon"></div>
             <h3 style="font-size:18px;font-weight:700;margin-bottom:8px">Drop your file here</h3>
             <p style="color:var(--muted);margin-bottom:16px">or click to browse</p>
             <p style="font-size:12px;color:var(--faint)">Supports CSV, XLSX, XLS · Max 10MB</p>
@@ -473,7 +475,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
                     <form method="POST" style="display:inline" onsubmit="return confirm('Delete this upload, its file, and all associated logs/records?');">
                       <input type="hidden" name="action" value="delete_upload">
                       <input type="hidden" name="upload_id" value="<?= htmlspecialchars($up['id']) ?>">
-                      <button type="submit" class="btn ghost" style="padding:6px 12px;font-size:11px;color:#e11d48">🗑️ Delete</button>
+                      <button type="submit" class="btn ghost" style="padding:6px 12px;font-size:11px;color:#e11d48">️ Delete</button>
                     </form>
                   </td>
                 </tr>
