@@ -8,7 +8,7 @@ ensure_settings_table($pdo);
  $uid = currentUserId();
  $me  = currentUser();
 
-/* ================= HELPER: Internal Logging ================= */
+/* ================= HELPER: Internal Logging (Step 11) ================= */
 function logInternal($pdo, $submissionId, $step, $status, $message, $payload = null) {
     $stmt = $pdo->prepare("INSERT INTO einvoice_logs 
         (submission_id, step, status, message, payload, created_at) 
@@ -22,7 +22,7 @@ function logInternal($pdo, $submissionId, $step, $status, $message, $payload = n
     ]);
 }
 
-/* ================= HELPER: Build LHDN JSON Payload ================= */
+/* ================= HELPER: Build LHDN JSON Payload (Step 5-8) ================= */
 function buildLHDNPayload($record, $company, $jsonSendTemplate, $jsonConvertTemplate) {
     $map = [
         '*|ei_invoiceno|*'           => $record['sale_no'] ?? '',
@@ -34,29 +34,29 @@ function buildLHDNPayload($record, $company, $jsonSendTemplate, $jsonConvertTemp
         '*|ei_suppliertin|*'         => $company['taxpayer_tin'] ?? '',
         '*|ei_suppliername|*'        => $company['name'] ?? '',
         '*|ei_supplieradd1|*'        => $company['address'] ?? '',
-        '*|ei_supplierpostcode|*'   => $company['postcode'] ?? '',
+        '*|ei_supplierpostcode|*'    => $company['postcode'] ?? '',
         '*|ei_suppliertown|*'        => $company['town'] ?? '',
-        '*|ei_supplierphone|*'      => $company['phone'] ?? '',
-        '*|ei_supplieremail|*'      => $company['email'] ?? '',
+        '*|ei_supplierphone|*'        => $company['phone'] ?? '',
+        '*|ei_supplieremail|*'       => $company['email'] ?? '',
         '*|ei_customertin|*'         => $record['customer_tin'] ?? '',
         '*|ei_customername|*'        => $record['customer_name'] ?? '',
-        '*|ei_customeradd1|*'        => $record['customer_address'] ?? '',
-        '*|ei_customerpostcode|*'    => $record['customer_postcode'] ?? '',
-        '*|ei_customertown|*'        => $record['customer_town'] ?? '',
-        '*|ei_customerphone|*'       => $record['customer_phone'] ?? '',
-        '*|ei_customeremail|*'       => $record['customer_email'] ?? '',
-        '*|ei_invoicetotalamount|*'  => number_format((float)$record['total_amount'], 2, '.', ''),
+        '*|ei_customeradd1|*'         => $record['customer_address'] ?? '',
+        '*|ei_customerpostcode|*'     => $record['customer_postcode'] ?? '',
+        '*|ei_customertown|*'         => $record['customer_town'] ?? '',
+        '*|ei_customerphone|*'        => $record['customer_phone'] ?? '',
+        '*|ei_customeremail|*'        => $record['customer_email'] ?? '',
+        '*|ei_invoicetotalamount|*'   => number_format((float)$record['total_amount'], 2, '.', ''),
         '*|ei_cninvoice_referenceno|*' => $record['reference_no'] ?? 'NA',
-        '*|ei_cninvoice_uuid|*'      => $record['reference_uuid'] ?? 'NA'
+        '*|ei_cninvoice_uuid|*'       => $record['reference_uuid'] ?? 'NA'
     ];
 
-    // Step 5 & 6: Generate JSON from setting + replace parameters
+    // Step 5 & 6: Generate JSON from setting + replace parameters (start with *| end with |*)
     $jsonStr = str_replace(array_keys($map), array_values($map), $jsonSendTemplate);
     
     $base64Doc = base64_encode($jsonStr);
     $sha256 = hash('sha256', $jsonStr);
     
-    // Step 7 & 8: Convert format from setting + replace parameters
+    // Step 7 & 8: Convert format from setting + replace parameters (start with *| end with |*)
     $convertMap = [
         '*|ei_convertbase64|*'  => $base64Doc,
         '*|ei_convertsha256|*' => $sha256,
@@ -137,7 +137,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     
     // ===== FIXED: Properly fetch company data =====
-    $stmtCompany = $pdo->prepare("SELECT * FROM companies WHERE user_id = ?");
+    $stmtCompany = $pdo->prepare("SELECT * FROM companies WHERE user_id = ? LIMIT 1");
     $stmtCompany->execute([$uid]);
     $company = $stmtCompany->fetch(PDO::FETCH_ASSOC);
     
@@ -147,33 +147,101 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 
     // ===== Step 4: Check Token Expiry from company table =====
-    // Determine environment (sandbox or production) - adjust based on your company table structure
-    $isSandbox = ($company['environment'] ?? 'sandbox') === 'sandbox';
+    // Schema: sandbox_token, sandbox_token_expiry, prod_token, prod_token_expiry
+    // No 'environment' column — auto-detect which token to use
     
-    // Try multiple possible column names for token expiry
-    $tokenExpiry = null;
-    if ($isSandbox) {
-        $tokenExpiry = $company['sandbox_token_expiry'] 
-                    ?? $company['token_expiry'] 
-                    ?? $company['sandbox_expiry'] 
-                    ?? null;
+    $sandboxToken      = $company['sandbox_token'] ?? null;
+    $sandboxTokenExp   = $company['sandbox_token_expiry'] ?? null;
+    $prodToken         = $company['prod_token'] ?? null;
+    $prodTokenExp      = $company['prod_token_expiry'] ?? null;
+    
+    // Auto-detect: Use sandbox if sandbox_token exists, else use production
+    if (!empty($sandboxToken)) {
+        $isSandbox    = true;
+        $tokenValue   = $sandboxToken;
+        $tokenExpiry  = $sandboxTokenExp;
+        $envLabel     = 'Sandbox';
+    } elseif (!empty($prodToken)) {
+        $isSandbox    = false;
+        $tokenValue   = $prodToken;
+        $tokenExpiry  = $prodTokenExp;
+        $envLabel     = 'Production';
     } else {
-        $tokenExpiry = $company['prod_token_expiry'] 
-                    ?? $company['production_token_expiry'] 
-                    ?? $company['token_expiry'] 
-                    ?? null;
-    }
-    
-    // Validate token expiry
-    if (!$tokenExpiry || strtotime($tokenExpiry) <= time()) {
-        $envLabel = $isSandbox ? 'Sandbox' : 'Production';
-        header("Location: e-invoice_upload.php?err=" . urlencode("LHDN {$envLabel} API Token expired. Please refresh your token in Company Settings.")); 
+        // No token at all
+        header("Location: e-invoice_upload.php?err=" . urlencode('No LHDN API Token found. Please generate your token in Company Settings.')); 
         exit;
     }
     
-    // Check if token is expiring soon (within 1 hour) - warning only
-    $tokenWarningThreshold = time() + 3600; // 1 hour
-    $tokenWarning = ($tokenExpiry && strtotime($tokenExpiry) <= $tokenWarningThreshold);
+    // Parse expiry timestamp (handles PostgreSQL "timestamp with time zone" format)
+    $expiryTimestamp = null;
+    if ($tokenExpiry) {
+        // PostgreSQL returns timestamp like "2025-01-15 10:30:00.000000+00" 
+        // or "2025-01-15 10:30:00+08"
+        $expiryTimestamp = strtotime($tokenExpiry);
+        
+        // If strtotime fails, try parsing manually
+        if ($expiryTimestamp === false) {
+            // Try removing microseconds and timezone offset
+            $cleanDate = preg_replace('/\.\d+/', '', $tokenExpiry);
+            $expiryTimestamp = strtotime($cleanDate);
+        }
+    }
+    
+    // Current time
+    $currentTime = time();
+    
+    // Check if token is expired
+    $tokenExpired = false;
+    $expireReason = '';
+    
+    if (empty($tokenValue)) {
+        $tokenExpired = true;
+        $expireReason = 'Token value is empty';
+    } elseif (empty($tokenExpiry)) {
+        $tokenExpired = true;
+        $expireReason = 'Token expiry date is empty/null';
+    } elseif ($expiryTimestamp === false || $expiryTimestamp === null) {
+        $tokenExpired = true;
+        $expireReason = 'Cannot parse token expiry: ' . $tokenExpiry;
+    } elseif ($expiryTimestamp <= $currentTime) {
+        $tokenExpired = true;
+        $expireReason = "Token expired on " . date('Y-m-d H:i:s', $expiryTimestamp);
+    }
+    
+    // Debug info
+    $debugTokenInfo = [
+        'env'              => $envLabel,
+        'sandbox_token'   => $sandboxToken ? 'SET (' . substr($sandboxToken, 0, 10) . '...)' : 'NULL',
+        'sandbox_expiry'   => $sandboxTokenExp ? $sandboxTokenExp : 'NULL',
+        'prod_token'       => $prodToken ? 'SET (' . substr($prodToken, 0, 10) . '...)' : 'NULL',
+        'prod_expiry'      => $prodTokenExp ? $prodTokenExp : 'NULL',
+        'using_env'        => $envLabel,
+        'using_token'      => $tokenValue ? 'SET' : 'NULL',
+        'using_expiry_raw' => $tokenExpiry ?: 'NULL',
+        'expiry_timestamp' => $expiryTimestamp ?: 'FAILED',
+        'expiry_readable'  => $expiryTimestamp ? date('Y-m-d H:i:s', $expiryTimestamp) : 'N/A',
+        'current_timestamp'=> $currentTime,
+        'current_readable' => date('Y-m-d H:i:s', $currentTime),
+        'is_expired'       => $tokenExpired ? 'YES' : 'NO',
+        'expire_reason'    => $expireReason ?: 'N/A'
+    ];
+    
+    if ($tokenExpired) {
+        $errMsg = "LHDN {$envLabel} API Token expired. Reason: {$expireReason}. Please refresh your token in Company Settings.";
+        $redirectUrl = "e-invoice_upload.php?err=" . urlencode($errMsg);
+        
+        // Add debug info to session or query string
+        if (isset($_POST['action']) && strpos($_POST['action'], 'consolidated') !== false) {
+            $redirectUrl .= "&debug=token";
+        }
+        
+        header("Location: " . $redirectUrl); 
+        exit;
+    }
+    
+    // Check if token is expiring soon (within 1 hour)
+    $tokenWarningThreshold = $currentTime + 3600;
+    $tokenWarning = ($expiryTimestamp && $expiryTimestamp <= $tokenWarningThreshold);
 
     // ===== Step 5-8: Fetch JSON templates from settings table =====
     $stmtSend = $pdo->prepare("SELECT value FROM settings WHERE module = 'einvoice' AND key = 'json_send'");
@@ -228,8 +296,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     
                     // Step 11: Internal log
                     logInternal($pdo, $subId, 'queue_created', 'success', 
-                        "Record queued for submission. Sale No: " . ($record['sale_no'] ?? 'N/A'),
-                        ['payload_size' => strlen($payload)]
+                        "Record queued for submission. Sale No: " . ($record['sale_no'] ?? 'N/A') . " | Token: {$envLabel} valid until " . date('Y-m-d H:i:s', $expiryTimestamp),
+                        ['payload_size' => strlen($payload), 'env' => $envLabel]
                     );
                 }
             }
@@ -238,9 +306,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             // Step 9: Trigger Background Worker (5s intervals between submissions)
             $workerPath = escapeshellarg(__DIR__ . '/e-invoice_worker.php');
             exec(PHP_BINARY . " $workerPath > /dev/null 2>&1 &");
-            
-            $msg = count($recordIds) . ' invoice(s) queued for submission.';
-            if ($tokenWarning) $msg .= ' Warning: Token expiring soon!';
             
             header("Location: e-invoice_upload.php?submitted=queued&count=" . count($recordIds) . ($tokenWarning ? '&warn=token' : '')); 
             exit;
@@ -281,10 +346,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 'sale_no'         => 'CONSOL-' . $date . '-' . substr($uid, 0, 8),
                 'customer_name'   => 'Consolidated Sales', 
                 'customer_address'=> 'Multiple Customers',
-                'customer_email' => $me['email'], 
-                'total_amount'   => $grandTotal,
-                'sale_datetime'  => $date . ' 23:59:59', 
-                'document_type'  => '01'
+                'customer_email'  => $me['email'], 
+                'total_amount'    => $grandTotal,
+                'sale_datetime'   => $date . ' 23:59:59', 
+                'document_type'   => '01'
             ];
 
             // Step 5-8: Build payload
@@ -312,8 +377,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             
             // Step 11: Internal log
             logInternal($pdo, $subId, 'queue_created', 'success', 
-                "Consolidated submission queued. Date: {$date}, Records: " . count($records) . ", Total: RM" . number_format($grandTotal, 2),
-                ['records_count' => count($records), 'grand_total' => $grandTotal]
+                "Consolidated submission queued. Date: {$date}, Records: " . count($records) . ", Total: RM" . number_format($grandTotal, 2) . " | Token: {$envLabel} valid until " . date('Y-m-d H:i:s', $expiryTimestamp),
+                ['records_count' => count($records), 'grand_total' => $grandTotal, 'env' => $envLabel]
             );
             
             $pdo->commit();
@@ -322,7 +387,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $workerPath = escapeshellarg(__DIR__ . '/e-invoice_worker.php');
             exec(PHP_BINARY . " $workerPath > /dev/null 2>&1 &");
 
-            $msg = 'Consolidated submission queued. ' . count($records) . ' records, RM' . number_format($grandTotal, 2);
             header("Location: e-invoice_upload.php?submitted=queued&count=1&type=consolidated" . ($tokenWarning ? '&warn=token' : '')); 
             exit;
         } catch (Throwable $e) {
@@ -389,6 +453,53 @@ if (!empty($submissionsList)) {
         $submissionLogs[$log['submission_id']][] = $log;
     }
 }
+
+// ===== Token Status Display (for UI) =====
+ $stmtCompanyCheck = $pdo->prepare("SELECT sandbox_token, sandbox_token_expiry, prod_token, prod_token_expiry FROM companies WHERE user_id = ? LIMIT 1");
+ $stmtCompanyCheck->execute([$uid]);
+ $companyTokenCheck = $stmtCompanyCheck->fetch(PDO::FETCH_ASSOC);
+
+ $tokenStatusDisplay = ['status' => 'unknown', 'env' => 'None', 'expiry' => null, 'msg' => ''];
+
+if ($companyTokenCheck) {
+    $sbToken = $companyTokenCheck['sandbox_token'] ?? null;
+    $sbExp   = $companyTokenCheck['sandbox_token_expiry'] ?? null;
+    $prToken = $companyTokenCheck['prod_token'] ?? null;
+    $prExp   = $companyTokenCheck['prod_token_expiry'] ?? null;
+    
+    if (!empty($sbToken)) {
+        $tokenStatusDisplay['env'] = 'Sandbox';
+        $tokenStatusDisplay['expiry'] = $sbExp;
+        $expTs = $sbExp ? strtotime($sbExp) : false;
+        if (!$sbExp || !$expTs) {
+            $tokenStatusDisplay['status'] = 'expired';
+            $tokenStatusDisplay['msg'] = 'No expiry date set';
+        } elseif ($expTs <= time()) {
+            $tokenStatusDisplay['status'] = 'expired';
+            $tokenStatusDisplay['msg'] = 'Expired on ' . date('M d, Y H:i', $expTs);
+        } else {
+            $tokenStatusDisplay['status'] = 'ok';
+            $tokenStatusDisplay['msg'] = 'Valid until ' . date('M d, Y H:i', $expTs);
+        }
+    } elseif (!empty($prToken)) {
+        $tokenStatusDisplay['env'] = 'Production';
+        $tokenStatusDisplay['expiry'] = $prExp;
+        $expTs = $prExp ? strtotime($prExp) : false;
+        if (!$prExp || !$expTs) {
+            $tokenStatusDisplay['status'] = 'expired';
+            $tokenStatusDisplay['msg'] = 'No expiry date set';
+        } elseif ($expTs <= time()) {
+            $tokenStatusDisplay['status'] = 'expired';
+            $tokenStatusDisplay['msg'] = 'Expired on ' . date('M d, Y H:i', $expTs);
+        } else {
+            $tokenStatusDisplay['status'] = 'ok';
+            $tokenStatusDisplay['msg'] = 'Valid until ' . date('M d, Y H:i', $expTs);
+        }
+    } else {
+        $tokenStatusDisplay['status'] = 'expired';
+        $tokenStatusDisplay['msg'] = 'No token found. Please generate token in Company Settings.';
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -409,12 +520,13 @@ if (!empty($submissionsList)) {
 .upload-zone{border:2px dashed var(--line);border-radius:16px;padding:48px;text-align:center;transition:.2s;cursor:pointer}.upload-zone:hover{border-color:var(--brand);background:#f8fafc}.upload-zone.dragover{border-color:var(--brand);background:#e0e5ff}.upload-icon{width:64px;height:64px;border-radius:16px;background:var(--grad);color:#fff;display:grid;place-items:center;font-size:28px;margin:0 auto 16px}
 .btn{display:inline-flex;align-items:center;gap:8px;border-radius:12px;padding:11px 18px;font-size:13px;font-weight:700;transition:.15s;text-decoration:none}.btn.primary{background:var(--grad);color:#fff;box-shadow:0 10px 24px -8px rgba(84,87,229,.5)}.btn.ghost{background:#f1f5f9;color:#475569}.btn.ghost:hover{background:#e2e8f0}.btn.success{background:#d1fae5;color:#059669}.btn.warn{background:#fef3c7;color:#d97706}
 table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}td{padding:12px 16px;border-bottom:1px solid #f1f5f9;color:var(--muted);vertical-align:top}tbody tr:hover{background:#f8fafc}.err-text{color:#e11d48;font-size:11px;font-weight:600;line-height:1.5}
-.badge{display:inline-block;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.badge.valid{background:#d1fae5;color:#059669}.badge.invalid{background:#ffe4e6;color:#e11d48}.badge.pending{background:#fef3c7;color:#d97706}.badge.submitted{background:#d1fae5;color:#059669}.badge.queued{background:#e0e5ff;color:#4644cf}.badge.failed{background:#ffe4e6;color:#e11d48}.badge.consolidated{background:#e0e5ff;color:#4644cf}.badge.processing{background:#dbeafe;color:#3b82f6}.badge.validated{background:#d1fae5;color:#059669}.badge.invalid{background:#ffe4e6;color:#e11d48}
+.badge{display:inline-block;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.badge.valid{background:#d1fae5;color:#059669}.badge.invalid{background:#ffe4e6;color:#e11d48}.badge.pending{background:#fef3c7;color:#d97706}.badge.submitted{background:#d1fae5;color:#059669}.badge.queued{background:#e0e5ff;color:#4644cf}.badge.failed{background:#ffe4e6;color:#e11d48}.badge.consolidated{background:#e0e5ff;color:#4644cf}.badge.processing{background:#dbeafe;color:#3b82f6}.badge.validated{background:#d1fae5;color:#059669}
 .summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}.summary-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center}.summary-card b{display:block;font-size:28px;font-weight:800;color:var(--brand)}.summary-card p{font-size:12px;font-weight:600;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
 .action-bar{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap}.checkbox-label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
 .submit-box{margin-top:20px;background:#f5f6ff;border:1px solid #c6ceff;border-radius:16px;padding:20px}.submit-box h3{font-size:16px;font-weight:700;margin-bottom:6px}.submit-box p{font-size:13px;color:var(--muted);margin-bottom:16px}.submit-row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}.field-sm label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted);margin-bottom:6px}.field-sm input{padding:9px 14px;border:1px solid var(--line);border-radius:10px;font-size:14px}
 .pager-rec{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0 0;font-size:13px;color:var(--muted);flex-wrap:wrap}.pager-rec nav{display:flex;gap:8px}.pbtn{border-radius:8px;padding:7px 14px;font-size:12px;font-weight:700;background:#f1f5f9;color:#475569;text-decoration:none}.pbtn:hover{background:#e2e8f0}.pbtn.off{opacity:.4;pointer-events:none}
 .log-entry{padding:10px 14px;border-left:3px solid var(--line);margin-bottom:8px;background:#f8fafc;border-radius:0 8px 8px 0}.log-entry.success{border-left-color:#059669}.log-entry.error{border-left-color:#e11d48}.log-entry.info{border-left-color:#3b82f6}.log-entry.warn{border-left-color:#d97706}.log-time{font-size:11px;color:var(--faint);font-weight:600}.log-step{font-size:12px;font-weight:700;color:var(--ink);text-transform:uppercase}.log-msg{font-size:13px;color:var(--muted);margin-top:4px}
+.token-box{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-radius:12px;margin-bottom:16px;flex-wrap:wrap}.token-box.ok{background:#d1fae5;border:1px solid #6ee7b7}.token-box.expired{background:#ffe4e6;border:1px solid #fda4af}.token-box.unknown{background:#fef3c7;border:1px solid #fcd34d}.token-info{display:flex;align-items:center;gap:10px}.token-icon{font-size:24px}.token-text{font-size:14px;font-weight:700}.token-sub{font-size:12px;color:var(--muted);margin-top:2px}
 @media(max-width:900px){.sidebar{transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}.sidebar-overlay.open{display:block}.main-wrapper{margin-left:0}.menu-toggle{display:block}.steps{grid-template-columns:1fr}.summary-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:760px){.main{padding:20px 12px}h1{font-size:22px}.summary-grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -452,16 +564,44 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
     <h1>Upload E-Invoice 📤</h1>
     <p class="sub">Bulk upload your invoices from Excel or CSV files.</p>
 
+    <!-- ===== Token Status Box ===== -->
+    <div class="token-box <?= $tokenStatusDisplay['status'] ?>">
+      <div class="token-info">
+        <div class="token-icon">
+          <?php if ($tokenStatusDisplay['status'] === 'ok'): ?>✅
+          <?php elseif ($tokenStatusDisplay['status'] === 'expired'): ?>❌
+          <?php else: ?>⚠️<?php endif; ?>
+        </div>
+        <div>
+          <div class="token-text">
+            LHDN <?= $tokenStatusDisplay['env'] ?> Token — 
+            <?php if ($tokenStatusDisplay['status'] === 'ok'): ?>Valid
+            <?php elseif ($tokenStatusDisplay['status'] === 'expired'): ?>Expired
+            <?php else: ?>Unknown<?php endif; ?>
+          </div>
+          <div class="token-sub"><?= htmlspecialchars($tokenStatusDisplay['msg']) ?></div>
+          <?php if ($tokenStatusDisplay['expiry']): ?>
+            <div class="token-sub" style="font-family:monospace;font-size:11px;margin-top:2px">
+              Raw: <?= htmlspecialchars($tokenStatusDisplay['expiry']) ?>
+            </div>
+          <?php endif; ?>
+        </div>
+      </div>
+      <a href="company.php" class="btn <?= $tokenStatusDisplay['status'] === 'ok' ? 'ghost' : 'warn' ?>" style="padding:8px 14px;font-size:12px">
+        <?= $tokenStatusDisplay['status'] === 'ok' ? '⚙️ Settings' : '🔄 Refresh Token' ?>
+      </a>
+    </div>
+
     <?php if (isset($_GET['err'])): ?>
       <div class="banner error">✗ <?= htmlspecialchars($_GET['err']) ?></div>
     <?php endif; ?>
 
     <?php if (isset($_GET['submitted'])): ?>
-      <div class="banner info">⏳ <?= (int)$_GET['count'] ?> invoice(s) queued for background submission. Check Submission History for status updates. Timer: 5s between submit & status check, 5s interval between records.</div>
+      <div class="banner info">⏳ <?= (int)$_GET['count'] ?> invoice(s) queued for background submission. Timer: 5s between submit & status check, 5s interval between records.</div>
     <?php endif; ?>
 
     <?php if (isset($_GET['warn']) && $_GET['warn'] === 'token'): ?>
-      <div class="banner warn">⚠️ LHDN API Token is expiring soon. Please refresh your token in Company Settings.</div>
+      <div class="banner warn">⚠️ LHDN API Token is expiring soon (within 1 hour). Please refresh your token in Company Settings.</div>
     <?php endif; ?>
 
     <div class="steps">
@@ -532,7 +672,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
           <div class="banner success">✓ All records verified — ready for LHDN submission.</div>
         <?php endif; ?>
 
-        <?php if ((int)$agg['submittable'] > 0): ?>
+        <?php if ((int)$agg['submittable'] > 0 && $tokenStatusDisplay['status'] === 'ok'): ?>
           <div class="submit-box">
             <h3>🚀 Submit e-Invoices to LHDN</h3>
             <p><b><?= (int)$agg['submittable'] ?></b> valid record(s) ready. Jobs will be queued and processed asynchronously with 5s intervals between submit & status check, 5s between records.</p>
@@ -549,6 +689,9 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
               </form>
             </div>
           </div>
+        <?php elseif ((int)$agg['submittable'] > 0 && $tokenStatusDisplay['status'] !== 'ok'): ?>
+          <div class="banner warn">⚠️ Cannot submit — LHDN token is expired or missing. Please refresh your token in Company Settings first.</div>
+          <div style="margin-top:14px"><a href="company.php" class="btn warn">🔄 Refresh Token</a></div>
         <?php endif; ?>
 
         <div class="action-bar" style="margin-top:20px">
@@ -677,7 +820,7 @@ function showResponse(sub, logs){
         let logsHtml = '';
         logs.forEach(log => {
             const statusClass = log.status || 'info';
-            const time = new Date(log.created_at).toLocaleString();
+            const time = new Date(log.created_at.replace(' ', 'T')).toLocaleString();
             logsHtml += `<div class="log-entry ${statusClass}">
                 <div class="log-time">${time} · <span class="log-step">${log.step}</span></div>
                 <div class="log-msg">${log.message}</div>
