@@ -58,9 +58,9 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
     return ['send' => $jsonStr, 'convert' => $convertStr];
 }
 
-/* ================= HELPER: cURL API Calls ================= */
+/* ================= HELPER: cURL API Calls (Matches lhdn_submit.php signature) ================= */
 if (!function_exists('submitToLHDN')) {
-    function submitToLHDN($url, $token, $payload) {
+    function submitToLHDN($pdo, $url, $token, $payload) {
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_POST, true);
@@ -75,7 +75,7 @@ if (!function_exists('submitToLHDN')) {
 }
 
 if (!function_exists('getStatusFromLHDN')) {
-    function getStatusFromLHDN($url, $token) {
+    function getStatusFromLHDN($pdo, $url, $token) {
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -153,7 +153,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         header("Location: e-invoice_upload.php?err=" . urlencode('Company profile not found.')); exit;
     }
 
-    // FIXED: Get API URLs from settings table instead of users table
     $stmtSandboxUrl = $pdo->prepare("SELECT value FROM settings WHERE module = 'einvoice' AND key = 'sandbox_url'");
     $stmtSandboxUrl->execute();
     $sandboxUrl = $stmtSandboxUrl->fetchColumn() ?: 'https://preprod-api.myinvois.hasil.gov.my';
@@ -170,7 +169,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $tokenExpiry = $isSandbox ? ($company['sandbox_token_expiry'] ?? null) : ($company['prod_token_expiry'] ?? null);
     $envLabel = $isSandbox ? 'Sandbox' : 'Production';
     
-    // Use the correct URL from settings
     $apiBaseUrl = $isSandbox ? $sandboxUrl : $prodUrl;
 
     if (empty($tokenValue) || empty($tokenExpiry) || strtotime($tokenExpiry) <= time()) {
@@ -244,7 +242,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 continue;
             }
 
-            $submitResult = submitToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $tokenValue, $payloads['convert']);
+            // FIXED: Added $pdo as the first argument to match lhdn_submit.php signature
+            $submitResult = submitToLHDN($pdo, $apiBaseUrl . '/api/v1.0/documentsubmissions', $tokenValue, $payloads['convert']);
             $submitResponse = json_decode($submitResult['response'], true);
             
             $submissionUid = $submitResponse['submissionUid'] ?? null;
@@ -267,8 +266,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $statusUrl = $apiBaseUrl . "/api/v1.0/documentsubmissions/{$submissionUid}";
                 $detailsUrl = $apiBaseUrl . "/api/v1.0/documents/{$uuid}/details";
                 
-                $statusResult = getStatusFromLHDN($statusUrl, $tokenValue);
-                $detailsResult = getStatusFromLHDN($detailsUrl, $tokenValue);
+                // FIXED: Added $pdo as the first argument here as well
+                $statusResult = getStatusFromLHDN($pdo, $statusUrl, $tokenValue);
+                $detailsResult = getStatusFromLHDN($pdo, $detailsUrl, $tokenValue);
                 
                 $statusResponse = json_decode($statusResult['response'], true);
                 $detailsResponse = json_decode($detailsResult['response'], true);
@@ -440,7 +440,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
         <p class="msub">Select your completed Excel or CSV file to begin validation.</p>
         <form method="POST" enctype="multipart/form-data" id="uploadForm">
           <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-            <div class="upload-icon"></div>
+            <div class="upload-icon">📤</div>
             <h3 style="font-size:18px;font-weight:700;margin-bottom:8px">Drop your file here</h3>
             <p style="color:var(--muted);margin-bottom:16px">or click to browse</p>
             <p style="font-size:12px;color:var(--faint)">Supports CSV, XLSX, XLS · Max 10MB</p>
@@ -475,7 +475,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
                     <form method="POST" style="display:inline" onsubmit="return confirm('Delete this upload, its file, and all associated logs/records?');">
                       <input type="hidden" name="action" value="delete_upload">
                       <input type="hidden" name="upload_id" value="<?= htmlspecialchars($up['id']) ?>">
-                      <button type="submit" class="btn ghost" style="padding:6px 12px;font-size:11px;color:#e11d48">️ Delete</button>
+                      <button type="submit" class="btn ghost" style="padding:6px 12px;font-size:11px;color:#e11d48">🗑️ Delete</button>
                     </form>
                   </td>
                 </tr>
