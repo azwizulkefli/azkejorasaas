@@ -4,13 +4,13 @@ require_once __DIR__ . '/../includes/settings.php';
 require_once __DIR__ . '/../includes/myinvois.php';
 requireCustomer();
 ensure_settings_table($pdo);
-$uid = currentUserId();
-$me  = currentUser();
+ $uid = currentUserId();
+ $me  = currentUser();
 
 // Load or create company record
-$co = $pdo->prepare("SELECT * FROM companies WHERE user_id = ?");
-$co->execute([$uid]);
-$company = $co->fetch();
+ $co = $pdo->prepare("SELECT * FROM companies WHERE user_id = ?");
+ $co->execute([$uid]);
+ $company = $co->fetch();
 
 if (!$company) {
     $pdo->prepare("INSERT INTO companies (user_id) VALUES (?)")->execute([$uid]);
@@ -18,9 +18,10 @@ if (!$company) {
     $company = $co->fetch();
 }
 
-// Handle updates
+/* ================= HANDLE FORM SUBMISSIONS ================= */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
+    /* ---------- Update Company Info ---------- */
     if ($_POST['action'] === 'update_company') {
         $pdo->prepare("UPDATE companies SET 
             name = ?, registration_no = ?, address = ?, business_type = ?,
@@ -39,6 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         header("Location: company.php?updated=company"); exit;
     }
 
+    /* ---------- Update E-Invoice Config ---------- */
     if ($_POST['action'] === 'update_einvoice') {
         $pdo->prepare("UPDATE companies SET 
             msic_code = ?, classification_code = ?, taxpayer_tin = ?, taxpayer_brn = ?,
@@ -61,25 +63,249 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         header("Location: company.php?updated=einvoice"); exit;
     }
 
+    /* ---------- Switch Environment ---------- */
     if ($_POST['action'] === 'update_ei_env') {
         $env = (($_POST['ei_env'] ?? 'sandbox') === 'prod') ? 'prod' : 'sandbox';
         $pdo->prepare("UPDATE users SET ei_env = ? WHERE id = ?")->execute([$env, $uid]);
         header("Location: company.php?updated=env"); exit;
     }
 
+    /* ---------- Get Token (FIXED: saves to companies table) ---------- */
     if ($_POST['action'] === 'get_token') {
-        $res = myinvois_request_token($pdo, $uid);
-        header("Location: company.php?" . ($res['ok'] ? "token=ok" : "token=err&msg=" . urlencode($res['error'])));
+        // Determine environment from user settings
+        $envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
+        $env       = $envIsProd ? 'prod' : 'sandbox';
+        $envLabel  = $envIsProd ? 'Production' : 'Sandbox';
+
+        // Get credentials FROM companies table (not users table)
+        if ($envIsProd) {
+            $clientId     = trim($company['prod_clientid'] ?? '');
+            $clientSecret = trim($company['prod_secret1'] ?? '');
+        } else {
+            $clientId     = trim($company['sandbox_clientid'] ?? '');
+            $clientSecret = trim($company['sandbox_secret1'] ?? '');
+        }
+
+        // Validate credentials exist
+        if (empty($clientId) || empty($clientSecret)) {
+            header("Location: company.php?token=err&msg=" . urlencode("{$envLabel} credentials not set. Please save your Client ID and Client Secret 1 in E-Invoice Configuration first."));
+            exit;
+        }
+
+        // Determine LHDN base URL
+        if ($envIsProd) {
+            $baseUrl = $me['ei_url_prod'] ?? 'https://api.myinvois.hasil.gov.my';
+        } else {
+            $baseUrl = $me['ei_url_sandbox'] ?? 'https://preprod-api.myinvois.hasil.gov.my';
+        }
+        $tokenUrl = rtrim($baseUrl, '/') . '/connect/token';
+
+        // Build OAuth 2.0 client_credentials POST body
+        $postData = http_build_query([
+            'grant_type'    => 'client_credentials',
+            'client_id'     => $clientId,
+            'client_secret' => $clientSecret
+        ]);
+
+        // Initialize cURL
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $tokenUrl);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/x-www-form-urlencoded',
+            'Accept: application/json'
+        ]);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_FAILONERROR, false);
+
+        $response  = curl_exec($ch);
+        $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        $curlErrno = curl_errno($ch);
+        curl_close($ch);
+
+        // Handle cURL connection errors
+        if ($curlError) {
+            $errDetails = "Error #{$curlErrno}: {$curlError}";
+            // Provide helpful hints based on common errors
+            if ($curlErrno == CURLE_COULDNT_RESOLVE_HOST) {
+                $errDetails .= " — Cannot resolve LHDN server. Check your internet/DNS.";
+            } elseif ($curlErrno == CURLE_SSL_CONNECT_ERROR) {
+                $errDetails .= " — SSL/TLS handshake failed. Check server SSL certificate.";
+            } elseif ($curlErrno == CURLE_OPERATION_TIMEOUTED) {
+                $errDetails .= " — Connection timed out (30s). LHDN server may be slow or unreachable.";
+            }
+            header("Location: company.php?token=err&msg=" . urlencode("Connection failed to {$envLabel} LHDN API. {$errDetails}"));
+            exit;
+        }
+
+        // Parse JSON response from LHDN
+        $tokenData = json_decode($response, true);
+        $jsonError = json_last_error_msg();
+
+        // Check for API errors
+        if ($httpCode !== 200 || !isset($tokenData['access_token'])) {
+            $errorMsg = "HTTP {$httpCode} from {$envLabel} LHDN API";
+
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                // Non-JSON response (could be HTML error page)
+                $errorMsg .= " — Invalid JSON response ({$jsonError}). Raw: " . substr($response, 0, 300);
+            } else {
+                // JSON error response from LHDN
+                if (isset($tokenData['error'])) {
+                    $errorMsg .= " — Error: " . $tokenData['error'];
+                }
+                if (isset($tokenData['error_description'])) {
+                    $errorMsg .= " — " . $tokenData['error_description'];
+                }
+                if (!isset($tokenData['error']) && !isset($tokenData['error_description'])) {
+                    $errorMsg .= " — Response: " . substr($response, 0, 500);
+                }
+            }
+
+            header("Location: company.php?token=err&msg=" . urlencode($errorMsg));
+            exit;
+        }
+
+        // SUCCESS — Calculate expiry time
+        // LHDN returns expires_in in seconds (typically 3600 = 1 hour)
+        $expiresIn  = (int)($tokenData['expires_in'] ?? 3600);
+        // Subtract 60 seconds buffer to avoid edge case of using token right at expiry
+        $expiryTs   = time() + $expiresIn - 60;
+        $expiryTime = date('Y-m-d H:i:s', $expiryTs);
+
+        // Save token to COMPANIES table (this is the key fix!)
+        if ($envIsProd) {
+            $stmtToken = $pdo->prepare("UPDATE companies SET 
+                prod_token = ?, 
+                prod_token_expiry = ?, 
+                updated_at = NOW() 
+                WHERE user_id = ?");
+            $stmtToken->execute([
+                $tokenData['access_token'],
+                $expiryTime,
+                $uid
+            ]);
+        } else {
+            $stmtToken = $pdo->prepare("UPDATE companies SET 
+                sandbox_token = ?, 
+                sandbox_token_expiry = ?, 
+                updated_at = NOW() 
+                WHERE user_id = ?");
+            $stmtToken->execute([
+                $tokenData['access_token'],
+                $expiryTime,
+                $uid
+            ]);
+        }
+
+        // Also save to users table for backward compatibility
+        // (in case other code reads from users.ei_token)
+        $pdo->prepare("UPDATE users SET 
+            ei_token = ?, 
+            ei_token_at = NOW() 
+            WHERE id = ?")
+            ->execute([
+                $tokenData['access_token'],
+                $uid
+            ]);
+
+        // Refresh company data so the display below shows the new token
+        $co->execute([$uid]);
+        $company = $co->fetch();
+
+        header("Location: company.php?token=ok&env=" . $env);
         exit;
     }
 }
 
-// Refresh user (env / token may have changed)
-$me       = currentUser();
-$envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
-$envLabel  = $envIsProd ? 'Production' : 'Sandbox (UAT)';
-$envUrl    = myinvois_base_url($me);
-$maskedTok = !empty($me['ei_token']) ? substr($me['ei_token'], 0, 10) . '••••••••••••' : null;
+/* ================= REFRESH DATA AFTER UPDATES ================= */
+ $me       = currentUser();
+ $envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
+ $envLabel  = $envIsProd ? 'Production' : 'Sandbox (UAT)';
+
+// Determine LHDN base URL
+if ($envIsProd) {
+    $envUrl = $me['ei_url_prod'] ?? 'https://api.myinvois.hasil.gov.my';
+} else {
+    $envUrl = $me['ei_url_sandbox'] ?? 'https://preprod-api.myinvois.hasil.gov.my';
+}
+
+/* ================= TOKEN STATUS FROM COMPANIES TABLE ================= */
+// Get token for CURRENT environment from companies table
+if ($envIsProd) {
+    $currentToken      = $company['prod_token'] ?? null;
+    $currentTokenExpiry = $company['prod_token_expiry'] ?? null;
+} else {
+    $currentToken      = $company['sandbox_token'] ?? null;
+    $currentTokenExpiry = $company['sandbox_token_expiry'] ?? null;
+}
+
+ $maskedTok = !empty($currentToken) ? substr($currentToken, 0, 10) . '••••••••••••' : null;
+
+// Determine token status
+ $tokenStatus     = 'none';
+ $tokenStatusMsg  = 'No token generated yet';
+ $tokenStatusColor = '#f59e0b'; // amber
+ $tokenExpiryTs   = null;
+
+if (!empty($currentToken)) {
+    if (!empty($currentTokenExpiry)) {
+        $tokenExpiryTs = strtotime($currentTokenExpiry);
+        if ($tokenExpiryTs === false) {
+            $tokenStatus     = 'unknown';
+            $tokenStatusMsg  = 'Cannot parse expiry date: ' . $currentTokenExpiry;
+            $tokenStatusColor = '#f59e0b';
+        } elseif ($tokenExpiryTs <= time()) {
+            $tokenStatus     = 'expired';
+            $tokenStatusMsg  = 'Expired on ' . date('M d, Y · H:i', $tokenExpiryTs);
+            $tokenStatusColor = '#ef4444'; // red
+        } else {
+            $tokenStatus     = 'valid';
+            $tokenStatusMsg  = 'Valid until ' . date('M d, Y · H:i', $tokenExpiryTs);
+            $tokenStatusColor = '#10b981'; // green
+            // Check if expiring soon (within 1 hour)
+            if ($tokenExpiryTs <= time() + 3600) {
+                $tokenStatusMsg .= ' (expiring soon!)';
+                $tokenStatusColor = '#f59e0b';
+            }
+        }
+    } else {
+        $tokenStatus     = 'unknown';
+        $tokenStatusMsg  = 'Token exists but no expiry date';
+        $tokenStatusColor = '#f59e0b';
+    }
+}
+
+// Get other environment token info for display
+if ($envIsProd) {
+    $otherEnvToken  = $company['sandbox_token'] ?? null;
+    $otherEnvExpiry = $company['sandbox_token_expiry'] ?? null;
+    $otherEnvLabel  = 'Sandbox';
+} else {
+    $otherEnvToken  = $company['prod_token'] ?? null;
+    $otherEnvExpiry = $company['prod_token_expiry'] ?? null;
+    $otherEnvLabel  = 'Production';
+}
+ $otherEnvMasked = !empty($otherEnvToken) ? substr($otherEnvToken, 0, 10) . '••••••••••••' : null;
+ $otherEnvStatus = 'none';
+if (!empty($otherEnvToken)) {
+    if (!empty($otherEnvExpiry)) {
+        $otherExpiryTs = strtotime($otherEnvExpiry);
+        if ($otherExpiryTs && $otherExpiryTs <= time()) {
+            $otherEnvStatus = 'expired';
+        } else {
+            $otherEnvStatus = 'valid';
+        }
+    } else {
+        $otherEnvStatus = 'unknown';
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -156,6 +382,16 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .badge-env.sandbox{background:#e0e5ff;color:#4644cf}
 .badge-env.prod{background:#d1fae5;color:#059669}
 
+/* ---- token status badge ---- */
+.token-status-box{border-radius:12px;padding:16px 18px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.token-status-box.valid{background:#d1fae5;border:1px solid #6ee7b7}
+.token-status-box.expired{background:#ffe4e6;border:1px solid #fda4af}
+.token-status-box.none,.token-status-box.unknown{background:#fef3c7;border:1px solid #fcd34d}
+.token-status-icon{font-size:28px}
+.token-status-text{flex:1;min-width:200px}
+.token-status-title{font-size:14px;font-weight:700;color:var(--ink)}
+.token-status-sub{font-size:12px;color:var(--muted);margin-top:2px}
+
 /* ---------- RESPONSIVE ---------- */
 @media(max-width:900px){
   .sidebar{transform:translateX(-100%)}
@@ -228,7 +464,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
       <div class="banner success">✓ Submission environment switched to <?= $envLabel ?>.</div>
     <?php endif; ?>
     <?php if (isset($_GET['token']) && $_GET['token'] === 'ok'): ?>
-      <div class="banner success">🔑 Access token received from LHDN (<?= $envLabel ?>) and saved securely.</div>
+      <div class="banner success">🔑 Access token received from LHDN (<?= $envLabel ?>) and saved to company profile. Token valid for ~1 hour.</div>
     <?php endif; ?>
     <?php if (isset($_GET['token']) && $_GET['token'] === 'err'): ?>
       <div class="banner error">✗ <?= htmlspecialchars($_GET['msg'] ?? 'Token request failed.') ?></div>
@@ -346,15 +582,71 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
     <form method="POST" class="card action-form">
       <input type="hidden" name="action" value="get_token">
       <h2>🔑 MyInvois Access Token</h2>
-      <p class="msub">Requests an OAuth 2.0 <code>client_credentials</code> token from LHDN using your saved <?= htmlspecialchars($envLabel) ?> credentials, then stores it on your account.</p>
+      <p class="msub">Requests an OAuth 2.0 <code>client_credentials</code> token from LHDN using your saved <?= htmlspecialchars($envLabel) ?> credentials, then stores it in your company profile.</p>
 
-      <div class="trow"><span>Environment</span><b><span class="badge-env <?= $envIsProd ? 'prod' : 'sandbox' ?>"><?= htmlspecialchars($envLabel) ?></span></b></div>
-      <div class="trow"><span>API URL</span><b><?= htmlspecialchars($envUrl) ?>/connect/token</b></div>
-      <div class="trow"><span>Access token</span><b><?= $maskedTok ? htmlspecialchars($maskedTok) : 'Not generated yet' ?></b></div>
-      <div class="trow"><span>Last token date</span><b><?= !empty($me['ei_token_at']) ? date('M d, Y · H:i', strtotime($me['ei_token_at'])) : '—' ?></b></div>
+      <!-- Token Status Display -->
+      <div class="token-status-box <?= $tokenStatus ?>">
+        <div class="token-status-icon">
+          <?php if ($tokenStatus === 'valid'): ?>✅
+          <?php elseif ($tokenStatus === 'expired'): ?>❌
+          <?php else: ?>⚠️<?php endif; ?>
+        </div>
+        <div class="token-status-text">
+          <div class="token-status-title">
+            <?= $envLabel ?> Token — 
+            <?php if ($tokenStatus === 'valid'): ?>Valid
+            <?php elseif ($tokenStatus === 'expired'): ?>Expired
+            <?php elseif ($tokenStatus === 'none'): ?>Not Generated
+            <?php else: ?>Unknown<?php endif; ?>
+          </div>
+          <div class="token-status-sub"><?= htmlspecialchars($tokenStatusMsg) ?></div>
+        </div>
+      </div>
+
+      <div class="trow">
+        <span>Environment</span>
+        <b><span class="badge-env <?= $envIsProd ? 'prod' : 'sandbox' ?>"><?= htmlspecialchars($envLabel) ?></span></b>
+      </div>
+      <div class="trow">
+        <span>API URL</span>
+        <b><?= htmlspecialchars($envUrl) ?>/connect/token</b>
+      </div>
+      <div class="trow">
+        <span>Client ID</span>
+        <b><?= $envIsProd ? htmlspecialchars($company['prod_clientid'] ?? '—') : htmlspecialchars($company['sandbox_clientid'] ?? '—') ?></b>
+      </div>
+      <div class="trow">
+        <span>Client Secret 1</span>
+        <b><?= $envIsProd ? ($company['prod_secret1'] ? '•••••••• (set)' : 'Not set') : ($company['sandbox_secret1'] ? '•••••••• (set)' : 'Not set') ?></b>
+      </div>
+      <div class="trow">
+        <span>Access token</span>
+        <b><?= $maskedTok ? htmlspecialchars($maskedTok) : 'Not generated yet' ?></b>
+      </div>
+      <div class="trow">
+        <span>Token expiry</span>
+        <b><?= !empty($currentTokenExpiry) ? date('M d, Y · H:i:s', strtotime($currentTokenExpiry)) : '—' ?></b>
+      </div>
+      <div class="trow">
+        <span>Raw expiry (debug)</span>
+        <b style="font-size:11px"><?= htmlspecialchars($currentTokenExpiry ?? 'NULL') ?></b>
+      </div>
+
+      <!-- Other environment token status -->
+      <div class="trow" style="margin-top:14px;background:#f1f5f9">
+        <span><?= $otherEnvLabel ?> token</span>
+        <b>
+          <?php if ($otherEnvStatus === 'valid'): ?>✅ Valid
+          <?php elseif ($otherEnvStatus === 'expired'): ?>❌ Expired
+          <?php elseif ($otherEnvStatus === 'unknown'): ?>⚠️ Unknown
+          <?php else: ?>— Not set<?php endif; ?>
+          <?= $otherEnvMasked ? '(' . htmlspecialchars($otherEnvMasked) . ')' : '' ?>
+        </b>
+      </div>
 
       <button type="submit" class="btn-save">🔑 Get / Refresh token</button>
     </form>
+
   </main>
 </div>
 
