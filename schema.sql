@@ -395,3 +395,5 @@ CREATE TABLE IF NOT EXISTS public.einvoice_logs (
   response jsonb,
   created_at timestamp with time zone default now()
 );
+
+ALTER TABLE public.einvoice_logs ADD COLUMN IF NOT EXISTS step VARCHAR(50);
