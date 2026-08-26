@@ -138,8 +138,6 @@ INSERT INTO bookings (facility_id, user_id, booking_date, slot, status, amount) 
 
 -- Extend users table with phone + activation fields
 ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(30);
-ALTER TABLE users ADD COLUMN IF NOT EXISTS activation_token VARCHAR(64);
-ALTER TABLE users ADD COLUMN IF NOT EXISTS activated_at TIMESTAMP WITH TIME ZONE;
 
 -- E-Invoice items storage (referenced by dashboard)
 CREATE TABLE IF NOT EXISTS einvoice_items (
@@ -191,16 +189,6 @@ UPDATE users SET reg_type = 'manual' WHERE reg_type IS NULL OR reg_type = '';
 
 ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
 
--- 1) Submission environment selector (Sandbox UAT / Production)
-ALTER TABLE users ADD COLUMN IF NOT EXISTS ei_env VARCHAR(20) NOT NULL DEFAULT 'sandbox';
-
--- 2) MyInvois API base URLs (with your default data)
-ALTER TABLE users ADD COLUMN IF NOT EXISTS ei_url_sandbox VARCHAR(255) NOT NULL DEFAULT 'https://preprod-api.myinvois.hasil.gov.my';
-ALTER TABLE users ADD COLUMN IF NOT EXISTS ei_url_prod    VARCHAR(255) NOT NULL DEFAULT 'https://api.myinvois.hasil.gov.my';
-
--- 3) OAuth token storage + last token date
-ALTER TABLE users ADD COLUMN IF NOT EXISTS ei_token TEXT;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS ei_token_at TIMESTAMP WITH TIME ZONE;
 
 -- 1. Platform Admin Company Profile (For AZ Kejora's own business details)
 CREATE TABLE IF NOT EXISTS admin_company (
