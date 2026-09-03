@@ -125,6 +125,7 @@ tbody tr:hover{background:#f8fafc}
   <nav class="sidebar-nav">
     <a href="main.php" class="menu-item">🏠 Home</a>
     <a href="e-invoice.php" class="menu-item active">🧾 E-Invoice</a>
+        <a href="e-invoice_submitted.php" class="menu-item">🧾 View Submitted</a>
     <div class="menu-section">Subscription</div>
     <a href="s_payment.php" class="menu-item">💳 Payment</a>
     <a href="s_report.php" class="menu-item">📄 Report</a>
