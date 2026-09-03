@@ -1,17 +1,18 @@
 <?php
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/settings.php';
+require_once __DIR__ . '/../includes/myinvois.php'; // Required for myinvois_request_token & myinvois_base_url
 requireCustomer();
 
 $uid = currentUserId();
 $me  = currentUser();
 
-// ---------------- RESUBMIT ACTION HANDLER ----------------
+// ---------------- RESUBMIT / CHECK STATUS ACTION HANDLER ----------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'resubmit') {
     header('Content-Type: application/json');
     $recordId = $_POST['id'] ?? '';
     
-    // Verify record belongs to user
+    // 1. Verify record belongs to user
     $chk = $pdo->prepare("SELECT * FROM einvoice_records WHERE id = ? AND user_id = ?");
     $chk->execute([$recordId, $uid]);
     $record = $chk->fetch(PDO::FETCH_ASSOC);
@@ -21,19 +22,110 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    // =====================================================================
-    // TODO: Replace this block with your actual LHDN API call function.
-    // Example: $apiResult = myinvois_check_document_status($pdo, $uid, $record['reference_uuid'] ?? $record['id']);
-    // 
-    // $newStatus = $apiResult['status'] ?? 'pending';
-    // $responseJson = json_encode($apiResult);
-    // 
-    // $updateStmt = $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_response = ? WHERE id = ?");
-    // $updateStmt->execute([$newStatus, $responseJson, $recordId]);
-    // =====================================================================
+    // 2. Ensure we have a valid LHDN token (refreshes if expired)
+    $tokenRes = myinvois_request_token($pdo, $uid);
+    if (!$tokenRes['ok']) {
+        echo json_encode(['success' => false, 'message' => 'Failed to get LHDN token: ' . ($tokenRes['error'] ?? 'Unknown error')]);
+        exit;
+    }
+    
+    // Refresh user data to get the newly saved token
+    $me = currentUser();
+    $token = $me['ei_token'] ?? '';
+    $envUrl = myinvois_base_url($me);
 
-    // For demonstration, we simulate a successful check initiation
-    echo json_encode(['success' => true, 'message' => 'Status check initiated. The record will be updated shortly.']);
+    if (empty($token)) {
+        echo json_encode(['success' => false, 'message' => 'Token is missing after refresh.']);
+        exit;
+    }
+
+    // 3. Call LHDN API to check document status
+    $docUuid = $record['reference_uuid'] ?: $record['id']; // Fallback to record ID if no reference_uuid
+    $apiUrl = rtrim($envUrl, '/') . '/api/v1.0/documents/' . urlencode($docUuid);
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $apiUrl);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Accept: application/json',
+        'Authorization: Bearer ' . $token
+    ]);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    if ($curlError) {
+        echo json_encode(['success' => false, 'message' => 'Network error: ' . $curlError]);
+        exit;
+    }
+
+    $responseData = json_decode($response, true);
+    
+    // 4. "AI Intelligence" Smart Parsing of LHDN Response
+    $newStatus = 'pending';
+    $lhdnUuid = $record['lhdn_uuid'];
+    $lhdnSubmissionId = $record['lhdn_submission_id'];
+    $lhdnLongId = $record['lhdn_long_id'];
+    $validationErrors = $record['validation_errors'];
+
+    if (is_array($responseData)) {
+        // Smart status mapping (handles various LHDN response formats)
+        $rawStatus = strtolower($responseData['status'] ?? $responseData['documentStatus'] ?? $responseData['validationStatus'] ?? 'pending');
+        
+        if (in_array($rawStatus, ['valid', 'validated', 'success', 'approved'])) {
+            $newStatus = 'valid';
+        } elseif (in_array($rawStatus, ['invalid', 'rejected', 'fail', 'failed', 'error'])) {
+            $newStatus = 'invalid';
+        } elseif (in_array($rawStatus, ['in_progress', 'pending', 'processing', 'submitted'])) {
+            $newStatus = 'in_progress';
+        } else {
+            $newStatus = 'pending';
+        }
+
+        // Smart field extraction
+        $lhdnUuid = $responseData['uuid'] ?? $responseData['documentUuid'] ?? $lhdnUuid;
+        $lhdnSubmissionId = $responseData['submissionId'] ?? $responseData['submissionUid'] ?? $lhdnSubmissionId;
+        $lhdnLongId = $responseData['longId'] ?? $responseData['invoiceLongId'] ?? $lhdnLongId;
+        
+        // Extract validation errors if status is invalid
+        if (isset($responseData['validationErrors']) || isset($responseData['errors'])) {
+            $errors = $responseData['validationErrors'] ?? $responseData['errors'];
+            $validationErrors = is_array($errors) ? json_encode($errors) : (string)$errors;
+        }
+    }
+
+    $responseJson = json_encode($responseData);
+
+    // 5. Update Database with parsed intelligence
+    $updateStmt = $pdo->prepare("
+        UPDATE einvoice_records 
+        SET lhdn_status = ?, 
+            lhdn_response = ?, 
+            lhdn_uuid = COALESCE(NULLIF(?, ''), lhdn_uuid),
+            lhdn_submission_id = COALESCE(NULLIF(?, ''), lhdn_submission_id),
+            lhdn_long_id = COALESCE(NULLIF(?, ''), lhdn_long_id),
+            validation_errors = COALESCE(NULLIF(?, ''), validation_errors)
+        WHERE id = ?
+    ");
+    
+    $updateStmt->execute([
+        $newStatus,
+        $responseJson,
+        $lhdnUuid,
+        $lhdnSubmissionId,
+        $lhdnLongId,
+        $validationErrors,
+        $recordId
+    ]);
+
+    echo json_encode([
+        'success' => true, 
+        'message' => 'Status checked and updated successfully to: ' . strtoupper($newStatus),
+        'new_status' => $newStatus
+    ]);
     exit;
 }
 
@@ -57,7 +149,6 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
     fprintf($fp, chr(0xEF).chr(0xBB).chr(0xBF)); // UTF-8 BOM
     fputcsv($fp, ['No', 'Sale No', 'Sale Date', 'Customer Name', 'Customer Email', 'Customer Phone', 'Customer TIN', 'Customer IC', 'Category', 'Sale Total', 'Submitted Date', 'LHDN Status']);
     
-    // Build export query with same filters
     $exportWhere = ["user_id = ?"];
     $exportParams = [$uid];
     if ($search !== '') {
@@ -132,14 +223,12 @@ if ($dateTo !== '') {
 
 $whereSql = implode(' AND ', $whereClauses);
 
-// Count Total
 $countSql = "SELECT COUNT(*) FROM einvoice_records WHERE $whereSql";
 $countStmt = $pdo->prepare($countSql);
 $countStmt->execute($params);
 $totalRecords = (int)$countStmt->fetchColumn();
 $totalPages = ceil($totalRecords / $perPage);
 
-// Fetch Records
 $sql = "SELECT * FROM einvoice_records WHERE $whereSql ORDER BY created_at DESC LIMIT ? OFFSET ?";
 $params[] = $perPage;
 $params[] = $offset;
@@ -149,13 +238,11 @@ $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $avatarSrc = $me['avatar_path'] ? '/' . $me['avatar_path'] : null;
 
-// Helper for category
 function getCategory($docType) {
     $map = ['01' => 'Invoice', '02' => 'Credit Note', '03' => 'Debit Note', '04' => 'Refund Note', '11' => 'Self-Billed'];
     return $map[$docType] ?? ucfirst($docType ?? 'Unknown');
 }
 
-// Helper for status badge class
 function getStatusClass($status) {
     $s = strtolower($status ?? 'pending');
     if (in_array($s, ['valid', 'validated', 'success'])) return 'valid';
@@ -176,14 +263,12 @@ function getStatusClass($status) {
 body{font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink)}
 a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 
-/* ---------- LOADING OVERLAY ---------- */
 .loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.92);backdrop-filter:blur(4px);display:none;place-items:center;z-index:9999}
 .loading-overlay.active{display:grid}
 .spinner{width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner-text{margin-top:16px;font-size:13px;font-weight:600;color:var(--muted)}
 
-/* ---------- SIDEBAR & LAYOUT ---------- */
 .sidebar{position:fixed;top:0;left:0;bottom:0;width:260px;background:#fff;border-right:1px solid var(--line);padding:24px 16px;z-index:30;transition:transform .3s ease;display:flex;flex-direction:column}
 .sidebar-brand{padding:0 8px 24px;border-bottom:1px solid var(--line);margin-bottom:16px}
 .sidebar-nav{display:flex;flex-direction:column;gap:4px}
@@ -208,13 +293,11 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .sub{color:var(--muted);font-size:14px;margin-top:4px}
 
-/* ---------- SUMMARY GRID ---------- */
 .summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:32px}
 .summary-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center;box-shadow:var(--card)}
 .summary-card b{display:block;font-size:28px;font-weight:800}
 .summary-card p{font-size:12px;font-weight:600;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
 
-/* ---------- TOOLBAR ---------- */
 .toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin:24px 0 16px}
 .search-box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 14px;flex:1;max-width:400px}
 .search-box input{border:none;outline:none;font-size:14px;width:100%;background:transparent}
@@ -224,7 +307,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .btn.primary{background:var(--grad);color:#fff}.btn.primary:hover{opacity:.9}
 .btn.ghost{background:#fff;border:1px solid var(--line);color:var(--muted)}.btn.ghost:hover{border-color:var(--brand);color:var(--brand)}
 
-/* ---------- TABLE ---------- */
 .card{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--card);overflow:hidden}
 .table-responsive{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:collapse;font-size:14px;min-width:1000px}
@@ -246,7 +328,6 @@ tbody tr:last-child td{border-bottom:none}
 .action-btn:hover{color:var(--brand);border-color:var(--brand);background:#f5f6ff}
 .action-btn.danger:hover{color:#e11d48;border-color:#e11d48;background:#fff1f2}
 
-/* ---------- PAGINATION ---------- */
 .pagination{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-top:1px solid var(--line);font-size:13px;color:var(--muted);flex-wrap:wrap;gap:12px}
 .page-links{display:flex;gap:4px}
 .page-link{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;font-weight:600;color:var(--muted);transition:.15s;border:1px solid transparent}
@@ -254,7 +335,6 @@ tbody tr:last-child td{border-bottom:none}
 .page-link.active{background:var(--grad);color:#fff;border-color:transparent}
 .page-link.disabled{opacity:.4;pointer-events:none}
 
-/* ---------- MODAL ---------- */
 .modal{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);padding:16px;overflow-y:auto}
 .modal.open{display:grid}
 .modal-card{width:100%;max-width:600px;background:#fff;border-radius:20px;padding:28px;box-shadow:0 30px 80px -20px rgba(19,19,39,.4);max-height:90vh;overflow-y:auto;margin:auto;animation:pop .2s ease-out}
@@ -271,7 +351,6 @@ tbody tr:last-child td{border-bottom:none}
 
 .footer{max-width:1200px;margin:24px auto;padding:0 24px 32px;font-size:12px;color:var(--faint);text-align:center}
 
-/* ---------- RESPONSIVE ---------- */
 @media(max-width:900px){
   .sidebar{transform:translateX(-100%)}
   .sidebar.open{transform:translateX(0)}
@@ -295,15 +374,13 @@ tbody tr:last-child td{border-bottom:none}
 </head>
 <body>
 
-<!-- LOADING OVERLAY -->
 <div class="loading-overlay" id="loadingOverlay">
   <div style="text-align:center">
     <div class="spinner"></div>
-    <p class="spinner-text">Processing…</p>
+    <p class="spinner-text">Communicating with LHDN…</p>
   </div>
 </div>
 
-<!-- ============ SIDEBAR ============ -->
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-brand">
     <span class="brand"><span class="logo">⚡</span>AZ Kejora <em>SaaS</em></span>
@@ -323,7 +400,6 @@ tbody tr:last-child td{border-bottom:none}
 </aside>
 <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
 
-<!-- ============ MAIN WRAPPER ============ -->
 <div class="main-wrapper">
   <nav class="topbar">
     <div style="display:flex;align-items:center;gap:12px">
@@ -347,27 +423,25 @@ tbody tr:last-child td{border-bottom:none}
     <h1>Submitted E-Invoices 📋</h1>
     <p class="sub">View, search, and manage your LHDN e-invoice submission history.</p>
 
-    <!-- SUMMARY SECTION -->
     <div class="summary-grid">
       <div class="summary-card">
-        <b style="color:#3b82f6"><?= number_format($summary['total_submitted']) ?></b>
+        <b style="color:#3b82f6"><?= number_format($summary['total_submitted'] ?? 0) ?></b>
         <p>Total Submitted</p>
       </div>
       <div class="summary-card">
-        <b style="color:#059669"><?= number_format($summary['total_valid']) ?></b>
+        <b style="color:#059669"><?= number_format($summary['total_valid'] ?? 0) ?></b>
         <p>Total Valid</p>
       </div>
       <div class="summary-card">
-        <b style="color:#e11d48"><?= number_format($summary['total_invalid']) ?></b>
+        <b style="color:#e11d48"><?= number_format($summary['total_invalid'] ?? 0) ?></b>
         <p>Total Invalid</p>
       </div>
       <div class="summary-card">
-        <b style="color:#64748b"><?= number_format($summary['total_error']) ?></b>
+        <b style="color:#64748b"><?= number_format($summary['total_error'] ?? 0) ?></b>
         <p>Total Error</p>
       </div>
     </div>
 
-    <!-- TOOLBAR -->
     <form method="GET" class="toolbar" id="filterForm">
       <div class="search-box">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint);flex-shrink:0"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
@@ -396,7 +470,6 @@ tbody tr:last-child td{border-bottom:none}
       </div>
     </form>
 
-    <!-- TABLE -->
     <div class="card">
       <div class="table-responsive">
         <table>
@@ -466,7 +539,7 @@ tbody tr:last-child td{border-bottom:none}
                   <td>
                     <div class="action-btns">
                       <?php if ($isPending): ?>
-                        <button class="action-btn" title="Resubmit / Check Status" onclick="resubmitRecord('<?= htmlspecialchars($row['id']) ?>')">
+                        <button class="action-btn" title="Check Status / Resubmit" onclick="resubmitRecord('<?= htmlspecialchars($row['id']) ?>')">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
                         </button>
                       <?php elseif ($isValid): ?>
@@ -487,13 +560,11 @@ tbody tr:last-child td{border-bottom:none}
         </table>
       </div>
 
-      <!-- PAGINATION -->
       <?php if ($totalPages > 1): ?>
         <div class="pagination">
           <span>Showing <?= $offset + 1 ?> to <?= min($offset + $perPage, $totalRecords) ?> of <?= $totalRecords ?> records</span>
           <div class="page-links">
             <a href="?page=<?= max(1, $page - 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>" class="page-link <?= $page <= 1 ? 'disabled' : '' ?>">‹</a>
-            
             <?php 
               $startPage = max(1, $page - 2);
               $endPage = min($totalPages, $page + 2);
@@ -501,7 +572,6 @@ tbody tr:last-child td{border-bottom:none}
             ?>
               <a href="?page=<?= $i ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>" class="page-link <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
             <?php endfor; ?>
-            
             <a href="?page=<?= min($totalPages, $page + 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>" class="page-link <?= $page >= $totalPages ? 'disabled' : '' ?>">›</a>
           </div>
         </div>
@@ -512,7 +582,6 @@ tbody tr:last-child td{border-bottom:none}
   <footer class="footer">© 2026 AZ Kejora SaaS · Supabase PostgreSQL · <?= htmlspecialchars($me['email']) ?></footer>
 </div>
 
-<!-- ============ INVOICE DETAIL MODAL ============ -->
 <div class="modal" id="invoiceModal" onclick="if(event.target===this)closeModal('invoiceModal')">
   <div class="modal-card">
     <div class="modal-header">
@@ -527,7 +596,6 @@ tbody tr:last-child td{border-bottom:none}
   </div>
 </div>
 
-<!-- ============ JSON RESPONSE MODAL ============ -->
 <div class="modal" id="jsonModal" onclick="if(event.target===this)closeModal('jsonModal')">
   <div class="modal-card">
     <div class="modal-header">
@@ -589,11 +657,13 @@ function copyJson() {
   const text = document.getElementById('jsonModalContent').textContent;
   navigator.clipboard.writeText(text).then(() => {
     alert('JSON copied to clipboard!');
+  }).catch(() => {
+    alert('Failed to copy to clipboard.');
   });
 }
 
 function resubmitRecord(recordId) {
-  if (!confirm('Are you sure you want to resubmit/check status for this record with LHDN?')) return;
+  if (!confirm('Check LHDN status for this record? This will refresh the token if expired and query the LHDN API.')) return;
   
   document.getElementById('loadingOverlay').classList.add('active');
   
@@ -609,20 +679,19 @@ function resubmitRecord(recordId) {
   .then(data => {
     document.getElementById('loadingOverlay').classList.remove('active');
     if (data.success) {
-      alert(data.message || 'Resubmit successful!');
-      window.location.reload();
+      alert(data.message || 'Status updated successfully!');
+      window.location.reload(); // Reload to show the updated database state
     } else {
-      alert(data.message || 'Resubmit failed.');
+      alert('Error: ' + (data.message || 'Failed to update status.'));
     }
   })
   .catch(error => {
     document.getElementById('loadingOverlay').classList.remove('active');
     console.error('Error:', error);
-    alert('An error occurred while resubmitting.');
+    alert('A network error occurred while checking the status.');
   });
 }
 
-// Close modals on Escape key
 document.addEventListener('keydown', function(e){
   if (e.key === 'Escape') {
     closeModal('invoiceModal');
