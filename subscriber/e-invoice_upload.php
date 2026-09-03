@@ -59,7 +59,6 @@ function extractLhdnError($rec) {
     return null;
 }
 
-/* ✅ NEW: Generate UBL Line Items JSON (Matches ASP Logic) */
 function buildLineItems($record) {
     $amount = number_format((float)$record['total_amount'], 2, '.', '');
     $desc = ($record['submission_type'] ?? '') === 'consolidated' ? 'Consolidated daily sales' : ($record['sale_title'] ?? 'Sale Transaction');
@@ -101,7 +100,6 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
         '*|ei_invoicetotalamount|*'  => number_format((float)$record['total_amount'], 2, '.', ''),
         '*|ei_cninvoice_referenceno|*' => $record['reference_no'] ?? 'NA',
         '*|ei_cninvoice_uuid|*'      => $record['reference_uuid'] ?? 'NA',
-        /* ✅ NEW: Inject Line Items and Shipping TIN to prevent ERR253 */
         '*|ei_invoicelineitem|*'     => buildLineItems($record),
         '*|ei_shippingrecipienttin|*'=> $record['customer_tin'] ?? 'EI00000000010',
         '*|ei_shippingrecipientname|*'=> $record['customer_name'] ?? 'Consolidated Sales'
@@ -318,6 +316,33 @@ if (isset($_GET['ajax_action'])) {
                     $combined = ['curl_error' => $submitResult['curl_error'], 'raw' => $submitResult['response']];
                 }
                 $errMsg = findErrorInArray($combined);
+                
+                // ✅ AUTO-FALLBACK: Handle Invalid TIN (ERR406 / ERR409)
+                $errMsgStr = is_string($errMsg) ? $errMsg : json_encode($errMsg);
+                $isInvalidTin = (
+                    stripos($errMsgStr, 'ERR406') !== false || 
+                    stripos($errMsgStr, 'ERR409') !== false || 
+                    stripos($errMsgStr, 'TIN is invalid') !== false ||
+                    stripos($errMsgStr, 'Search TIN') !== false
+                );
+
+                if ($isInvalidTin) {
+                    // LHDN strictly forbids General TIN (EI00000000010) on Individual e-Invoices (ERR237).
+                    // If the customer's IC is not recognized as a valid TIN by LHDN, we MUST convert 
+                    // this invoice to a Consolidated batch to use the General TIN legally.
+                    $pdo->prepare("UPDATE einvoice_records SET customer_tin = 'EI00000000010', submission_type = 'consolidated', lhdn_status = NULL, lhdn_uuid = NULL, lhdn_submission_id = NULL, lhdn_response = ? WHERE id = ?")
+                        ->execute([json_encode(['auto_converted' => true, 'reason' => 'Invalid TIN (ERR406/ERR409)', 'original_error' => $combined]), $indRec['id']]);
+                    
+                    echo json_encode([
+                        'done' => false, 
+                        'type' => 'converted', 
+                        'id' => (string)$indRec['id'], 
+                        'sale_no' => $indRec['sale_no'], 
+                        'status' => 'Pending', 
+                        'error_msg' => 'Invalid TIN. Auto-converted to Consolidated.'
+                    ]);
+                    exit;
+                }
 
                 $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id = ?")
                     ->execute([$docStatus, $uuid, $submissionUid, $longId, json_encode($combined), $indRec['id']]);
@@ -460,7 +485,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                             $isEmailValid = filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
                             $isICValid = preg_match('/^\d{12}$/', $cleanIC);
 
-                            /* ✅ FIX: Strictly use IC as TIN for individuals to prevent ERR237 */
                             if ($isEmailValid && $isICValid) {
                                 $submissionType = 'individual';
                                 $customerTin = $cleanIC; 
@@ -813,7 +837,6 @@ var overlay = el('loadingOverlay');
 var uploadForm = el('uploadForm');
 if (uploadForm) uploadForm.addEventListener('submit', function(){ overlay.classList.add('active'); });
 
-/* ✅ Loading state for View buttons */
 document.querySelectorAll('.view-upload-btn').forEach(function(btn) {
     btn.addEventListener('click', function(e) {
         this.innerHTML = '<span class="pulsing">⏳</span> Loading...';
@@ -1018,6 +1041,11 @@ function startProcessing() {
                     logMsg('Individual [' + (data.sale_no || '#' + data.id) + '] → ' + data.status +
                            (data.uuid ? ' (uuid: ' + String(data.uuid).substring(0, 12) + '…)' : '') +
                            (data.error_msg ? ' | ' + data.error_msg : ''), cls);
+                    updateRow(data.id, data);
+                }
+
+                if (data.type === 'converted') {
+                    logMsg('⚠️ Individual [' + (data.sale_no || '#' + data.id) + '] ' + data.error_msg, 'info');
                     updateRow(data.id, data);
                 }
 
