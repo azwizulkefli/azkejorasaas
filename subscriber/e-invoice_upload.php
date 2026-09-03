@@ -3,7 +3,7 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/settings.php';
 require_once __DIR__ . '/../includes/excel_reader.php';
 require_once __DIR__ . '/../includes/lhdn_submit.php';
-require_once __DIR__ . '/../includes/myinvois.php'; // ✅ Added for automatic token refresh
+require_once __DIR__ . '/../includes/myinvois.php';
 requireCustomer();
 ensure_settings_table($pdo);
 $uid = currentUserId();
@@ -59,6 +59,22 @@ function extractLhdnError($rec) {
     return null;
 }
 
+/* ✅ NEW: Generate UBL Line Items JSON (Matches ASP Logic) */
+function buildLineItems($record) {
+    $amount = number_format((float)$record['total_amount'], 2, '.', '');
+    $desc = ($record['submission_type'] ?? '') === 'consolidated' ? 'Consolidated daily sales' : ($record['sale_title'] ?? 'Sale Transaction');
+    $desc = str_replace(['"', "\n", "\r"], ['\\"', ' ', ' '], $desc);
+    
+    return '{' .
+        '"ID": [{"_": "1"}],' .
+        '"InvoicedQuantity": [{"_": 1, "unitCode": "C62"}],' .
+        '"LineExtensionAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}],' .
+        '"TaxTotal": [{"TaxAmount": [{"_": 0, "currencyID": "MYR"}], "TaxSubtotal": [{"TaxableAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}], "TaxAmount": [{"_": 0, "currencyID": "MYR"}], "Percent": [{"_": 0}], "TaxCategory": [{"ID": [{"_": "E"}], "TaxExemptionReason": [{"_": "Exempt"}], "TaxScheme": [{"ID": [{"_": "OTH"}, {"schemeID": "UN/ECE 5153"}, {"schemeAgencyID": "6"}]}]}]}]}],' .
+        '"Item": [{"CommodityClassification": [{"ItemClassificationCode": [{"_": "9800.00.0010", "listID": "PTC"}]}, {"ItemClassificationCode": [{"_": "004", "listID": "CLASS"}]}], "Description": [{"_": "' . $desc . '"}], "OriginCountry": [{"IdentificationCode": [{"_": "MYS"}]}]}],' .
+        '"Price": [{"PriceAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}]' .
+    '}';
+}
+
 function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTemplate) {
     $map = [
         '*|ei_invoiceno|*'           => $record['sale_no'] ?? '',
@@ -84,7 +100,11 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
         '*|ei_customeric|*'          => $record['customer_ic'] ?? '000000000000',
         '*|ei_invoicetotalamount|*'  => number_format((float)$record['total_amount'], 2, '.', ''),
         '*|ei_cninvoice_referenceno|*' => $record['reference_no'] ?? 'NA',
-        '*|ei_cninvoice_uuid|*'      => $record['reference_uuid'] ?? 'NA'
+        '*|ei_cninvoice_uuid|*'      => $record['reference_uuid'] ?? 'NA',
+        /* ✅ NEW: Inject Line Items and Shipping TIN to prevent ERR253 */
+        '*|ei_invoicelineitem|*'     => buildLineItems($record),
+        '*|ei_shippingrecipienttin|*'=> $record['customer_tin'] ?? 'EI00000000010',
+        '*|ei_shippingrecipientname|*'=> $record['customer_name'] ?? 'Consolidated Sales'
     ];
     $jsonStr = str_replace(array_keys($map), array_values($map), $jsonSendTemplate);
     $base64Doc = base64_encode($jsonStr);
@@ -155,7 +175,6 @@ if (isset($_GET['ajax_action'])) {
     header('Cache-Control: no-store');
 
     try {
-        /* ✅ NEW: paginated queue loader (keeps page light for 300+ rows) */
         if ($_GET['ajax_action'] === 'get_queue' && !empty($_GET['upload_id'])) {
             $page = max(1, (int)($_GET['page'] ?? 1));
             $perPage = 50;
@@ -204,7 +223,6 @@ if (isset($_GET['ajax_action'])) {
             $company = $stmtCompany->fetch(PDO::FETCH_ASSOC);
             if (!$company) { echo json_encode(['done' => true, 'error' => 'Company profile not found.']); exit; }
 
-            // ✅ FIX: Determine environment dynamically from companies table tokens/credentials
             $envIsProd = false;
             $prodValid = !empty($company['prod_token']) && !empty($company['prod_token_expiry']) && strtotime($company['prod_token_expiry']) > (time() + 60);
             $sandboxValid = !empty($company['sandbox_token']) && !empty($company['sandbox_token_expiry']) && strtotime($company['sandbox_token_expiry']) > (time() + 60);
@@ -214,7 +232,6 @@ if (isset($_GET['ajax_action'])) {
             } elseif (!$prodValid && $sandboxValid) {
                 $envIsProd = false;
             } else {
-                // Fallback: if both or neither are valid, prefer Prod if only Prod credentials exist, else Sandbox
                 $envIsProd = (!empty($company['prod_clientid']) && empty($company['sandbox_clientid']));
             }
 
@@ -222,7 +239,6 @@ if (isset($_GET['ajax_action'])) {
             $expiryCol = $envIsProd ? 'prod_token_expiry' : 'sandbox_token_expiry';
             $apiBaseUrl = $envIsProd ? 'https://api.myinvois.hasil.gov.my' : 'https://preprod-api.myinvois.hasil.gov.my';
 
-            // ✅ Helper to refresh token automatically
             $refreshToken = function() use ($pdo, $uid, &$company, $tokenCol) {
                 if (function_exists('myinvois_request_token')) {
                     $res = myinvois_request_token($pdo, $uid);
@@ -240,7 +256,6 @@ if (isset($_GET['ajax_action'])) {
             $tokenValue = $company[$tokenCol] ?? null;
             $tokenExpiry = $company[$expiryCol] ?? null;
 
-            // ✅ Proactive check: if empty or expires within 60 seconds
             if (empty($tokenValue) || empty($tokenExpiry) || strtotime($tokenExpiry) <= (time() + 60)) {
                 $refreshResult = $refreshToken();
                 if (is_array($refreshResult) && isset($refreshResult['error'])) {
@@ -277,7 +292,6 @@ if (isset($_GET['ajax_action'])) {
                 $payloads = buildLHDNPayloads($indRec, $company, $jsonSendTemplate, $jsonConvertTemplate);
                 $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
                 
-                // ✅ Reactive 401 check (Unauthorized) -> Refresh and retry once
                 if ($submitResult['code'] == 401) {
                     $tokenValue = $refreshToken();
                     if ($tokenValue && !is_array($tokenValue)) {
@@ -326,6 +340,7 @@ if (isset($_GET['ajax_action'])) {
                 $grandTotal = array_sum(array_column($records, 'total_amount'));
                 $consolidatedData = [
                     'sale_no' => 'CONSOL-' . str_replace('-', '', $saleDate) . '-' . substr(md5($uid), 0, 8),
+                    'submission_type' => 'consolidated',
                     'customer_name' => 'Consolidated Sales', 'customer_address' => 'Multiple Customers',
                     'customer_email' => $company['email'] ?? ($me['email'] ?? 'na@na.com'),
                     'customer_phone' => $company['phone'] ?? '0000000000',
@@ -337,7 +352,6 @@ if (isset($_GET['ajax_action'])) {
                 $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
                 $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
 
-                // ✅ Reactive 401 check (Unauthorized) -> Refresh and retry once
                 if ($submitResult['code'] == 401) {
                     $tokenValue = $refreshToken();
                     if ($tokenValue && !is_array($tokenValue)) {
@@ -374,7 +388,6 @@ if (isset($_GET['ajax_action'])) {
                 exit;
             }
 
-            /* nothing left → save final summary into session for e-invoice_summary.php */
             $upId = $_GET['upload_id'] ?? '';
             if ($upId !== '') {
                 $st2 = $pdo->prepare("SELECT 
@@ -442,12 +455,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
 
                             $email = $row['customer_email'] ?? '';
                             $ic = $row['customer_ic'] ?? '';
+                            $cleanIC = preg_replace('/[-\s]/', '', $ic);
+                            
                             $isEmailValid = filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
-                            $isICValid = preg_match('/^\d{12}$/', preg_replace('/[-\s]/', '', $ic));
+                            $isICValid = preg_match('/^\d{12}$/', $cleanIC);
 
+                            /* ✅ FIX: Strictly use IC as TIN for individuals to prevent ERR237 */
                             if ($isEmailValid && $isICValid) {
                                 $submissionType = 'individual';
-                                $customerTin = lookupCustomerTIN($ic, $email, '', '');
+                                $customerTin = $cleanIC; 
                             } else {
                                 $submissionType = 'consolidated';
                                 $customerTin = 'EI00000000010';
@@ -514,7 +530,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-/* ================= LOAD DATA (lightweight: aggregates only, no row rendering) ================= */
+/* ================= LOAD DATA ================= */
 $uploads = $pdo->prepare("SELECT * FROM einvoice_uploads WHERE user_id = ? ORDER BY created_at DESC LIMIT 10");
 $uploads->execute([$uid]); 
 $uploadsList = $uploads->fetchAll(PDO::FETCH_ASSOC);
@@ -585,7 +601,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
 </style>
 </head>
 <body>
-<div class="loading-overlay" id="loadingOverlay"><div><div class="spinner"></div><p class="spinner-text">Uploading & Validating…</p></div></div>
+<div class="loading-overlay" id="loadingOverlay"><div><div class="spinner"></div><p class="spinner-text">Loading Data...</p></div></div>
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-brand"><span class="brand"><span class="logo">⚡</span>AZ Kejora <em>SaaS</em></span></div>
   <nav class="sidebar-nav">
@@ -657,7 +673,11 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
           <table>
             <thead><tr><th>Filename</th><th>Date</th><th>Total</th><th>Valid</th><th>Invalid</th><th>Status</th><th>Action</th></tr></thead>
             <tbody>
-              <?php foreach ($uploadsList as $up): ?>
+              <?php foreach ($uploadsList as $up): 
+                  $chk = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE upload_id = ? AND lhdn_status IS NOT NULL");
+                  $chk->execute([$up['id']]);
+                  $hasLhdnSubmissions = $chk->fetchColumn() > 0;
+              ?>
                 <tr>
                   <td><b><?= htmlspecialchars($up['filename']) ?></b></td>
                   <td><?= date('M d, H:i', strtotime($up['created_at'])) ?></td>
@@ -666,12 +686,14 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
                   <td style="color:#e11d48"><?= $up['invalid_records'] ?></td>
                   <td><span class="badge <?= $up['status'] ?>"><?= $up['status'] ?></span></td>
                   <td>
-                    <a href="?upload=<?= urlencode($up['id']) ?>" class="btn ghost" style="padding:6px 12px;font-size:11px">View</a>
+                    <a href="?upload=<?= urlencode($up['id']) ?>" class="btn ghost view-upload-btn" style="padding:6px 12px;font-size:11px">View</a>
+                    <?php if (!$hasLhdnSubmissions): ?>
                     <form method="POST" style="display:inline" onsubmit="return confirm('Delete this upload and all records?');">
                       <input type="hidden" name="action" value="delete_upload">
                       <input type="hidden" name="upload_id" value="<?= htmlspecialchars($up['id']) ?>">
                       <button type="submit" class="btn ghost" style="padding:6px 12px;font-size:11px;color:#e11d48">🗑️</button>
                     </form>
+                    <?php endif; ?>
                   </td>
                 </tr>
               <?php endforeach; ?>
@@ -725,7 +747,6 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
             </div>
             <?php endif; ?>
 
-            <!-- ✅ Queue hidden by default; rows lazy-loaded 50/page via AJAX -->
             <div class="card" style="margin-top:20px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
                     <h2>Submission Queue <span style="font-size:12px;color:var(--faint);font-weight:600">(<?= $recTotal ?> records — hidden for fast loading)</span></h2>
@@ -792,9 +813,17 @@ var overlay = el('loadingOverlay');
 var uploadForm = el('uploadForm');
 if (uploadForm) uploadForm.addEventListener('submit', function(){ overlay.classList.add('active'); });
 
+/* ✅ Loading state for View buttons */
+document.querySelectorAll('.view-upload-btn').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+        this.innerHTML = '<span class="pulsing">⏳</span> Loading...';
+        this.style.pointerEvents = 'none';
+        if(overlay) overlay.classList.add('active');
+    });
+});
+
 var uploadId = <?= json_encode($currentUpload['id'] ?? '') ?>;
 
-/* ================= QUEUE STATE (lazy load) ================= */
 var queueOpen = false, queuePage = 1, queuePages = 1, queueLoading = false;
 
 function logMsg(msg, cls) {
@@ -904,7 +933,7 @@ function loadQueue(page) {
 
 function updateRow(id, data) {
     var row = document.querySelector('tr[data-id="' + id + '"]');
-    if (!row) return; // queue hidden / row not on current page → skip silently
+    if (!row) return;
     var statusCell = row.querySelector('.col-status');
     var uuidCell = row.querySelector('.col-uuid');
     var progressCell = row.querySelector('.col-progress');
@@ -979,7 +1008,7 @@ function startProcessing() {
                     logMsg('✅ All jobs processed. Redirecting to summary…', 'ok');
                     stop('✅ All Processed');
                     updateStats();
-                    if (queueOpen) loadQueue(queuePage); // refresh visible page before leaving
+                    if (queueOpen) loadQueue(queuePage);
                     setTimeout(function(){ window.location.href = 'e-invoice_summary.php'; }, 2000);
                     return;
                 }
