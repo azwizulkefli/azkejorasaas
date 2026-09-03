@@ -1,103 +1,91 @@
 <?php
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/settings.php';
-require_once __DIR__ . '/../includes/myinvois.php';
 requireCustomer();
-ensure_settings_table($pdo);
+
 $uid = currentUserId();
 $me  = currentUser();
 
-/* ---------------- LOAD COMPANY DATA FOR MODAL ---------------- */
-$co = $pdo->prepare("SELECT * FROM companies WHERE user_id = ?");
-$co->execute([$uid]);
-$company = $co->fetch();
-if (!$company) {
-    $pdo->prepare("INSERT INTO companies (user_id) VALUES (?)")->execute([$uid]);
-    $co->execute([$uid]); $company = $co->fetch();
+// ---------------- PAGINATION & SEARCH PARAMS ----------------
+$perPageOptions = [10, 20, 50, 100, 200];
+$perPage = isset($_GET['per_page']) && in_array((int)$_GET['per_page'], $perPageOptions) ? (int)$_GET['per_page'] : 10;
+$page = isset($_GET['page']) && (int)$_GET['page'] > 0 ? (int)$_GET['page'] : 1;
+$offset = ($page - 1) * $perPage;
+$search = isset($_GET['search']) ? trim($_GET['search']) : '';
+
+// ---------------- EXPORT LOGIC ----------------
+if (isset($_GET['export']) && $_GET['export'] === '1') {
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="einvoice_records_' . date('Ymd_His') . '.csv"');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+
+    $fp = fopen('php://output', 'w');
+    // UTF-8 BOM for Excel compatibility
+    fprintf($fp, chr(0xEF).chr(0xBB).chr(0xBF));
+    fputcsv($fp, ['No', 'Sale No', 'Sale Date', 'Customer Name', 'Category', 'Sale Total', 'Submitted Date', 'LHDN Status']);
+    
+    $exportStmt = $pdo->prepare("SELECT * FROM einvoice_records WHERE user_id = ? AND (sale_no ILIKE ? OR customer_name ILIKE ?) ORDER BY created_at DESC");
+    $exportStmt->execute([$uid, "%$search%", "%$search%"]);
+    
+    $no = 1;
+    while ($row = $exportStmt->fetch(PDO::FETCH_ASSOC)) {
+        $catMap = ['01' => 'Invoice', '02' => 'Credit Note', '03' => 'Debit Note', '04' => 'Refund Note', '11' => 'Self-Billed'];
+        $category = $catMap[$row['document_type']] ?? ucfirst($row['document_type'] ?? 'Unknown');
+        $saleDate = $row['sale_datetime'] ? date('Y-m-d H:i', strtotime($row['sale_datetime'])) : date('Y-m-d H:i', strtotime($row['created_at']));
+        
+        fputcsv($fp, [
+            $no++,
+            $row['sale_no'],
+            $saleDate,
+            $row['customer_name'],
+            $category,
+            number_format($row['total_amount'], 2),
+            date('Y-m-d H:i', strtotime($row['created_at'])),
+            strtoupper($row['lhdn_status'] ?? 'PENDING')
+        ]);
+    }
+    fclose($fp);
+    exit;
 }
 
-/* ---------------- POST ACTIONS (MODAL) ---------------- */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+// ---------------- FETCH DATA ----------------
+// Count Total
+$countSql = "SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND (sale_no ILIKE ? OR customer_name ILIKE ?)";
+$countStmt = $pdo->prepare($countSql);
+$countStmt->execute([$uid, "%$search%", "%$search%"]);
+$totalRecords = (int)$countStmt->fetchColumn();
+$totalPages = ceil($totalRecords / $perPage);
 
-    if ($_POST['action'] === 'update_einvoice') {
-        $pdo->prepare("UPDATE companies SET 
-            msic_code = ?, classification_code = ?, taxpayer_tin = ?, taxpayer_brn = ?,
-            sandbox_clientid = ?, sandbox_secret1 = ?, sandbox_secret2 = ?,
-            prod_clientid = ?, prod_secret1 = ?, prod_secret2 = ?, updated_at = NOW()
-            WHERE user_id = ?")
-            ->execute([
-                trim($_POST['msic_code'] ?? ''),
-                trim($_POST['classification_code'] ?? ''),
-                trim($_POST['taxpayer_tin'] ?? ''),
-                trim($_POST['taxpayer_brn'] ?? ''),
-                trim($_POST['sandbox_clientid'] ?? ''),
-                trim($_POST['sandbox_secret1'] ?? ''),
-                trim($_POST['sandbox_secret2'] ?? ''),
-                trim($_POST['prod_clientid'] ?? ''),
-                trim($_POST['prod_secret1'] ?? ''),
-                trim($_POST['prod_secret2'] ?? ''),
-                $uid
-            ]);
-        header("Location: e-invoice.php?updated=einvoice"); exit;
-    }
-
-    if ($_POST['action'] === 'update_ei_env') {
-        $env = (($_POST['ei_env'] ?? 'sandbox') === 'prod') ? 'prod' : 'sandbox';
-        $pdo->prepare("UPDATE users SET ei_env = ? WHERE id = ?")->execute([$env, $uid]);
-        header("Location: e-invoice.php?updated=env"); exit;
-    }
-
-    if ($_POST['action'] === 'get_token') {
-        $res = myinvois_request_token($pdo, $uid);
-        header("Location: e-invoice.php?" . ($res['ok'] ? "token=ok" : "token=err&msg=" . urlencode($res['error'])));
-        exit;
-    }
-}
-
-// Refresh user for env/token state
-$me        = currentUser();
-$envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
-$envLabel  = $envIsProd ? 'Production' : 'Sandbox (UAT)';
-$envUrl    = myinvois_base_url($me);
-$maskedTok = !empty($me['ei_token']) ? substr($me['ei_token'], 0, 10) . '••••••••••••' : null;
-
-/* ---------------- E-INVOICE STATISTICS ---------------- */
-// Updated to use einvoice_records table
-$einSt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ?");
-$einSt->execute([$uid]);
-$einCount = (int)$einSt->fetchColumn();
-
-$einGross = $pdo->prepare("SELECT COALESCE(SUM(total_amount),0) FROM einvoice_records WHERE user_id = ?");
-$einGross->execute([$uid]);
-$einGrossV = $einGross->fetchColumn();
-
-$einWeek = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '7 days'");
-$einWeek->execute([$uid]);
-$einWeekCount = (int)$einWeek->fetchColumn();
-
-$einMonth = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '30 days'");
-$einMonth->execute([$uid]);
-$einMonthCount = (int)$einMonth->fetchColumn();
-
-$einYear = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '1 year'");
-$einYear->execute([$uid]);
-$einYearCount = (int)$einYear->fetchColumn();
-
-// Updated to group by submission_status
-$einByStatus = $pdo->prepare("SELECT submission_status, COUNT(*) as count FROM einvoice_records WHERE user_id = ? GROUP BY submission_status");
-$einByStatus->execute([$uid]);
-$statusMap = [];
-while ($row = $einByStatus->fetch()) {
-    $statusMap[$row['submission_status']] = (int)$row['count'];
-}
+// Fetch Records
+$sql = "SELECT * FROM einvoice_records WHERE user_id = ? AND (sale_no ILIKE ? OR customer_name ILIKE ?) ORDER BY created_at DESC LIMIT ? OFFSET ?";
+$stmt = $pdo->prepare($sql);
+$stmt->execute([$uid, "%$search%", "%$search%", $perPage, $offset]);
+$records = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $avatarSrc = $me['avatar_path'] ? '/' . $me['avatar_path'] : null;
+
+// Helper for category
+function getCategory($docType) {
+    $map = ['01' => 'Invoice', '02' => 'Credit Note', '03' => 'Debit Note', '04' => 'Refund Note', '11' => 'Self-Billed'];
+    return $map[$docType] ?? ucfirst($docType ?? 'Unknown');
+}
+
+// Helper for status badge class
+function getStatusClass($status) {
+    $s = strtolower($status ?? 'pending');
+    if (in_array($s, ['valid', 'validated', 'success'])) return 'valid';
+    if (in_array($s, ['invalid', 'error', 'fail', 'failed', 'rejected'])) return 'invalid';
+    if (in_array($s, ['submitted', 'processing', 'in_progress', 'pending'])) return 'processing';
+    return 'processing';
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>E-Invoice — AZ Kejora SaaS</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>E-Invoice Records — AZ Kejora SaaS</title>
 <style>
 :root{--ink:#131327;--bg:#F6F7FB;--brand:#5457e5;--violet:#8b5cf6;--muted:#64748b;--faint:#94a3b8;--line:#e2e8f0;--grad:linear-gradient(90deg,var(--brand),var(--violet));--card:0 1px 2px rgba(19,19,39,.06),0 12px 32px -16px rgba(19,19,39,.12)}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -107,12 +95,11 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 /* ---------- LOADING OVERLAY ---------- */
 .loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.92);backdrop-filter:blur(4px);display:none;place-items:center;z-index:9999}
 .loading-overlay.active{display:grid}
-.spinner-wrap{text-align:center}
 .spinner{width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner-text{margin-top:16px;font-size:13px;font-weight:600;color:var(--muted)}
 
-/* ---------- SIDEBAR ---------- */
+/* ---------- SIDEBAR & LAYOUT ---------- */
 .sidebar{position:fixed;top:0;left:0;bottom:0;width:260px;background:#fff;border-right:1px solid var(--line);padding:24px 16px;z-index:30;transition:transform .3s ease;display:flex;flex-direction:column}
 .sidebar-brand{padding:0 8px 24px;border-bottom:1px solid var(--line);margin-bottom:16px}
 .sidebar-nav{display:flex;flex-direction:column;gap:4px}
@@ -122,7 +109,6 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 .menu-item.active{background:var(--grad);color:#fff;box-shadow:0 4px 12px -4px rgba(84,87,229,.4)}
 .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);z-index:25}
 
-/* ---------- MAIN LAYOUT ---------- */
 .main-wrapper{margin-left:260px;min-height:100vh;display:flex;flex-direction:column}
 .topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10;gap:12px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
@@ -137,79 +123,58 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 .main{max-width:1200px;margin:0 auto;padding:32px 24px;width:100%}
 h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .sub{color:var(--muted);font-size:14px;margin-top:4px}
-.banner{margin:16px 0 0;border-radius:12px;padding:12px 18px;font-size:13px;font-weight:600}
-.banner.success{background:#d1fae5;color:#059669}
-.banner.error{background:#ffe4e6;color:#e11d48}
 
-/* ---------- HEAD ROW ---------- */
-.head-row{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:4px}
-.btn-config{background:#e0e5ff;color:#4644cf;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:8px;box-shadow:0 4px 10px -4px rgba(84,87,229,.25)}
-.btn-config:hover{background:#c6ceff}
+/* ---------- TOOLBAR ---------- */
+.toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin:24px 0 16px}
+.search-box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 14px;flex:1;max-width:400px}
+.search-box input{border:none;outline:none;font-size:14px;width:100%;background:transparent}
+.filter-group{display:flex;gap:8px;align-items:center}
+.filter-group select{border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px;font-weight:600;color:var(--ink);background:#fff;cursor:pointer}
+.btn{display:inline-flex;align-items:center;gap:8px;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;transition:.15s;text-decoration:none;border:none;cursor:pointer}
+.btn.primary{background:var(--grad);color:#fff}.btn.primary:hover{opacity:.9}
+.btn.ghost{background:#fff;border:1px solid var(--line);color:var(--muted)}.btn.ghost:hover{border-color:var(--brand);color:var(--brand)}
 
-/* ---------- SUBMISSION CARDS ---------- */
-.submit-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:28px 0}
-.submit-card{background:#fff;border:1px solid var(--line);border-radius:20px;padding:28px;box-shadow:var(--card);position:relative;overflow:hidden;text-decoration:none;display:block;transition:.2s;color:inherit}
-.submit-card:hover{transform:translateY(-4px);box-shadow:0 20px 40px -16px rgba(84,87,229,.3);border-color:#c6ceff}
-.submit-card .blob{position:absolute;right:-30px;top:-30px;width:140px;height:140px;border-radius:50%;filter:blur(40px);opacity:.6}
-.ic-tile{width:56px;height:56px;border-radius:14px;display:grid;place-items:center;color:#fff;font-size:24px;position:relative}
-.submit-card h3{margin-top:16px;font-size:20px;font-weight:800;position:relative}
-.submit-card p{margin-top:8px;font-size:14px;color:var(--muted);line-height:1.6;position:relative}
-.submit-card .arrow{margin-top:18px;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:var(--brand);position:relative}
+/* ---------- TABLE ---------- */
+.card{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--card);overflow:hidden}
+.table-responsive{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:900px}
+th{padding:14px 16px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}
+td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-align:middle}
+tbody tr:hover{background:#f8fafc}
+tbody tr:last-child td{border-bottom:none}
 
-/* ---------- STATS ---------- */
-.summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px}
-.summary-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center;box-shadow:var(--card)}
-.summary-card b{display:block;font-size:28px;font-weight:800;color:var(--brand)}
-.summary-card p{font-size:12px;font-weight:600;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
+.badge{display:inline-block;border-radius:999px;padding:4px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+.badge.valid{background:#d1fae5;color:#059669}
+.badge.invalid{background:#ffe4e6;color:#e11d48}
+.badge.processing{background:#dbeafe;color:#3b82f6}
 
-.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px}
-.status-card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:16px;box-shadow:var(--card)}
-.status-card b{display:block;font-size:20px;font-weight:800;margin-bottom:4px}
-.status-card p{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
-.status-new{color:#5457e5}.status-submitted{color:#059669}.status-valid{color:#10b981}
-.status-invalid{color:#e11d48}.status-progress{color:#d97706}.status-fail{color:#9f1239}
+.action-btns{display:flex;gap:6px}
+.action-btn{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;color:var(--muted);transition:.15s;border:1px solid var(--line);background:#fff}
+.action-btn:hover{color:var(--brand);border-color:var(--brand);background:#f5f6ff}
+.action-btn.danger:hover{color:#e11d48;border-color:#e11d48;background:#fff1f2}
+
+/* ---------- PAGINATION ---------- */
+.pagination{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-top:1px solid var(--line);font-size:13px;color:var(--muted);flex-wrap:wrap;gap:12px}
+.page-links{display:flex;gap:4px}
+.page-link{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;font-weight:600;color:var(--muted);transition:.15s;border:1px solid transparent}
+.page-link:hover{background:#f1f5f9;color:var(--ink)}
+.page-link.active{background:var(--grad);color:#fff;border-color:transparent}
+.page-link.disabled{opacity:.4;pointer-events:none}
 
 /* ---------- MODAL ---------- */
 .modal{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);padding:16px;overflow-y:auto}
 .modal.open{display:grid}
-.modal-card{width:100%;max-width:640px;background:#fff;border-radius:20px;padding:28px;box-shadow:0 30px 80px -20px rgba(19,19,39,.4);max-height:90vh;overflow-y:auto;margin:auto}
-.modal-card h3{font-size:18px;font-weight:800;margin-bottom:4px}
-.modal-card .msub{font-size:13px;color:var(--muted);margin-bottom:16px}
-.field{margin-top:14px}
-.field label{display:block;margin-bottom:6px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);border-radius:12px;padding:11px 14px;font-size:14px;outline:none;font-family:inherit}
-.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.1)}
-.field textarea{resize:vertical;min-height:80px}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
-.hint{font-size:11px;color:var(--faint);margin-top:4px;word-break:break-all}
-.mrow{display:flex;gap:10px;margin-top:20px}
-.mrow .btn-save{flex:1;text-align:center}
-.mrow .cancel{flex:1;background:#f1f5f9;color:#475569;border-radius:10px;font-size:13px;font-weight:700;text-align:center;padding:11px 18px}
-.btn-save{background:var(--grad);color:#fff;border-radius:10px;padding:11px 18px;font-size:13px;font-weight:700}
-.btn-save:hover{opacity:.9}
-
-/* env selector */
-.env-opt{border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:4px;cursor:pointer;transition:.15s;background:#fff}
-.env-opt input{width:auto;margin:0 0 2px 0}
-.env-opt b{font-size:13px}
-.env-opt small{color:var(--faint);font-size:10px;word-break:break-all}
-.env-opt.on{border-color:var(--brand);background:#f5f6ff;box-shadow:0 0 0 3px rgba(99,102,241,.12)}
-
-/* token box */
-.trow{display:flex;justify-content:space-between;gap:12px;align-items:center;background:#f8fafc;border-radius:10px;padding:10px 14px;margin-top:8px;font-size:12px;flex-wrap:wrap}
-.trow span{color:var(--muted);font-weight:600}
-.trow b{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:#1e293b;word-break:break-all}
-.badge-env{display:inline-block;border-radius:999px;padding:2px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
-.badge-env.sandbox{background:#e0e5ff;color:#4644cf}
-.badge-env.prod{background:#d1fae5;color:#059669}
-
-/* modal tabs */
-.tabs{display:flex;gap:6px;margin-bottom:18px;border-bottom:1px solid var(--line)}
-.tab{padding:9px 14px;font-size:12px;font-weight:700;color:var(--muted);border-bottom:2px solid transparent;cursor:pointer}
-.tab.active{color:var(--brand);border-bottom-color:var(--brand)}
-.tab-panel{display:none}.tab-panel.on{display:block}
-.section-head{margin-top:22px;margin-bottom:4px;font-size:14px;font-weight:700;color:var(--ink)}
+.modal-card{width:100%;max-width:600px;background:#fff;border-radius:20px;padding:28px;box-shadow:0 30px 80px -20px rgba(19,19,39,.4);max-height:90vh;overflow-y:auto;margin:auto;animation:pop .2s ease-out}
+@keyframes pop{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+.modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.modal-header h3{font-size:18px;font-weight:800}
+.modal-close{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:#f1f5f9;color:var(--ink);font-size:18px}
+.modal-close:hover{background:#e2e8f0}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+.detail-item{background:#f8fafc;border-radius:10px;padding:12px}
+.detail-item label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;color:var(--faint);letter-spacing:.08em;margin-bottom:4px}
+.detail-item span{font-size:14px;font-weight:600;color:var(--ink);word-break:break-all}
+.json-block{background:#1e293b;color:#e2e8f0;border-radius:10px;padding:16px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow-y:auto}
 
 .footer{max-width:1200px;margin:24px auto;padding:0 24px 32px;font-size:12px;color:var(--faint);text-align:center}
 
@@ -220,21 +185,24 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   .sidebar-overlay.open{display:block}
   .main-wrapper{margin-left:0}
   .menu-toggle{display:block}
-  .submit-grid{grid-template-columns:1fr}
+  .toolbar{flex-direction:column;align-items:stretch}
+  .search-box{max-width:100%}
+  .filter-group{justify-content:space-between}
 }
 @media(max-width:760px){
   .main{padding:20px 12px}
   h1{font-size:22px}
   .topbar{padding:12px 14px}
   .top-right{gap:8px;font-size:12px}
-  .summary-grid{grid-template-columns:1fr}
-  .grid2,.grid3{grid-template-columns:1fr}
+  .detail-grid{grid-template-columns:1fr}
 }
 </style>
 </head>
 <body>
+
+<!-- LOADING OVERLAY -->
 <div class="loading-overlay" id="loadingOverlay">
-  <div class="spinner-wrap">
+  <div style="text-align:center">
     <div class="spinner"></div>
     <p class="spinner-text">Processing…</p>
   </div>
@@ -248,7 +216,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   <nav class="sidebar-nav">
     <a href="main.php" class="menu-item">🏠 Home</a>
     <a href="e-invoice.php" class="menu-item active">🧾 E-Invoice</a>
-    <a href="e-invoice_submitted.php" class="menu-item active">🧾 View Submitted</a>
     <div class="menu-section">Subscription</div>
     <a href="s_payment.php" class="menu-item">💳 Payment</a>
     <a href="s_report.php" class="menu-item">📄 Report</a>
@@ -281,195 +248,144 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   </nav>
 
   <main class="main">
-    <div class="head-row">
-      <div>
-        <h1>E-Invoice Studio 🧾</h1>
-        <p class="sub">Upload, extract, analyse and submit — LHDN MyInvois compliance included.</p>
+    <h1>Submitted E-Invoices 📋</h1>
+    <p class="sub">View, search, and manage your LHDN e-invoice submission history.</p>
+
+    <!-- TOOLBAR -->
+    <form method="GET" class="toolbar" id="filterForm">
+      <div class="search-box">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint);flex-shrink:0"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <input type="text" name="search" placeholder="Search by Sale No or Customer Name..." value="<?= htmlspecialchars($search) ?>">
       </div>
-      <button class="btn-config" onclick="openConfig()">⚙️ Company &amp; e-Invoice config</button>
-    </div>
-
-    <?php if (isset($_GET['updated']) && $_GET['updated'] === 'einvoice'): ?>
-      <div class="banner success">✓ E-Invoice configuration saved.</div>
-    <?php endif; ?>
-    <?php if (isset($_GET['updated']) && $_GET['updated'] === 'env'): ?>
-      <div class="banner success">✓ Submission environment switched to <?= $envLabel ?>.</div>
-    <?php endif; ?>
-    <?php if (isset($_GET['token']) && $_GET['token'] === 'ok'): ?>
-      <div class="banner success">🔑 Access token received from LHDN (<?= $envLabel ?>) and saved securely.</div>
-    <?php endif; ?>
-    <?php if (isset($_GET['token']) && $_GET['token'] === 'err'): ?>
-      <div class="banner error">✗ <?= htmlspecialchars($_GET['msg'] ?? 'Token request failed.') ?></div>
-    <?php endif; ?>
-
-    <!-- ========== SUBMISSION OPTIONS ========== -->
-    <h2 style="font-size:20px;font-weight:700;margin-top:24px;margin-bottom:4px">🚀 Submit new e-Invoice</h2>
-    <p style="font-size:13px;color:var(--muted);margin-bottom:4px">Choose how you want to submit your invoices to LHDN.</p>
-
-    <div class="submit-grid">
-      <a href="e-invoice_upload.php" class="submit-card action-link">
-        <span class="blob" style="background:#fef3c7"></span>
-        <span class="ic-tile" style="background:linear-gradient(135deg,#f59e0b,#f97316)">📤</span>
-        <h3>Upload Excel / CSV</h3>
-        <p>Bulk upload your invoices from spreadsheets. We'll extract line items, compute SST, validate TINs and submit to LHDN in one batch.</p>
-        <span class="arrow">Upload files →</span>
-      </a>
-
-      <a href="e-invoice_manual.php" class="submit-card action-link">
-        <span class="blob" style="background:#e0e5ff"></span>
-        <span class="ic-tile" style="background:linear-gradient(135deg,var(--brand),var(--violet))">✍️</span>
-        <h3>Manual Entry</h3>
-        <p>Create a single invoice from scratch using our guided form. Perfect for ad-hoc sales, one-off jobs or quick receipts.</p>
-        <span class="arrow">Start entry →</span>
-      </a>
-    </div>
-
-    <!-- ========== STATISTICS ========== -->
-    <h2 style="font-size:20px;font-weight:700;margin-bottom:16px">📊 E-Invoice Summary</h2>
-      <button class="btn-config" onclick="self.location='e-invoice_submitted.php';"> View Submission Data</button>
-
-    <div class="summary-grid">
-      <div class="summary-card">
-        <b><?= $einWeekCount ?></b>
-        <p>This Week</p>
+      <div class="filter-group">
+        <select name="per_page" onchange="document.getElementById('filterForm').submit()">
+          <?php foreach ($perPageOptions as $opt): ?>
+            <option value="<?= $opt ?>" <?= $perPage == $opt ? 'selected' : '' ?>><?= $opt ?> per page</option>
+          <?php endforeach; ?>
+        </select>
+        <a href="?export=1&search=<?= urlencode($search) ?>&per_page=<?= $perPage ?>" class="btn primary" onclick="document.getElementById('loadingOverlay').classList.add('active')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          Export CSV
+        </a>
       </div>
-      <div class="summary-card">
-        <b><?= $einMonthCount ?></b>
-        <p>This Month</p>
-      </div>
-      <div class="summary-card">
-        <b><?= $einYearCount ?></b>
-        <p>This Year</p>
-      </div>
-    </div>
+    </form>
 
-    <h3 style="font-size:16px;font-weight:600;margin-bottom:12px;color:var(--muted)">By Status</h3>
-    <div class="status-grid">
-      <div class="status-card"><b class="status-new"><?= $statusMap['new'] ?? 0 ?></b><p>New</p></div>
-      <div class="status-card"><b class="status-submitted"><?= $statusMap['submitted'] ?? 0 ?></b><p>Submitted</p></div>
-      <div class="status-card"><b class="status-valid"><?= $statusMap['valid'] ?? $statusMap['validated'] ?? 0 ?></b><p>Valid</p></div>
-      <div class="status-card"><b class="status-invalid"><?= $statusMap['invalid'] ?? 0 ?></b><p>Invalid</p></div>
-      <div class="status-card"><b class="status-progress"><?= $statusMap['in_progress'] ?? $statusMap['pending'] ?? 0 ?></b><p>In Progress</p></div>
-      <div class="status-card"><b class="status-fail"><?= $statusMap['fail'] ?? $statusMap['failed'] ?? 0 ?></b><p>Failed</p></div>
+    <!-- TABLE -->
+    <div class="card">
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:50px">No</th>
+              <th>Sale No</th>
+              <th>Sale Date</th>
+              <th>Customer Name</th>
+              <th>Category</th>
+              <th style="text-align:right">Sale Total</th>
+              <th>Submitted Date</th>
+              <th>LHDN Status</th>
+              <th style="width:100px">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php if (empty($records)): ?>
+              <tr>
+                <td colspan="9" style="text-align:center;padding:48px 16px;color:var(--faint)">
+                  <div style="font-size:32px;margin-bottom:8px">📭</div>
+                  No e-invoice records found matching your criteria.
+                </td>
+              </tr>
+            <?php else: ?>
+              <?php foreach ($records as $index => $row): ?>
+                <?php 
+                  $no = $offset + $index + 1;
+                  $status = strtolower($row['lhdn_status'] ?? 'pending');
+                  $isError = in_array($status, ['invalid', 'error', 'fail', 'failed', 'rejected']);
+                  $saleDate = $row['sale_datetime'] ? date('d M Y', strtotime($row['sale_datetime'])) : date('d M Y', strtotime($row['created_at']));
+                  $submitDate = date('d M Y, H:i', strtotime($row['created_at']));
+                ?>
+                <tr>
+                  <td style="color:var(--faint);font-weight:600"><?= $no ?></td>
+                  <td><b><?= htmlspecialchars($row['sale_no'] ?? '—') ?></b></td>
+                  <td><?= htmlspecialchars($saleDate) ?></td>
+                  <td><?= htmlspecialchars($row['customer_name'] ?? '—') ?></td>
+                  <td><span style="font-size:12px;font-weight:600;color:var(--muted)"><?= getCategory($row['document_type']) ?></span></td>
+                  <td style="text-align:right;font-weight:700;font-family:ui-monospace,monospace">RM <?= number_format($row['total_amount'], 2) ?></td>
+                  <td style="font-size:13px;color:var(--muted)"><?= htmlspecialchars($submitDate) ?></td>
+                  <td><span class="badge <?= getStatusClass($row['lhdn_status']) ?>"><?= htmlspecialchars(strtoupper($row['lhdn_status'] ?? 'PENDING')) ?></span></td>
+                  <td>
+                    <div class="action-btns">
+                      <button class="action-btn" title="View LHDN E-Invoice" onclick="openInvoiceModal(<?= htmlspecialchars(json_encode($row), ENT_QUOTES) ?>)">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                      </button>
+                      <?php if ($isError && !empty($row['lhdn_response'])): ?>
+                        <button class="action-btn danger" title="View Error Details" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response']), ENT_QUOTES) ?>)">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+                        </button>
+                      <?php endif; ?>
+                    </div>
+                  </td>
+                </tr>
+              <?php endforeach; ?>
+            <?php endif; ?>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- PAGINATION -->
+      <?php if ($totalPages > 1): ?>
+        <div class="pagination">
+          <span>Showing <?= $offset + 1 ?> to <?= min($offset + $perPage, $totalRecords) ?> of <?= $totalRecords ?> records</span>
+          <div class="page-links">
+            <a href="?page=<?= max(1, $page - 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>" class="page-link <?= $page <= 1 ? 'disabled' : '' ?>">‹</a>
+            
+            <?php 
+              $startPage = max(1, $page - 2);
+              $endPage = min($totalPages, $page + 2);
+              for ($i = $startPage; $i <= $endPage; $i++): 
+            ?>
+              <a href="?page=<?= $i ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>" class="page-link <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
+            <?php endfor; ?>
+            
+            <a href="?page=<?= min($totalPages, $page + 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>" class="page-link <?= $page >= $totalPages ? 'disabled' : '' ?>">›</a>
+          </div>
+        </div>
+      <?php endif; ?>
     </div>
   </main>
 
   <footer class="footer">© 2026 AZ Kejora SaaS · Supabase PostgreSQL · <?= htmlspecialchars($me['email']) ?></footer>
 </div>
 
-<!-- ============ COMPANY / E-INVOICE CONFIG MODAL ============ -->
-<div class="modal" id="configModal">
+<!-- ============ INVOICE DETAIL MODAL ============ -->
+<div class="modal" id="invoiceModal" onclick="if(event.target===this)closeModal('invoiceModal')">
   <div class="modal-card">
-    <h3>⚙️ Company &amp; e-Invoice Configuration</h3>
-    <p class="msub">Manage your business identity, LHDN credentials and access token.</p>
-
-    <div class="tabs">
-      <div class="tab active" data-tab="company">Company</div>
-      <div class="tab" data-tab="credentials">Credentials</div>
-      <div class="tab" data-tab="environment">Environment</div>
-      <div class="tab" data-tab="token">Token</div>
+    <div class="modal-header">
+      <h3>📄 LHDN E-Invoice Details</h3>
+      <button class="modal-close" onclick="closeModal('invoiceModal')">✕</button>
     </div>
+    <div id="invoiceModalContent">
+      <!-- Populated by JS -->
+    </div>
+    <div style="margin-top:20px;display:flex;gap:10px">
+      <button class="btn primary" style="flex:1" onclick="alert('PDF download feature would be triggered here.')">⬇ Download PDF</button>
+      <button class="btn ghost" style="flex:1" onclick="closeModal('invoiceModal')">Close</button>
+    </div>
+  </div>
+</div>
 
-    <!-- TAB: COMPANY -->
-    <form method="POST" class="tab-panel on action-form" data-panel="company">
-      <input type="hidden" name="action" value="update_einvoice">
-      
-      <!-- ✅ FIX: Preserve credentials so they don't get wiped when updating identifiers -->
-      <input type="hidden" name="sandbox_clientid" value="<?= htmlspecialchars($company['sandbox_clientid'] ?? '') ?>">
-      <input type="hidden" name="sandbox_secret1" value="<?= htmlspecialchars($company['sandbox_secret1'] ?? '') ?>">
-      <input type="hidden" name="sandbox_secret2" value="<?= htmlspecialchars($company['sandbox_secret2'] ?? '') ?>">
-      <input type="hidden" name="prod_clientid" value="<?= htmlspecialchars($company['prod_clientid'] ?? '') ?>">
-      <input type="hidden" name="prod_secret1" value="<?= htmlspecialchars($company['prod_secret1'] ?? '') ?>">
-      <input type="hidden" name="prod_secret2" value="<?= htmlspecialchars($company['prod_secret2'] ?? '') ?>">
-
-      <p class="section-head">Business identifiers</p>
-      <div class="grid2">
-        <div class="field"><label>MSIC code</label><input type="text" name="msic_code" value="<?= htmlspecialchars($company['msic_code'] ?? '') ?>" placeholder="62010">
-          <p class="hint">Malaysia Standard Industrial Classification</p></div>
-        <div class="field"><label>Classification code</label><input type="text" name="classification_code" value="<?= htmlspecialchars($company['classification_code'] ?? '') ?>" placeholder="022">
-          <p class="hint">Business activity classification</p></div>
-      </div>
-      <div class="grid2">
-        <div class="field"><label>Taxpayer TIN</label><input type="text" name="taxpayer_tin" value="<?= htmlspecialchars($company['taxpayer_tin'] ?? '') ?>" placeholder="C2012345678">
-          <p class="hint">Tax Identification Number from LHDN</p></div>
-        <div class="field"><label>Taxpayer BRN</label><input type="text" name="taxpayer_brn" value="<?= htmlspecialchars($company['taxpayer_brn'] ?? '') ?>" placeholder="202001012345">
-          <p class="hint">Business Registration Number</p></div>
-      </div>
-      <div class="mrow">
-        <button type="submit" class="btn-save">Save identifiers</button>
-        <button type="button" class="cancel" onclick="closeConfig()">Close</button>
-      </div>
-    </form>
-
-    <!-- TAB: CREDENTIALS -->
-    <form method="POST" class="tab-panel action-form" data-panel="credentials">
-      <input type="hidden" name="action" value="update_einvoice">
-      
-      <!-- Preserve identifiers so they don't get wiped when updating credentials -->
-      <input type="hidden" name="msic_code" value="<?= htmlspecialchars($company['msic_code'] ?? '') ?>">
-      <input type="hidden" name="classification_code" value="<?= htmlspecialchars($company['classification_code'] ?? '') ?>">
-      <input type="hidden" name="taxpayer_tin" value="<?= htmlspecialchars($company['taxpayer_tin'] ?? '') ?>">
-      <input type="hidden" name="taxpayer_brn" value="<?= htmlspecialchars($company['taxpayer_brn'] ?? '') ?>">
-
-      <p class="section-head">🧪 Sandbox Credentials</p>
-      <div class="field"><label>Client ID</label><input type="text" name="sandbox_clientid" value="<?= htmlspecialchars($company['sandbox_clientid'] ?? '') ?>"></div>
-      <div class="grid2">
-        <div class="field"><label>Client Secret 1</label><input type="password" name="sandbox_secret1" value="<?= htmlspecialchars($company['sandbox_secret1'] ?? '') ?>"></div>
-        <div class="field"><label>Client Secret 2</label><input type="password" name="sandbox_secret2" value="<?= htmlspecialchars($company['sandbox_secret2'] ?? '') ?>"></div>
-      </div>
-
-      <p class="section-head">🚀 Production Credentials</p>
-      <div class="field"><label>Client ID</label><input type="text" name="prod_clientid" value="<?= htmlspecialchars($company['prod_clientid'] ?? '') ?>"></div>
-      <div class="grid2">
-        <div class="field"><label>Client Secret 1</label><input type="password" name="prod_secret1" value="<?= htmlspecialchars($company['prod_secret1'] ?? '') ?>"></div>
-        <div class="field"><label>Client Secret 2</label><input type="password" name="prod_secret2" value="<?= htmlspecialchars($company['prod_secret2'] ?? '') ?>"></div>
-      </div>
-
-      <div class="mrow">
-        <button type="submit" class="btn-save">Save credentials</button>
-        <button type="button" class="cancel" onclick="closeConfig()">Close</button>
-      </div>
-    </form>
-
-    <!-- TAB: ENVIRONMENT -->
-    <form method="POST" class="tab-panel action-form" data-panel="environment">
-      <input type="hidden" name="action" value="update_ei_env">
-      <p class="section-head">Submission environment</p>
-      <p class="hint" style="margin-bottom:12px">Choose which LHDN MyInvois gateway receives your submissions.</p>
-      <div class="grid2">
-        <label class="env-opt <?= !$envIsProd ? 'on' : '' ?>">
-          <input type="radio" name="ei_env" value="sandbox" <?= !$envIsProd ? 'checked' : '' ?>>
-          <b>🧪 Sandbox (UAT)</b>
-          <small><?= htmlspecialchars($me['ei_url_sandbox'] ?? 'https://preprod-api.myinvois.hasil.gov.my') ?></small>
-        </label>
-        <label class="env-opt <?= $envIsProd ? 'on' : '' ?>">
-          <input type="radio" name="ei_env" value="prod" <?= $envIsProd ? 'checked' : '' ?>>
-          <b>🚀 Production</b>
-          <small><?= htmlspecialchars($me['ei_url_prod'] ?? 'https://api.myinvois.hasil.gov.my') ?></small>
-        </label>
-      </div>
-      <div class="mrow">
-        <button type="submit" class="btn-save">Save environment</button>
-        <button type="button" class="cancel" onclick="closeConfig()">Close</button>
-      </div>
-    </form>
-
-    <!-- TAB: TOKEN -->
-    <form method="POST" class="tab-panel action-form" data-panel="token">
-      <input type="hidden" name="action" value="get_token">
-      <p class="section-head">🔑 MyInvois Access Token</p>
-      <p class="hint">Requests an OAuth 2.0 <code>client_credentials</code> token from LHDN using your saved <?= htmlspecialchars($envLabel) ?> credentials.</p>
-
-      <div class="trow"><span>Environment</span><b><span class="badge-env <?= $envIsProd ? 'prod' : 'sandbox' ?>"><?= htmlspecialchars($envLabel) ?></span></b></div>
-      <div class="trow"><span>API URL</span><b><?= htmlspecialchars($envUrl) ?>/connect/token</b></div>
-      <div class="trow"><span>Access token</span><b><?= $maskedTok ? htmlspecialchars($maskedTok) : 'Not generated yet' ?></b></div>
-      <div class="trow"><span>Last token date</span><b><?= !empty($me['ei_token_at']) ? date('M d, Y · H:i', strtotime($me['ei_token_at'])) : '—' ?></b></div>
-
-      <div class="mrow">
-        <button type="submit" class="btn-save">🔑 Get / Refresh token</button>
-        <button type="button" class="cancel" onclick="closeConfig()">Close</button>
-      </div>
-    </form>
+<!-- ============ JSON RESPONSE MODAL ============ -->
+<div class="modal" id="jsonModal" onclick="if(event.target===this)closeModal('jsonModal')">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3>🐛 LHDN API Response (JSON)</h3>
+      <button class="modal-close" onclick="closeModal('jsonModal')">✕</button>
+    </div>
+    <pre class="json-block" id="jsonModalContent"></pre>
+    <div style="margin-top:16px;text-align:right">
+      <button class="btn ghost" onclick="copyJson()">📋 Copy to Clipboard</button>
+      <button class="btn primary" onclick="closeModal('jsonModal')" style="margin-left:8px">Close</button>
+    </div>
   </div>
 </div>
 
@@ -479,49 +395,56 @@ function toggleSidebar(){
   document.getElementById('sidebarOverlay').classList.toggle('open');
 }
 
-/* ---------- CONFIG MODAL ---------- */
-const cfgModal = document.getElementById('configModal');
-function openConfig(){ cfgModal.classList.add('open'); }
-function closeConfig(){ cfgModal.classList.remove('open'); }
-cfgModal.addEventListener('click', e => { if (e.target === cfgModal) closeConfig(); });
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+  document.body.style.overflow = '';
+}
 
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    const name = tab.dataset.tab;
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('on', p.dataset.panel === name));
+function openInvoiceModal(record) {
+  const content = document.getElementById('invoiceModalContent');
+  const saleDate = record.sale_datetime ? new Date(record.sale_datetime).toLocaleDateString() : new Date(record.created_at).toLocaleDateString();
+  
+  content.innerHTML = `
+    <div class="detail-grid">
+      <div class="detail-item"><label>Sale No</label><span>${record.sale_no || '—'}</span></div>
+      <div class="detail-item"><label>Document Type</label><span>${record.document_type || '—'}</span></div>
+      <div class="detail-item"><label>Customer Name</label><span>${record.customer_name || '—'}</span></div>
+      <div class="detail-item"><label>Customer TIN</label><span>${record.customer_tin || '—'}</span></div>
+      <div class="detail-item"><label>Sale Amount</label><span>RM ${parseFloat(record.sale_amount || 0).toFixed(2)}</span></div>
+      <div class="detail-item"><label>Total Amount</label><span style="color:var(--brand);font-weight:800">RM ${parseFloat(record.total_amount || 0).toFixed(2)}</span></div>
+      <div class="detail-item"><label>LHDN Status</label><span style="text-transform:uppercase">${record.lhdn_status || 'PENDING'}</span></div>
+      <div class="detail-item"><label>Submission Date</label><span>${saleDate}</span></div>
+    </div>
+    ${record.lhdn_submission_id ? `<div class="detail-item" style="margin-bottom:16px"><label>LHDN Submission ID</label><span style="font-family:monospace;font-size:12px">${record.lhdn_submission_id}</span></div>` : ''}
+  `;
+  document.getElementById('invoiceModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function openJsonModal(jsonString) {
+  try {
+    const parsed = JSON.parse(jsonString);
+    document.getElementById('jsonModalContent').textContent = JSON.stringify(parsed, null, 2);
+  } catch (e) {
+    document.getElementById('jsonModalContent').textContent = jsonString;
+  }
+  document.getElementById('jsonModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function copyJson() {
+  const text = document.getElementById('jsonModalContent').textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    alert('JSON copied to clipboard!');
   });
-});
+}
 
-/* keep env cards highlighted when radio changes */
-document.querySelectorAll('.env-opt input').forEach(r => r.addEventListener('change', () => {
-  document.querySelectorAll('.env-opt').forEach(o => o.classList.remove('on'));
-  r.closest('.env-opt').classList.add('on');
-}));
-
-/* Auto-open config modal on return from token/env/update actions */
-<?php if (isset($_GET['updated']) || isset($_GET['token'])): ?>
-  openConfig();
-  <?php if (isset($_GET['token'])): ?>
-    document.querySelector('.tab[data-tab="token"]').click();
-  <?php elseif (isset($_GET['updated']) && $_GET['updated'] === 'env'): ?>
-    document.querySelector('.tab[data-tab="environment"]').click();
-  <?php elseif (isset($_GET['updated']) && $_GET['updated'] === 'einvoice'): ?>
-    document.querySelector('.tab[data-tab="credentials"]').click();
-  <?php endif; ?>
-<?php endif; ?>
-
-/* ---------- LOADING OVERLAY ---------- */
-const overlay = document.getElementById('loadingOverlay');
-document.querySelectorAll('form').forEach(form => {
-  form.addEventListener('submit', function(e) {
-    if (this.onsubmit && !this.onsubmit(e)) return;
-    overlay.classList.add('active');
-  });
-});
-document.querySelectorAll('a.action-link').forEach(link => {
-  link.addEventListener('click', function() { overlay.classList.add('active'); });
+// Close modals on Escape key
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape') {
+    closeModal('invoiceModal');
+    closeModal('jsonModal');
+  }
 });
 </script>
 </body>
