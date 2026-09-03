@@ -204,10 +204,19 @@ if (isset($_GET['ajax_action'])) {
             $company = $stmtCompany->fetch(PDO::FETCH_ASSOC);
             if (!$company) { echo json_encode(['done' => true, 'error' => 'Company profile not found.']); exit; }
 
-            // ✅ Determine environment based on user preference
-            $uStmt = $pdo->prepare("SELECT ei_env FROM users WHERE id = ? LIMIT 1");
-            $uStmt->execute([$uid]);
-            $envIsProd = ($uStmt->fetchColumn() ?? 'sandbox') === 'prod';
+            // ✅ FIX: Determine environment dynamically from companies table tokens/credentials
+            $envIsProd = false;
+            $prodValid = !empty($company['prod_token']) && !empty($company['prod_token_expiry']) && strtotime($company['prod_token_expiry']) > (time() + 60);
+            $sandboxValid = !empty($company['sandbox_token']) && !empty($company['sandbox_token_expiry']) && strtotime($company['sandbox_token_expiry']) > (time() + 60);
+
+            if ($prodValid && !$sandboxValid) {
+                $envIsProd = true;
+            } elseif (!$prodValid && $sandboxValid) {
+                $envIsProd = false;
+            } else {
+                // Fallback: if both or neither are valid, prefer Prod if only Prod credentials exist, else Sandbox
+                $envIsProd = (!empty($company['prod_clientid']) && empty($company['sandbox_clientid']));
+            }
 
             $tokenCol = $envIsProd ? 'prod_token' : 'sandbox_token';
             $expiryCol = $envIsProd ? 'prod_token_expiry' : 'sandbox_token_expiry';
