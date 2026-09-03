@@ -62,31 +62,33 @@ $envUrl    = myinvois_base_url($me);
 $maskedTok = !empty($me['ei_token']) ? substr($me['ei_token'], 0, 10) . '••••••••••••' : null;
 
 /* ---------------- E-INVOICE STATISTICS ---------------- */
-$einSt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_items WHERE user_id = ?");
+// Updated to use einvoice_records table
+$einSt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ?");
 $einSt->execute([$uid]);
 $einCount = (int)$einSt->fetchColumn();
 
-$einGross = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM einvoice_items WHERE user_id = ?");
+$einGross = $pdo->prepare("SELECT COALESCE(SUM(total_amount),0) FROM einvoice_records WHERE user_id = ?");
 $einGross->execute([$uid]);
 $einGrossV = $einGross->fetchColumn();
 
-$einWeek = $pdo->prepare("SELECT COUNT(*) FROM einvoice_items WHERE user_id = ? AND created_at >= NOW() - INTERVAL '7 days'");
+$einWeek = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '7 days'");
 $einWeek->execute([$uid]);
 $einWeekCount = (int)$einWeek->fetchColumn();
 
-$einMonth = $pdo->prepare("SELECT COUNT(*) FROM einvoice_items WHERE user_id = ? AND created_at >= NOW() - INTERVAL '30 days'");
+$einMonth = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '30 days'");
 $einMonth->execute([$uid]);
 $einMonthCount = (int)$einMonth->fetchColumn();
 
-$einYear = $pdo->prepare("SELECT COUNT(*) FROM einvoice_items WHERE user_id = ? AND created_at >= NOW() - INTERVAL '1 year'");
+$einYear = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '1 year'");
 $einYear->execute([$uid]);
 $einYearCount = (int)$einYear->fetchColumn();
 
-$einByStatus = $pdo->prepare("SELECT status, COUNT(*) as count FROM einvoice_items WHERE user_id = ? GROUP BY status");
+// Updated to group by submission_status
+$einByStatus = $pdo->prepare("SELECT submission_status, COUNT(*) as count FROM einvoice_records WHERE user_id = ? GROUP BY submission_status");
 $einByStatus->execute([$uid]);
 $statusMap = [];
 while ($row = $einByStatus->fetch()) {
-    $statusMap[$row['status']] = (int)$row['count'];
+    $statusMap[$row['submission_status']] = (int)$row['count'];
 }
 
 $avatarSrc = $me['avatar_path'] ? '/' . $me['avatar_path'] : null;
