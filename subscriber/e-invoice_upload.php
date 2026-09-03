@@ -34,7 +34,6 @@ function lookupCustomerTIN($ic, $email, $baseUrl, $token) {
     return 'EI00000000010';
 }
 
-/* ✅ NEW: recursively find an error message inside a decoded LHDN response */
 function findErrorInArray($arr) {
     if (!is_array($arr)) return null;
     foreach (['error', 'message', 'errorMessages', 'validationErrors', 'curl_error'] as $k) {
@@ -49,7 +48,6 @@ function findErrorInArray($arr) {
     return null;
 }
 
-/* ✅ NEW: extract a human-readable error from a stored einvoice_records row */
 function extractLhdnError($rec) {
     if (in_array($rec['lhdn_status'] ?? '', ['Invalid', 'Error']) && !empty($rec['lhdn_response'])) {
         $r = json_decode($rec['lhdn_response'], true);
@@ -156,6 +154,26 @@ if (isset($_GET['ajax_action'])) {
     header('Cache-Control: no-store');
 
     try {
+        /* ✅ NEW: paginated queue loader (keeps page light for 300+ rows) */
+        if ($_GET['ajax_action'] === 'get_queue' && !empty($_GET['upload_id'])) {
+            $page = max(1, (int)($_GET['page'] ?? 1));
+            $perPage = 50;
+            $offset = ($page - 1) * $perPage;
+
+            $cnt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE upload_id = ? AND user_id = ?");
+            $cnt->execute([$_GET['upload_id'], $uid]);
+            $total = (int)$cnt->fetchColumn();
+
+            $r = $pdo->prepare("SELECT id, submission_type, sale_no, sale_datetime, customer_name, customer_ic, customer_phone, customer_email, total_amount, validation_status, validation_errors, lhdn_status, lhdn_uuid, lhdn_response FROM einvoice_records WHERE upload_id = ? AND user_id = ? ORDER BY CASE WHEN submission_type = 'individual' THEN 0 ELSE 1 END, sale_no LIMIT $perPage OFFSET $offset");
+            $r->execute([$_GET['upload_id'], $uid]);
+            $rows = $r->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($rows as &$rw) { $rw['lhdn_error'] = extractLhdnError($rw); }
+            unset($rw);
+
+            echo json_encode(['total' => $total, 'page' => $page, 'per_page' => $perPage, 'rows' => $rows]);
+            exit;
+        }
+
         if ($_GET['ajax_action'] === 'get_stats' && !empty($_GET['upload_id'])) {
             $stmt = $pdo->prepare("SELECT 
                 COUNT(*) FILTER (WHERE lhdn_status IS NULL OR lhdn_status = 'Pending') as pending,
@@ -174,7 +192,6 @@ if (isset($_GET['ajax_action'])) {
                 'invalid'     => (int)$s['invalid'],
                 'error_count' => (int)$s['error'],
                 'total'       => (int)$s['total'],
-                /* ✅ FIX: progress = transmitted = total - pending */
                 'done'        => (int)$s['total'] - (int)$s['pending']
             ]);
             exit;
@@ -255,7 +272,6 @@ if (isset($_GET['ajax_action'])) {
                 $records = $stmtRec->fetchAll(PDO::FETCH_ASSOC);
 
                 $grandTotal = array_sum(array_column($records, 'total_amount'));
-                /* ✅ FIX #1: consolidated buyer contact = supplier email & phone */
                 $consolidatedData = [
                     'sale_no' => 'CONSOL-' . str_replace('-', '', $saleDate) . '-' . substr(md5($uid), 0, 8),
                     'customer_name' => 'Consolidated Sales', 'customer_address' => 'Multiple Customers',
@@ -298,7 +314,7 @@ if (isset($_GET['ajax_action'])) {
                 exit;
             }
 
-            /* ✅ FIX #5: nothing left → save final summary into session for e-invoice_summary.php */
+            /* nothing left → save final summary into session for e-invoice_summary.php */
             $upId = $_GET['upload_id'] ?? '';
             if ($upId !== '') {
                 $st2 = $pdo->prepare("SELECT 
@@ -438,13 +454,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-/* ================= LOAD DATA ================= */
+/* ================= LOAD DATA (lightweight: aggregates only, no row rendering) ================= */
 $uploads = $pdo->prepare("SELECT * FROM einvoice_uploads WHERE user_id = ? ORDER BY created_at DESC LIMIT 10");
 $uploads->execute([$uid]); 
 $uploadsList = $uploads->fetchAll(PDO::FETCH_ASSOC);
 
-$currentUpload = null; $records = [];
-$recTotal = 0; $recPage = 1; $recPerPage = 100; $recPages = 1; $recOffset = 0;
+$currentUpload = null;
+$recTotal = 0;
 $agg = ['valid' => 0, 'invalid' => 0, 'amount' => 0, 'submittable' => 0];
 $lhdnStats = ['pending' => 0, 'submitted' => 0, 'valid' => 0, 'invalid' => 0, 'error' => 0, 'total' => 0, 'done' => 0];
 
@@ -468,18 +484,9 @@ if (isset($_GET['upload'])) {
         FROM einvoice_records WHERE upload_id = ? AND validation_status = 'valid'");
         $st->execute([$currentUpload['id']]);
         $lhdnStats = $st->fetch(PDO::FETCH_ASSOC);
-        /* ✅ FIX #4: done = transmitted = total - pending */
         $lhdnStats['done'] = ($lhdnStats['total'] - $lhdnStats['pending']);
 
-        $recTotal   = (int)$currentUpload['total_records'];
-        $recPage    = max(1, (int)($_GET['rpage'] ?? 1));
-        $recPages   = max(1, (int)ceil($recTotal / $recPerPage));
-        $recPage    = min($recPage, $recPages);
-        $recOffset  = ($recPage - 1) * $recPerPage;
-
-        $r = $pdo->prepare("SELECT * FROM einvoice_records WHERE upload_id = ? ORDER BY CASE WHEN submission_type = 'individual' THEN 0 ELSE 1 END, sale_no LIMIT $recPerPage OFFSET $recOffset");
-        $r->execute([$currentUpload['id']]); 
-        $records = $r->fetchAll(PDO::FETCH_ASSOC);
+        $recTotal = (int)$currentUpload['total_records'];
     }
 }
 ?>
@@ -498,7 +505,7 @@ if (isset($_GET['upload'])) {
 .main{max-width:1200px;margin:0 auto;padding:32px 24px;width:100%}h1{font-size:28px;font-weight:800;letter-spacing:-.02em}.sub{color:var(--muted);font-size:14px;margin-top:4px}
 .banner{margin:16px 0 0;border-radius:12px;padding:12px 18px;font-size:13px;font-weight:600}.banner.success{background:#d1fae5;color:#059669}.banner.error{background:#ffe4e6;color:#e11d48}
 .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:28px;box-shadow:var(--card);margin-bottom:24px}.card h2{font-size:20px;font-weight:800;margin-bottom:4px}.card .msub{font-size:13px;color:var(--muted);margin-bottom:20px}
-.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:32px}.step{background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;text-align:center}.step-num{width:40px;height:40px;border-radius:50%;background:var(--grad);color:#fff;display:grid;place-items:center;font-weight:800;font-size:18px;margin:0 auto 12px}.step h3{font-size:16px;font-weight:700;margin-bottom:8px}.step p{font-size:13px;color:var(--muted);line-height:1.5}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:32px}.step{background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;text-align:center}.step h3{font-size:16px;font-weight:700;margin-bottom:8px}.step p{font-size:13px;color:var(--muted);line-height:1.5}
 .upload-zone{border:2px dashed var(--line);border-radius:16px;padding:48px;text-align:center;transition:.2s;cursor:pointer}.upload-zone:hover{border-color:var(--brand);background:#f8fafc}.upload-zone.dragover{border-color:var(--brand);background:#e0e5ff}.upload-icon{width:64px;height:64px;border-radius:16px;background:var(--grad);color:#fff;display:grid;place-items:center;font-size:28px;margin:0 auto 16px}
 .btn{display:inline-flex;align-items:center;gap:8px;border-radius:12px;padding:11px 18px;font-size:13px;font-weight:700;transition:.15s;text-decoration:none}.btn.primary{background:var(--grad);color:#fff;box-shadow:0 10px 24px -8px rgba(84,87,229,.5)}.btn.ghost{background:#f1f5f9;color:#475569}.btn.ghost:hover{background:#e2e8f0}.btn.success{background:#d1fae5;color:#059669}
 table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}td{padding:12px 16px;border-bottom:1px solid #f1f5f9;color:var(--muted);vertical-align:top}tbody tr:hover{background:#f8fafc}
@@ -509,6 +516,10 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
 .live-log .ok{color:#34d399}.live-log .err{color:#f87171}.live-log .info{color:#93c5fd}
 .subline{font-size:10px;color:var(--faint);line-height:1.5;margin-top:3px;word-break:break-all}
 .errline{font-size:10px;color:#e11d48;line-height:1.4;margin-top:4px;max-width:240px;word-break:break-word}
+.pager{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0 0;font-size:13px;color:var(--muted);flex-wrap:wrap}
+.pager nav{display:flex;gap:8px}
+.pbtn{border-radius:8px;padding:7px 14px;font-size:12px;font-weight:700;background:#f1f5f9;color:#475569;border:none;cursor:pointer}
+.pbtn:hover{background:#e2e8f0}.pbtn.off{opacity:.4;pointer-events:none}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}.pulsing{animation:pulse 1.2s infinite}
 @media(max-width:900px){.sidebar{transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}.sidebar-overlay.open{display:block}.main-wrapper{margin-left:0}.menu-toggle{display:block}.steps{grid-template-columns:1fr}.summary-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:760px){.main{padding:20px 12px}h1{font-size:22px}.summary-grid{grid-template-columns:1fr}}
 </style>
@@ -654,64 +665,34 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
             </div>
             <?php endif; ?>
 
-            <div class="card" style="margin-top:20px; overflow-x:auto;">
-                <h2>Submission Queue</h2>
-                <table style="min-width:1200px">
-                    <thead>
-                        <tr>
-                            <th>Type</th><th>Sale No / Date</th><th>Customer</th><th>Total</th>
-                            <th>Validation</th><th>Progress</th><th>LHDN Status</th><th>UUID</th>
-                        </tr>
-                    </thead>
-                    <tbody id="queue-body">
-                        <?php foreach ($records as $rec): 
-                            $type = $rec['submission_type'] ?? 'consolidated';
-                            $lhdnStatus = $rec['lhdn_status'] ?? '';
-                            $badgeClass = 'pending';
-                            if ($lhdnStatus === 'Valid') $badgeClass = 'valid';
-                            elseif ($lhdnStatus === 'Invalid') $badgeClass = 'invalid';
-                            elseif ($lhdnStatus === 'Submitted' || $lhdnStatus === 'In Progress') $badgeClass = 'submitted';
-                            elseif ($lhdnStatus === 'Error') $badgeClass = 'failed';
-                            $step = 1;
-                            if ($lhdnStatus === 'Submitted') $step = 2;
-                            if ($lhdnStatus === 'In Progress') $step = 3;
-                            if (in_array($lhdnStatus, ['Valid', 'Invalid', 'Error'])) $step = 4;
-                            $lhdnErr = extractLhdnError($rec);
-                            $valErrs = ($rec['validation_status'] === 'invalid' && $rec['validation_errors']) ? (json_decode($rec['validation_errors'], true) ?: ['Failed']) : null;
-                        ?>
-                        <tr data-id="<?= htmlspecialchars($rec['id']) ?>">
-                            <td><span class="badge <?= $type ?>"><?= ucfirst($type) ?></span></td>
-                            <td>
-                                <b><?= htmlspecialchars($rec['sale_no']) ?></b>
-                                <div class="subline"><?= $rec['sale_datetime'] ? date('Y-m-d H:i', strtotime($rec['sale_datetime'])) : '—' ?></div>
-                            </td>
-                            <td>
-                                <?= htmlspecialchars($rec['customer_name']) ?>
-                                <div class="subline">
-                                    IC: <?= htmlspecialchars($rec['customer_ic'] ?? '—') ?><br>
-                                    Tel: <?= htmlspecialchars($rec['customer_phone'] ?? '—') ?><br>
-                                    Email: <?= htmlspecialchars($rec['customer_email'] ?? '—') ?>
-                                </div>
-                            </td>
-                            <td><b>RM <?= number_format($rec['total_amount'], 2) ?></b></td>
-                            <td>
-                                <span class="badge <?= $rec['validation_status'] ?>"><?= $rec['validation_status'] ?></span>
-                                <?php if ($valErrs): ?>
-                                    <div class="errline">• <?= htmlspecialchars(implode(' • ', $valErrs)) ?></div>
-                                <?php endif; ?>
-                            </td>
-                            <td class="col-progress"><?= renderProgressDots($step, $lhdnStatus) ?></td>
-                            <td class="col-status">
-                                <span class="badge <?= $badgeClass ?>"><?= $lhdnStatus ?: 'Pending' ?></span>
-                                <?php if ($lhdnErr): ?>
-                                    <div class="errline"><?= htmlspecialchars($lhdnErr) ?></div>
-                                <?php endif; ?>
-                            </td>
-                            <td class="col-uuid" style="font-family:monospace;font-size:11px"><?= htmlspecialchars($rec['lhdn_uuid'] ?? '—') ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
+            <!-- ✅ Queue hidden by default; rows lazy-loaded 50/page via AJAX -->
+            <div class="card" style="margin-top:20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <h2>Submission Queue <span style="font-size:12px;color:var(--faint);font-weight:600">(<?= $recTotal ?> records — hidden for fast loading)</span></h2>
+                    <button class="btn ghost" id="btnToggleQueue" onclick="toggleQueue()">👁 Show Queue</button>
+                </div>
+
+                <div id="queueWrap" style="display:none; margin-top:16px;">
+                    <div style="overflow-x:auto;">
+                        <table style="min-width:1200px">
+                            <thead>
+                                <tr>
+                                    <th>Type</th><th>Sale No / Date</th><th>Customer</th><th>Total</th>
+                                    <th>Validation</th><th>Progress</th><th>LHDN Status</th><th>UUID</th>
+                                </tr>
+                            </thead>
+                            <tbody id="queue-body"></tbody>
+                        </table>
+                    </div>
+                    <div class="pager">
+                        <span id="queuePagerInfo">—</span>
+                        <nav>
+                            <button class="pbtn off" id="qPrev" onclick="loadQueue(queuePage - 1)">← Prev</button>
+                            <button class="pbtn off" id="qNext" onclick="loadQueue(queuePage + 1)">Next →</button>
+                        </nav>
+                    </div>
+                </div>
+
                 <div class="live-log" id="liveLog"><div class="info">[ready] Waiting to start…</div></div>
             </div>
         </div>
@@ -753,6 +734,9 @@ if (uploadForm) uploadForm.addEventListener('submit', function(){ overlay.classL
 
 var uploadId = <?= json_encode($currentUpload['id'] ?? '') ?>;
 
+/* ================= QUEUE STATE (lazy load) ================= */
+var queueOpen = false, queuePage = 1, queuePages = 1, queueLoading = false;
+
 function logMsg(msg, cls) {
     var log = el('liveLog');
     if (!log) return;
@@ -788,9 +772,79 @@ function renderProgressDots(step, status) {
     return out;
 }
 
+function renderQueueRow(rec) {
+    var type = rec.submission_type || 'consolidated';
+    var lhdnStatus = rec.lhdn_status || '';
+    var badgeClass = 'pending';
+    if (lhdnStatus === 'Valid') badgeClass = 'valid';
+    else if (lhdnStatus === 'Invalid') badgeClass = 'invalid';
+    else if (lhdnStatus === 'Submitted' || lhdnStatus === 'In Progress') badgeClass = 'submitted';
+    else if (lhdnStatus === 'Error') badgeClass = 'failed';
+    var step = 1;
+    if (lhdnStatus === 'Submitted') step = 2;
+    if (lhdnStatus === 'In Progress') step = 3;
+    if (lhdnStatus === 'Valid' || lhdnStatus === 'Invalid' || lhdnStatus === 'Error') step = 4;
+
+    var valErr = '';
+    if (rec.validation_status === 'invalid' && rec.validation_errors) {
+        try {
+            var errs = JSON.parse(rec.validation_errors);
+            if (errs && errs.length) valErr = '<div class="errline">• ' + escapeHtml(errs.join(' • ')) + '</div>';
+        } catch(e) {}
+    }
+    var lhdnErr = rec.lhdn_error ? '<div class="errline">' + escapeHtml(rec.lhdn_error) + '</div>' : '';
+    var dateStr = rec.sale_datetime ? String(rec.sale_datetime).substring(0, 16) : '—';
+
+    return '<tr data-id="' + escapeHtml(rec.id) + '">' +
+        '<td><span class="badge ' + type + '">' + type.charAt(0).toUpperCase() + type.slice(1) + '</span></td>' +
+        '<td><b>' + escapeHtml(rec.sale_no) + '</b><div class="subline">' + dateStr + '</div></td>' +
+        '<td>' + escapeHtml(rec.customer_name) +
+            '<div class="subline">IC: ' + escapeHtml(rec.customer_ic || '—') + '<br>Tel: ' + escapeHtml(rec.customer_phone || '—') + '<br>Email: ' + escapeHtml(rec.customer_email || '—') + '</div></td>' +
+        '<td><b>RM ' + Number(rec.total_amount || 0).toFixed(2) + '</b></td>' +
+        '<td><span class="badge ' + escapeHtml(rec.validation_status) + '">' + escapeHtml(rec.validation_status) + '</span>' + valErr + '</td>' +
+        '<td class="col-progress">' + renderProgressDots(step, lhdnStatus) + '</td>' +
+        '<td class="col-status"><span class="badge ' + badgeClass + '">' + (lhdnStatus || 'Pending') + '</span>' + lhdnErr + '</td>' +
+        '<td class="col-uuid" style="font-family:monospace;font-size:11px">' + escapeHtml(rec.lhdn_uuid || '—') + '</td>' +
+    '</tr>';
+}
+
+function toggleQueue() {
+    var wrap = el('queueWrap');
+    var btn = el('btnToggleQueue');
+    if (!wrap || !btn) return;
+    queueOpen = !queueOpen;
+    wrap.style.display = queueOpen ? 'block' : 'none';
+    btn.innerHTML = queueOpen ? '🙈 Hide Queue' : '👁 Show Queue';
+    if (queueOpen) loadQueue(1);
+}
+
+function loadQueue(page) {
+    if (queueLoading || page < 1) return;
+    queueLoading = true;
+    fetch('e-invoice_upload.php?ajax_action=get_queue&upload_id=' + encodeURIComponent(uploadId) + '&page=' + page, {cache:'no-store'})
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            queueLoading = false;
+            if (d.error) { logMsg('Queue error: ' + d.error, 'err'); return; }
+            queuePage = d.page;
+            queuePages = Math.max(1, Math.ceil(d.total / d.per_page));
+            var html = '';
+            for (var i = 0; i < d.rows.length; i++) html += renderQueueRow(d.rows[i]);
+            if (!d.rows.length) html = '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--faint)">No records.</td></tr>';
+            el('queue-body').innerHTML = html;
+            el('queuePagerInfo').textContent = 'Page ' + queuePage + ' of ' + queuePages + ' · ' + d.total + ' records';
+            el('qPrev').classList.toggle('off', queuePage <= 1);
+            el('qNext').classList.toggle('off', queuePage >= queuePages);
+        })
+        .catch(function(e){
+            queueLoading = false;
+            logMsg('Queue load failed: ' + e.message, 'err');
+        });
+}
+
 function updateRow(id, data) {
     var row = document.querySelector('tr[data-id="' + id + '"]');
-    if (!row) return;
+    if (!row) return; // queue hidden / row not on current page → skip silently
     var statusCell = row.querySelector('.col-status');
     var uuidCell = row.querySelector('.col-uuid');
     var progressCell = row.querySelector('.col-progress');
@@ -837,15 +891,12 @@ function startProcessing() {
     btn.innerHTML = '<span class="pulsing">⏳</span> Processing Queue…';
     logMsg('Auto-process started. Priority: Individual → Consolidated.', 'info');
 
-    var jobCount = 0;
-
     function stop(label) {
         btn.innerHTML = label;
         btn.disabled = false;
     }
 
     function next() {
-        jobCount++;
         fetch('e-invoice_upload.php?ajax_action=process_next&upload_id=' + encodeURIComponent(uploadId), {cache:'no-store'})
             .then(function(r){ return r.text(); })
             .then(function(text){
@@ -864,11 +915,11 @@ function startProcessing() {
                     return;
                 }
 
-                /* ✅ FIX #5: all done → final stats then redirect to summary */
                 if (data.done) {
                     logMsg('✅ All jobs processed. Redirecting to summary…', 'ok');
                     stop('✅ All Processed');
                     updateStats();
+                    if (queueOpen) loadQueue(queuePage); // refresh visible page before leaving
                     setTimeout(function(){ window.location.href = 'e-invoice_summary.php'; }, 2000);
                     return;
                 }
