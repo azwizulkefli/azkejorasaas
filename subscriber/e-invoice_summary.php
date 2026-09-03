@@ -202,7 +202,7 @@ tbody tr:hover{background:#f8fafc}
       </div>
     </div>
 
-    <a href="e-invoice_submitted.php" class="btn primary"> View Submission</a>&nbdp;
+    <a href="e-invoice_submitted.php" class="btn primary"> View Submission</a>&nbsp;
         <a href="e-invoice_upload.php" class="btn primary">← Back to Upload</a>
   </main>
 
