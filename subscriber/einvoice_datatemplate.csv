@@ -1,0 +1,10 @@
+document_type,sale_no,customer_name,customer_address,customer_postcode,customer_phone,customer_email,customer_ic,customer_type,sale_title,sale_amount,sale_tax,total_amount,sale_datetime,Unnamed: 14,Unnamed: 15
+1,INV-2026-001,Ahmad bin Abdullah,"No. 123 Jalan Alam, Taman ALI",50000,60123456789,ahmad@example.com,850101-01-1234,individual,Consulting Services,1000,80,1080,2/9/2026 14:30,,
+1,INV-2026-002,Ahmad bin Abdullah,"No. 123 Jalan Alam, Taman ALI",50000,60123456789,ahmad@example.com,850101-01-1234,individual,Consulting Services,2000,0,2000,2/9/2026 14:30,,
+1,INV-2026-003,Ahmad bin Abdullah,"No. 123 Jalan Alam, Taman ALI",50000,60123456789,ahmad@example.com,850101-01-1234,individual,Consulting Services,3000,0,3000,2/9/2026 14:30,,
+1,INV-2026-004,Ahmad Chee Keong,"No. 174, Jalan Penang, Petaling Jaya",62000,60121533224,ahmad.chee.keon@example.com,780408-03-2679,individual,Software License,1000,80,1080,2/9/2026 16:38,,
+1,INV-2026-005,Lee Chee Keong,"No. 115, Jalan Burma, Johor Bahru",50000,60193678638,lee.chee.keong@example.com,901218-07-4611,individual,Graphic Design Services,1500,0,1500,2/9/2026 10:13,,
+1,INV-2026-006,Nova Sdn Bhd,"No. 25, Jalan SS2/24, Subang Jaya",80000,60191728977,info@novasdn.com,2.01101E+11,business,Hardware Supply,3000,240,3240,2/9/2026 14:05,,
+1,INV-2026-007,Sarah bin Ismail,"No. 198, Jalan Bangsar, Petaling Jaya",10000,60172694522,sarah.bin.ismai@example.com,761203-01-4733,individual,IT Maintenance,2500,200,2700,2/9/2026 13:10,,
+1,INV-2026-008,Lee binti Hassan,"No. 137, Jalan Bukit Bintang, Shah Alam",47100,60167366205,lee.binti.hassa@example.com,781222-02-3803,individual,Security Audit,3000,240,3240,2/9/2026 18:20,,
+1,INV-2026-009,Apex Enterprise,"No. 81, Jalan Universiti, Johor Bahru",47300,60184539704,info@apexenterprise.com,2.02301E+11,business,Digital Marketing Campaign,1000,80,1080,2/9/2026 15:25,,
