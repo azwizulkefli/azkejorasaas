@@ -369,6 +369,15 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
     <!-- TAB: COMPANY -->
     <form method="POST" class="tab-panel on action-form" data-panel="company">
       <input type="hidden" name="action" value="update_einvoice">
+      
+      <!-- ✅ FIX: Preserve credentials so they don't get wiped when updating identifiers -->
+      <input type="hidden" name="sandbox_clientid" value="<?= htmlspecialchars($company['sandbox_clientid'] ?? '') ?>">
+      <input type="hidden" name="sandbox_secret1" value="<?= htmlspecialchars($company['sandbox_secret1'] ?? '') ?>">
+      <input type="hidden" name="sandbox_secret2" value="<?= htmlspecialchars($company['sandbox_secret2'] ?? '') ?>">
+      <input type="hidden" name="prod_clientid" value="<?= htmlspecialchars($company['prod_clientid'] ?? '') ?>">
+      <input type="hidden" name="prod_secret1" value="<?= htmlspecialchars($company['prod_secret1'] ?? '') ?>">
+      <input type="hidden" name="prod_secret2" value="<?= htmlspecialchars($company['prod_secret2'] ?? '') ?>">
+
       <p class="section-head">Business identifiers</p>
       <div class="grid2">
         <div class="field"><label>MSIC code</label><input type="text" name="msic_code" value="<?= htmlspecialchars($company['msic_code'] ?? '') ?>" placeholder="62010">
@@ -391,7 +400,8 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
     <!-- TAB: CREDENTIALS -->
     <form method="POST" class="tab-panel action-form" data-panel="credentials">
       <input type="hidden" name="action" value="update_einvoice">
-      <!-- re-send identifiers so they don't get wiped -->
+      
+      <!-- Preserve identifiers so they don't get wiped when updating credentials -->
       <input type="hidden" name="msic_code" value="<?= htmlspecialchars($company['msic_code'] ?? '') ?>">
       <input type="hidden" name="classification_code" value="<?= htmlspecialchars($company['classification_code'] ?? '') ?>">
       <input type="hidden" name="taxpayer_tin" value="<?= htmlspecialchars($company['taxpayer_tin'] ?? '') ?>">
