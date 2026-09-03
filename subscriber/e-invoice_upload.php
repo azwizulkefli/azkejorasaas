@@ -8,7 +8,7 @@ ensure_settings_table($pdo);
 $uid = currentUserId();
 $me  = currentUser();
 
-/* ================= DB SCHEMA UPGRADE (Multi-tenant safe) ================= */
+/* ================= DB SCHEMA UPGRADE ================= */
 $alterations = [
     "ADD COLUMN IF NOT EXISTS submission_type VARCHAR(50) DEFAULT 'consolidated'",
     "ADD COLUMN IF NOT EXISTS customer_tin VARCHAR(100)",
@@ -22,22 +22,18 @@ foreach ($alterations as $alt) {
     try { $pdo->exec("ALTER TABLE einvoice_records $alt"); } catch (Exception $e) {}
 }
 
-/* ================= HELPER: Internal Logging ================= */
+/* ================= HELPERS ================= */
 function logInternal($pdo, $submissionId, $step, $status, $message, $payload = null) {
     $stmt = $pdo->prepare("INSERT INTO einvoice_logs (submission_id, step, status, message, payload, created_at) VALUES (?, ?, ?, ?, ?, NOW())");
     $stmt->execute([$submissionId, $step, $status, $message, $payload ? (is_array($payload) ? json_encode($payload) : $payload) : null]);
 }
 
-/* ================= HELPER: TIN Lookup ================= */
 function lookupCustomerTIN($ic, $email, $baseUrl, $token) {
-    // In production, call LHDN /api/v1.0/tin/validate or registration API here.
-    // For Malaysian individuals, the IC number is widely accepted as the TIN.
     $cleanIC = preg_replace('/[-\s]/', '', $ic);
     if (strlen($cleanIC) >= 12) return $cleanIC;
-    return 'EI00000000010'; // Fallback
+    return 'EI00000000010';
 }
 
-/* ================= HELPER: Build LHDN JSON Payloads ================= */
 function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTemplate) {
     $map = [
         '*|ei_invoiceno|*'           => $record['sale_no'] ?? '',
@@ -65,22 +61,19 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
         '*|ei_cninvoice_referenceno|*' => $record['reference_no'] ?? 'NA',
         '*|ei_cninvoice_uuid|*'      => $record['reference_uuid'] ?? 'NA'
     ];
-
     $jsonStr = str_replace(array_keys($map), array_values($map), $jsonSendTemplate);
     $base64Doc = base64_encode($jsonStr);
     $sha256 = hash('sha256', $jsonStr);
-    
     $convertMap = [
         '*|ei_convertbase64|*'  => $base64Doc,
         '*|ei_convertsha256|*'  => $sha256,
         '*|ei_invoiceno|*'      => $record['sale_no']
     ];
-    
     $convertStr = str_replace(array_keys($convertMap), array_values($convertMap), $jsonConvertTemplate);
     return ['send' => $jsonStr, 'convert' => $convertStr];
 }
 
-/* ================= HELPER: cURL API Calls ================= */
+/* ✅ FIX: cURL with proper timeouts so the page never hangs */
 function submitCustomPayloadToLHDN($url, $invoiceData, $token) {
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
@@ -88,17 +81,22 @@ function submitCustomPayloadToLHDN($url, $invoiceData, $token) {
     $payload = is_array($invoiceData) ? json_encode($invoiceData) : $invoiceData;
     curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
     curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Authorization: Bearer ' . $token]);
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err = curl_error($ch);
     curl_close($ch);
-    return ['code' => $httpCode, 'response' => $response];
+    return ['code' => $httpCode, 'response' => $response, 'curl_error' => $err];
 }
 
 function getStatusFromLHDN($url, $token) {
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 20);
     curl_setopt($ch, CURLOPT_HTTPHEADER, ['Authorization: Bearer ' . $token]);
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -106,7 +104,6 @@ function getStatusFromLHDN($url, $token) {
     return ['code' => $httpCode, 'response' => $response];
 }
 
-/* ================= HELPER: Progress Dots UI ================= */
 function renderProgressDots($step, $status) {
     $labels = ['Build', 'Submit', 'Validate', 'Result'];
     $errState = in_array($status, ['Invalid', 'Error']);
@@ -125,128 +122,146 @@ function renderProgressDots($step, $status) {
     return $out;
 }
 
-/* ================= AJAX ENDPOINTS ================= */
+/* ================= AJAX ENDPOINTS (always valid JSON) ================= */
 if (isset($_GET['ajax_action'])) {
+    while (ob_get_level()) ob_end_clean();
+    ini_set('display_errors', '0');
+    if (session_status() === PHP_SESSION_ACTIVE) session_write_close(); // release session lock
     header('Content-Type: application/json');
-    
-    if ($_GET['ajax_action'] === 'get_stats' && isset($_GET['upload_id'])) {
-        $stmt = $pdo->prepare("SELECT 
-            COUNT(*) FILTER (WHERE lhdn_status IS NULL OR lhdn_status = 'Pending') as pending,
-            COUNT(*) FILTER (WHERE lhdn_status = 'Submitted' OR lhdn_status = 'In Progress') as submitted,
-            COUNT(*) FILTER (WHERE lhdn_status = 'Valid') as valid,
-            COUNT(*) FILTER (WHERE lhdn_status = 'Invalid') as invalid,
-            COUNT(*) FILTER (WHERE lhdn_status = 'Error') as error,
-            COUNT(*) as total
-        FROM einvoice_records WHERE upload_id = ? AND user_id = ? AND validation_status = 'valid'");
-        $stmt->execute([$_GET['upload_id'], $uid]);
-        $stats = $stmt->fetch(PDO::FETCH_ASSOC);
-        $stats['done'] = ($stats['valid'] + $stats['invalid'] + $stats['error']);
-        echo json_encode($stats);
-        exit;
-    }
+    header('Cache-Control: no-store');
 
-    if ($_GET['ajax_action'] === 'process_next') {
-        $stmtCompany = $pdo->prepare("SELECT * FROM companies WHERE user_id = ? LIMIT 1");
-        $stmtCompany->execute([$uid]);
-        $company = $stmtCompany->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$company) { echo json_encode(['done' => true, 'error' => 'Company missing']); exit; }
-
-        $sandboxToken = $company['sandbox_token'] ?? null;
-        $prodToken = $company['prod_token'] ?? null;
-        $isSandbox = !empty($sandboxToken);
-        $tokenValue = $isSandbox ? $sandboxToken : $prodToken;
-        $apiBaseUrl = $isSandbox ? ($company['sandbox_url'] ?? 'https://preprod-api.myinvois.hasil.gov.my') : ($company['prod_url'] ?? 'https://api.myinvois.hasil.gov.my');
-
-        $stmtSend = $pdo->prepare("SELECT value FROM settings WHERE module = 'einvoice' AND key = 'json_send'");
-        $stmtSend->execute(); $jsonSendTemplate = $stmtSend->fetchColumn();
-        $stmtConvert = $pdo->prepare("SELECT value FROM settings WHERE module = 'einvoice' AND key = 'json_convert'");
-        $stmtConvert->execute(); $jsonConvertTemplate = $stmtConvert->fetchColumn();
-
-        // 1. Process Individual
-        $stmt = $pdo->prepare("SELECT * FROM einvoice_records WHERE user_id = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'individual' ORDER BY id ASC LIMIT 1");
-        $stmt->execute([$uid]);
-        $indRec = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($indRec) {
-            $tin = $indRec['customer_tin'];
-            if (empty($tin) || $tin === 'EI00000000010') {
-                $tin = lookupCustomerTIN($indRec['customer_ic'], $indRec['customer_email'], $apiBaseUrl, $tokenValue);
-                $pdo->prepare("UPDATE einvoice_records SET customer_tin = ? WHERE id = ?")->execute([$tin, $indRec['id']]);
-                $indRec['customer_tin'] = $tin;
-            }
-            
-            $payloads = buildLHDNPayloads($indRec, $company, $jsonSendTemplate, $jsonConvertTemplate);
-            $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
-            $submitResponse = json_decode($submitResult['response'], true);
-            
-            $submissionUid = $submitResponse['submissionUid'] ?? null;
-            $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
-            $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300) ? 'Submitted' : 'Error';
-            
-            $docStatus = $lhdnStatus; $longId = null;
-            if ($lhdnStatus === 'Submitted' && $uuid) {
-                sleep(2);
-                $statusResult = getStatusFromLHDN($apiBaseUrl . "/api/v1.0/documents/{$uuid}/details", $tokenValue);
-                $detailsResponse = json_decode($statusResult['response'], true);
-                $docStatus = $detailsResponse['status'] ?? 'In Progress';
-                $longId = $detailsResponse['longId'] ?? null;
-            }
-            
-            $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id = ?")
-                ->execute([$docStatus, $uuid, $submissionUid, $longId, json_encode($submitResponse), $indRec['id']]);
-                
-            echo json_encode(['done' => false, 'type' => 'individual', 'id' => $indRec['id'], 'status' => $docStatus, 'uuid' => $uuid, 'submission_id' => $submissionUid, 'long_id' => $longId]);
+    try {
+        if ($_GET['ajax_action'] === 'get_stats' && isset($_GET['upload_id'])) {
+            $stmt = $pdo->prepare("SELECT 
+                COUNT(*) FILTER (WHERE lhdn_status IS NULL OR lhdn_status = 'Pending') as pending,
+                COUNT(*) FILTER (WHERE lhdn_status = 'Submitted' OR lhdn_status = 'In Progress') as submitted,
+                COUNT(*) FILTER (WHERE lhdn_status = 'Valid') as valid,
+                COUNT(*) FILTER (WHERE lhdn_status = 'Invalid') as invalid,
+                COUNT(*) FILTER (WHERE lhdn_status = 'Error') as error,
+                COUNT(*) as total
+            FROM einvoice_records WHERE upload_id = ? AND user_id = ? AND validation_status = 'valid'");
+            $stmt->execute([$_GET['upload_id'], $uid]);
+            $stats = $stmt->fetch(PDO::FETCH_ASSOC);
+            $stats['done'] = ($stats['valid'] + $stats['invalid'] + $stats['error']);
+            echo json_encode($stats);
             exit;
         }
-        
-        // 2. Process Consolidated
-        $stmt = $pdo->prepare("SELECT DATE(sale_datetime) as sale_date FROM einvoice_records WHERE user_id = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'consolidated' GROUP BY DATE(sale_datetime) ORDER BY sale_date ASC LIMIT 1");
-        $stmt->execute([$uid]);
-        $dateRow = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($dateRow) {
-            $saleDate = $dateRow['sale_date'];
-            $stmtRec = $pdo->prepare("SELECT * FROM einvoice_records WHERE user_id = ? AND DATE(sale_datetime) = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'consolidated'");
-            $stmtRec->execute([$uid, $saleDate]);
-            $records = $stmtRec->fetchAll(PDO::FETCH_ASSOC);
-            
-            $grandTotal = array_sum(array_column($records, 'total_amount'));
-            $consolidatedData = [
-                'sale_no'         => 'CONSOL-' . str_replace('-', '', $saleDate) . '-' . substr($uid, 0, 8),
-                'customer_name'   => 'Consolidated Sales', 'customer_address'=> 'Multiple Customers',
-                'customer_email'  => $me['email'] ?? 'na@na.com', 'customer_tin' => 'EI00000000010',
-                'customer_ic'     => '000000000000', 'total_amount' => $grandTotal,
-                'sale_datetime'   => $saleDate . ' 23:59:59', 'document_type' => '03'
-            ];
-            
-            $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
-            $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
-            $submitResponse = json_decode($submitResult['response'], true);
-            
-            $submissionUid = $submitResponse['submissionUid'] ?? null;
-            $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
-            $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300) ? 'Submitted' : 'Error';
-            
-            $docStatus = $lhdnStatus; $longId = null;
-            if ($lhdnStatus === 'Submitted' && $uuid) {
-                sleep(2);
-                $statusResult = getStatusFromLHDN($apiBaseUrl . "/api/v1.0/documents/{$uuid}/details", $tokenValue);
-                $detailsResponse = json_decode($statusResult['response'], true);
-                $docStatus = $detailsResponse['status'] ?? 'In Progress';
-                $longId = $detailsResponse['longId'] ?? null;
+
+        if ($_GET['ajax_action'] === 'process_next') {
+            $stmtCompany = $pdo->prepare("SELECT * FROM companies WHERE user_id = ? LIMIT 1");
+            $stmtCompany->execute([$uid]);
+            $company = $stmtCompany->fetch(PDO::FETCH_ASSOC);
+            if (!$company) { echo json_encode(['done' => true, 'error' => 'Company profile not found.']); exit; }
+
+            $sandboxToken = $company['sandbox_token'] ?? null;
+            $prodToken = $company['prod_token'] ?? null;
+            $isSandbox = !empty($sandboxToken);
+            $tokenValue = $isSandbox ? $sandboxToken : $prodToken;
+            $apiBaseUrl = $isSandbox ? 'https://preprod-api.myinvois.hasil.gov.my' : 'https://api.myinvois.hasil.gov.my';
+
+            if (empty($tokenValue)) { echo json_encode(['done' => true, 'error' => 'No LHDN access token. Generate one in Company & e-Invoice config.']); exit; }
+
+            $stmtSend = $pdo->prepare("SELECT value FROM settings WHERE module = 'einvoice' AND key = 'json_send'");
+            $stmtSend->execute(); $jsonSendTemplate = $stmtSend->fetchColumn();
+            $stmtConvert = $pdo->prepare("SELECT value FROM settings WHERE module = 'einvoice' AND key = 'json_convert'");
+            $stmtConvert->execute(); $jsonConvertTemplate = $stmtConvert->fetchColumn();
+            if (!$jsonSendTemplate || !$jsonConvertTemplate) { echo json_encode(['done' => true, 'error' => 'JSON templates not configured in settings.']); exit; }
+
+            /* ---- 1) INDIVIDUAL ---- */
+            $stmt = $pdo->prepare("SELECT * FROM einvoice_records WHERE user_id = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'individual' ORDER BY id ASC LIMIT 1");
+            $stmt->execute([$uid]);
+            $indRec = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($indRec) {
+                $tin = $indRec['customer_tin'];
+                if (empty($tin) || $tin === 'EI00000000010') {
+                    $tin = lookupCustomerTIN($indRec['customer_ic'], $indRec['customer_email'], $apiBaseUrl, $tokenValue);
+                    $pdo->prepare("UPDATE einvoice_records SET customer_tin = ? WHERE id = ?")->execute([$tin, $indRec['id']]);
+                    $indRec['customer_tin'] = $tin;
+                }
+
+                $payloads = buildLHDNPayloads($indRec, $company, $jsonSendTemplate, $jsonConvertTemplate);
+                $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
+                $submitResponse = json_decode($submitResult['response'], true);
+
+                $submissionUid = $submitResponse['submissionUid'] ?? null;
+                $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
+                $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300) ? 'Submitted' : 'Error';
+
+                $docStatus = $lhdnStatus; $longId = null;
+                if ($lhdnStatus === 'Submitted' && $uuid) {
+                    sleep(2);
+                    $statusResult = getStatusFromLHDN($apiBaseUrl . "/api/v1.0/documents/{$uuid}/details", $tokenValue);
+                    $detailsResponse = json_decode($statusResult['response'], true);
+                    $docStatus = $detailsResponse['status'] ?? 'In Progress';
+                    $longId = $detailsResponse['longId'] ?? null;
+                }
+                if ($lhdnStatus === 'Error' && !empty($submitResult['curl_error'])) {
+                    $docStatus = 'Error';
+                    $submitResponse = ['curl_error' => $submitResult['curl_error'], 'raw' => $submitResult['response']];
+                }
+
+                $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id = ?")
+                    ->execute([$docStatus, $uuid, $submissionUid, $longId, json_encode($submitResponse), $indRec['id']]);
+
+                echo json_encode(['done' => false, 'type' => 'individual', 'id' => $indRec['id'], 'sale_no' => $indRec['sale_no'], 'status' => $docStatus, 'uuid' => $uuid, 'submission_id' => $submissionUid, 'long_id' => $longId]);
+                exit;
             }
-            
-            $recordIds = array_column($records, 'id');
-            $placeholders = implode(',', array_fill(0, count($recordIds), '?'));
-            $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id IN ($placeholders)")
-                ->execute(array_merge([$docStatus, $uuid, $submissionUid, $longId, json_encode($submitResponse)], $recordIds));
-                
-            echo json_encode(['done' => false, 'type' => 'consolidated', 'date' => $saleDate, 'ids' => $recordIds, 'status' => $docStatus, 'uuid' => $uuid, 'submission_id' => $submissionUid, 'long_id' => $longId]);
+
+            /* ---- 2) CONSOLIDATED ---- */
+            $stmt = $pdo->prepare("SELECT DATE(sale_datetime) as sale_date FROM einvoice_records WHERE user_id = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'consolidated' GROUP BY DATE(sale_datetime) ORDER BY sale_date ASC LIMIT 1");
+            $stmt->execute([$uid]);
+            $dateRow = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($dateRow) {
+                $saleDate = $dateRow['sale_date'];
+                $stmtRec = $pdo->prepare("SELECT * FROM einvoice_records WHERE user_id = ? AND DATE(sale_datetime) = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'consolidated'");
+                $stmtRec->execute([$uid, $saleDate]);
+                $records = $stmtRec->fetchAll(PDO::FETCH_ASSOC);
+
+                $grandTotal = array_sum(array_column($records, 'total_amount'));
+                $consolidatedData = [
+                    'sale_no' => 'CONSOL-' . str_replace('-', '', $saleDate) . '-' . substr($uid, 0, 8),
+                    'customer_name' => 'Consolidated Sales', 'customer_address' => 'Multiple Customers',
+                    'customer_email' => $me['email'] ?? 'na@na.com', 'customer_tin' => 'EI00000000010',
+                    'customer_ic' => '000000000000', 'total_amount' => $grandTotal,
+                    'sale_datetime' => $saleDate . ' 23:59:59', 'document_type' => '03'
+                ];
+
+                $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
+                $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
+                $submitResponse = json_decode($submitResult['response'], true);
+
+                $submissionUid = $submitResponse['submissionUid'] ?? null;
+                $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
+                $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300) ? 'Submitted' : 'Error';
+
+                $docStatus = $lhdnStatus; $longId = null;
+                if ($lhdnStatus === 'Submitted' && $uuid) {
+                    sleep(2);
+                    $statusResult = getStatusFromLHDN($apiBaseUrl . "/api/v1.0/documents/{$uuid}/details", $tokenValue);
+                    $detailsResponse = json_decode($statusResult['response'], true);
+                    $docStatus = $detailsResponse['status'] ?? 'In Progress';
+                    $longId = $detailsResponse['longId'] ?? null;
+                }
+                if ($lhdnStatus === 'Error' && !empty($submitResult['curl_error'])) {
+                    $submitResponse = ['curl_error' => $submitResult['curl_error'], 'raw' => $submitResult['response']];
+                }
+
+                $recordIds = array_column($records, 'id');
+                $placeholders = implode(',', array_fill(0, count($recordIds), '?'));
+                $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id IN ($placeholders)")
+                    ->execute(array_merge([$docStatus, $uuid, $submissionUid, $longId, json_encode($submitResponse)], $recordIds));
+
+                echo json_encode(['done' => false, 'type' => 'consolidated', 'date' => $saleDate, 'ids' => $recordIds, 'status' => $docStatus, 'uuid' => $uuid, 'submission_id' => $submissionUid, 'long_id' => $longId]);
+                exit;
+            }
+
+            echo json_encode(['done' => true]);
             exit;
         }
-        
-        echo json_encode(['done' => true]);
+    } catch (Throwable $e) {
+        echo json_encode(['done' => true, 'error' => 'Server error: ' . $e->getMessage()]);
         exit;
     }
 }
@@ -324,28 +339,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
     }
 }
 
-/* ================= HANDLE DELETE ================= */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_upload') {
-    $uploadId = $_POST['upload_id'] ?? null;
-    if ($uploadId) {
-        $stmt = $pdo->prepare("SELECT file_path FROM einvoice_uploads WHERE id = ? AND user_id = ?");
-        $stmt->execute([$uploadId, $uid]);
-        $upload = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($upload) {
-            $pdo->beginTransaction();
-            try {
-                $pdo->prepare("DELETE FROM einvoice_records WHERE upload_id = ?")->execute([$uploadId]);
-                if (!empty($upload['file_path'])) {
-                    $fullPath = __DIR__ . '/../storage/uploads/' . $upload['file_path'];
-                    if (file_exists($fullPath)) unlink($fullPath);
+/* ================= HANDLE DELETE / RESET ================= */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    if ($_POST['action'] === 'delete_upload') {
+        $uploadId = $_POST['upload_id'] ?? null;
+        if ($uploadId) {
+            $stmt = $pdo->prepare("SELECT file_path FROM einvoice_uploads WHERE id = ? AND user_id = ?");
+            $stmt->execute([$uploadId, $uid]);
+            $upload = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($upload) {
+                $pdo->beginTransaction();
+                try {
+                    $pdo->prepare("DELETE FROM einvoice_records WHERE upload_id = ?")->execute([$uploadId]);
+                    if (!empty($upload['file_path'])) {
+                        $fullPath = __DIR__ . '/../storage/uploads/' . $upload['file_path'];
+                        if (file_exists($fullPath)) unlink($fullPath);
+                    }
+                    $pdo->prepare("DELETE FROM einvoice_uploads WHERE id = ?")->execute([$uploadId]);
+                    $pdo->commit();
+                    header("Location: e-invoice_upload.php?msg=" . urlencode('Upload deleted.')); exit;
+                } catch (Throwable $e) {
+                    $pdo->rollBack();
+                    header("Location: e-invoice_upload.php?err=" . urlencode('Delete failed: ' . $e->getMessage())); exit;
                 }
-                $pdo->prepare("DELETE FROM einvoice_uploads WHERE id = ?")->execute([$uploadId]);
-                $pdo->commit();
-                header("Location: e-invoice_upload.php?msg=" . urlencode('Upload deleted.')); exit;
-            } catch (Throwable $e) {
-                $pdo->rollBack();
-                header("Location: e-invoice_upload.php?err=" . urlencode('Delete failed: ' . $e->getMessage())); exit;
             }
+        }
+    }
+    if ($_POST['action'] === 'reset_upload') {
+        $uploadId = $_POST['upload_id'] ?? null;
+        if ($uploadId) {
+            $pdo->prepare("UPDATE einvoice_records SET lhdn_status = NULL, lhdn_uuid = NULL, lhdn_submission_id = NULL, lhdn_long_id = NULL, lhdn_response = NULL WHERE upload_id = ? AND user_id = ?")
+                ->execute([$uploadId, $uid]);
+            header("Location: e-invoice_upload.php?upload=" . $uploadId); exit;
         }
     }
 }
@@ -407,15 +432,18 @@ if (isset($_GET['upload'])) {
 .sidebar{position:fixed;top:0;left:0;bottom:0;width:260px;background:#fff;border-right:1px solid var(--line);padding:24px 16px;z-index:30;transition:transform .3s ease;display:flex;flex-direction:column}.sidebar-brand{padding:0 8px 24px;border-bottom:1px solid var(--line);margin-bottom:16px}.sidebar-nav{display:flex;flex-direction:column;gap:4px}.menu-section{margin-top:16px;padding:0 8px 8px;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}.menu-item{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:10px;font-size:14px;font-weight:600;color:var(--muted);text-decoration:none;transition:.15s}.menu-item:hover{background:#f8fafc;color:var(--ink)}.menu-item.active{background:var(--grad);color:#fff;box-shadow:0 4px 12px -4px rgba(84,87,229,.4)}.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);z-index:25}
 .main-wrapper{margin-left:260px;min-height:100vh;display:flex;flex-direction:column}.topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10;gap:12px;flex-wrap:wrap}.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}.logo{width:36px;height:36px;border-radius:12px;background:var(--grad);color:#fff;display:grid;place-items:center}.brand em{font-style:normal;color:var(--brand)}.top-right{display:flex;align-items:center;gap:14px;font-size:13px;color:var(--muted);flex-wrap:wrap}.menu-toggle{display:none;background:none;border:none;font-size:22px;cursor:pointer;color:var(--ink);padding:4px}.avatar{width:36px;height:36px;border-radius:50%;background:var(--grad);color:#fff;display:grid;place-items:center;font-weight:800;font-size:13px;overflow:hidden}.btn-out{background:#fff1f2;color:#e11d48;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700}
 .main{max-width:1200px;margin:0 auto;padding:32px 24px;width:100%}h1{font-size:28px;font-weight:800;letter-spacing:-.02em}.sub{color:var(--muted);font-size:14px;margin-top:4px}
-.banner{margin:16px 0 0;border-radius:12px;padding:12px 18px;font-size:13px;font-weight:600}.banner.success{background:#d1fae5;color:#059669}.banner.error{background:#ffe4e6;color:#e11d48}.banner.info{background:#e0e5ff;color:#4644cf}.banner.warn{background:#fef3c7;color:#d97706}
+.banner{margin:16px 0 0;border-radius:12px;padding:12px 18px;font-size:13px;font-weight:600}.banner.success{background:#d1fae5;color:#059669}.banner.error{background:#ffe4e6;color:#e11d48}
 .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:28px;box-shadow:var(--card);margin-bottom:24px}.card h2{font-size:20px;font-weight:800;margin-bottom:4px}.card .msub{font-size:13px;color:var(--muted);margin-bottom:20px}
-.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:32px}.step{background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;text-align:center;position:relative}.step-num{width:40px;height:40px;border-radius:50%;background:var(--grad);color:#fff;display:grid;place-items:center;font-weight:800;font-size:18px;margin:0 auto 12px}.step h3{font-size:16px;font-weight:700;margin-bottom:8px}.step p{font-size:13px;color:var(--muted);line-height:1.5}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:32px}.step{background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;text-align:center}.step-num{width:40px;height:40px;border-radius:50%;background:var(--grad);color:#fff;display:grid;place-items:center;font-weight:800;font-size:18px;margin:0 auto 12px}.step h3{font-size:16px;font-weight:700;margin-bottom:8px}.step p{font-size:13px;color:var(--muted);line-height:1.5}
 .upload-zone{border:2px dashed var(--line);border-radius:16px;padding:48px;text-align:center;transition:.2s;cursor:pointer}.upload-zone:hover{border-color:var(--brand);background:#f8fafc}.upload-zone.dragover{border-color:var(--brand);background:#e0e5ff}.upload-icon{width:64px;height:64px;border-radius:16px;background:var(--grad);color:#fff;display:grid;place-items:center;font-size:28px;margin:0 auto 16px}
-.btn{display:inline-flex;align-items:center;gap:8px;border-radius:12px;padding:11px 18px;font-size:13px;font-weight:700;transition:.15s;text-decoration:none}.btn.primary{background:var(--grad);color:#fff;box-shadow:0 10px 24px -8px rgba(84,87,229,.5)}.btn.ghost{background:#f1f5f9;color:#475569}.btn.ghost:hover{background:#e2e8f0}.btn.success{background:#d1fae5;color:#059669}.btn.warn{background:#fef3c7;color:#d97706}
-table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}td{padding:12px 16px;border-bottom:1px solid #f1f5f9;color:var(--muted);vertical-align:top}tbody tr:hover{background:#f8fafc}.err-text{color:#e11d48;font-size:11px;font-weight:600;line-height:1.5}
-.badge{display:inline-block;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.badge.valid{background:#d1fae5;color:#059669}.badge.invalid{background:#ffe4e6;color:#e11d48}.badge.pending{background:#fef3c7;color:#d97706}.badge.submitted{background:#dbeafe;color:#3b82f6}.badge.queued{background:#e0e5ff;color:#4644cf}.badge.failed{background:#ffe4e6;color:#e11d48}.badge.consolidated{background:#fef3c7;color:#d97706}.badge.individual{background:#e0e5ff;color:#4644cf}.badge.processing{background:#dbeafe;color:#3b82f6}
+.btn{display:inline-flex;align-items:center;gap:8px;border-radius:12px;padding:11px 18px;font-size:13px;font-weight:700;transition:.15s;text-decoration:none}.btn.primary{background:var(--grad);color:#fff;box-shadow:0 10px 24px -8px rgba(84,87,229,.5)}.btn.ghost{background:#f1f5f9;color:#475569}.btn.ghost:hover{background:#e2e8f0}.btn.success{background:#d1fae5;color:#059669}
+table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}td{padding:12px 16px;border-bottom:1px solid #f1f5f9;color:var(--muted);vertical-align:top}tbody tr:hover{background:#f8fafc}
+.badge{display:inline-block;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.badge.valid{background:#d1fae5;color:#059669}.badge.invalid{background:#ffe4e6;color:#e11d48}.badge.pending{background:#fef3c7;color:#d97706}.badge.submitted{background:#dbeafe;color:#3b82f6}.badge.failed{background:#ffe4e6;color:#e11d48}.badge.consolidated{background:#fef3c7;color:#d97706}.badge.individual{background:#e0e5ff;color:#4644cf}
 .summary-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-bottom:24px}.summary-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center}.summary-card b{display:block;font-size:28px;font-weight:800;color:var(--brand)}.summary-card p{font-size:12px;font-weight:600;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
 .submit-box{margin-top:20px;background:#f5f6ff;border:1px solid #c6ceff;border-radius:16px;padding:20px}.submit-box h3{font-size:16px;font-weight:700;margin-bottom:6px}.submit-box p{font-size:13px;color:var(--muted);margin-bottom:16px}
+.live-log{background:#0f172a;color:#e2e8f0;border-radius:12px;padding:14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.7;max-height:220px;overflow-y:auto;margin-top:16px}
+.live-log .ok{color:#34d399}.live-log .err{color:#f87171}.live-log .info{color:#93c5fd}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}.pulsing{animation:pulse 1.2s infinite}
 @media(max-width:900px){.sidebar{transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}.sidebar-overlay.open{display:block}.main-wrapper{margin-left:0}.menu-toggle{display:block}.steps{grid-template-columns:1fr}.summary-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:760px){.main{padding:20px 12px}h1{font-size:22px}.summary-grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -547,11 +575,16 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
                 </div>
             </div>
 
-            <?php if ((int)$agg['submittable'] > 0 && $lhdnStats['pending'] > 0): ?>
+            <?php if ($lhdnStats['pending'] > 0): ?>
             <div class="submit-box">
                 <h3>🚀 Start Auto-Process</h3>
                 <p>System will process Individual invoices first, then Consolidated batches. Live updates below.</p>
                 <button id="btnProcess" class="btn success" onclick="startProcessing()">▶ Start Auto-Process</button>
+                <form method="POST" style="display:inline; margin-left:8px" onsubmit="return confirm('Reset all LHDN statuses for this upload to Pending?');">
+                    <input type="hidden" name="action" value="reset_upload">
+                    <input type="hidden" name="upload_id" value="<?= htmlspecialchars($currentUpload['id']) ?>">
+                    <button type="submit" class="btn ghost">🔄 Reset</button>
+                </form>
             </div>
             <?php endif; ?>
 
@@ -560,14 +593,8 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
                 <table style="min-width:1200px">
                     <thead>
                         <tr>
-                            <th>Type</th>
-                            <th>Sale No / Date</th>
-                            <th>Customer</th>
-                            <th>Total</th>
-                            <th>Validation</th>
-                            <th>Progress</th>
-                            <th>LHDN Status</th>
-                            <th>UUID</th>
+                            <th>Type</th><th>Sale No / Date</th><th>Customer</th><th>Total</th>
+                            <th>Validation</th><th>Progress</th><th>LHDN Status</th><th>UUID</th>
                         </tr>
                     </thead>
                     <tbody id="queue-body">
@@ -579,13 +606,12 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
                             elseif ($lhdnStatus === 'Invalid') $badgeClass = 'invalid';
                             elseif ($lhdnStatus === 'Submitted' || $lhdnStatus === 'In Progress') $badgeClass = 'submitted';
                             elseif ($lhdnStatus === 'Error') $badgeClass = 'failed';
-                            
                             $step = 1;
                             if ($lhdnStatus === 'Submitted') $step = 2;
                             if ($lhdnStatus === 'In Progress') $step = 3;
                             if (in_array($lhdnStatus, ['Valid', 'Invalid', 'Error'])) $step = 4;
                         ?>
-                        <tr data-id="<?= $rec['id'] ?>" data-type="<?= $type ?>" data-date="<?= date('Y-m-d', strtotime($rec['sale_datetime'])) ?>">
+                        <tr data-id="<?= $rec['id'] ?>">
                             <td><span class="badge <?= $type ?>"><?= ucfirst($type) ?></span></td>
                             <td><b><?= htmlspecialchars($rec['sale_no']) ?></b></td>
                             <td><?= htmlspecialchars($rec['customer_name']) ?></td>
@@ -598,10 +624,11 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
                         <?php endforeach; ?>
                     </tbody>
                 </table>
+                <div class="live-log" id="liveLog"><div class="info">[ready] Waiting to start…</div></div>
             </div>
         </div>
       <?php endif; ?>
-      
+
       <div style="margin-top:24px; display:flex; gap:12px; flex-wrap: wrap;">
           <a href="e-invoice_upload.php" class="btn ghost">← Upload another file</a>
       </div>
@@ -610,107 +637,144 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
 </div>
 
 <script>
-const dropZone=document.getElementById('dropZone'),fileInput=document.getElementById('fileInput'),fileInfo=document.getElementById('fileInfo');
-fileInput?.addEventListener('change',function(e){const f=e.target.files[0];if(f){document.getElementById('fileName').textContent=f.name;document.getElementById('fileSize').textContent=(f.size/1024).toFixed(2)+' KB';fileInfo.style.display='block';dropZone.style.display='none';}});
-['dragenter','dragover'].forEach(evt=>{dropZone?.addEventListener(evt,e=>{e.preventDefault();dropZone.classList.add('dragover');});});
-['dragleave','drop'].forEach(evt=>{dropZone?.addEventListener(evt,e=>{e.preventDefault();dropZone.classList.remove('dragover');});});
-dropZone?.addEventListener('drop',e=>{const files=e.dataTransfer.files;if(files.length>0){fileInput.files=files;fileInput.dispatchEvent(new Event('change'));}});
+function el(id){ return document.getElementById(id); }
 
-const overlay=document.getElementById('loadingOverlay');
-document.getElementById('uploadForm')?.addEventListener('submit', function(){ overlay.classList.add('active'); });
-
-const uploadId = <?= $currentUpload['id'] ?? 0 ?>;
-
-async function startProcessing() {
-    const btn = document.getElementById('btnProcess');
-    btn.disabled = true;
-    btn.innerHTML = '⏳ Processing Queue...';
-    btn.classList.remove('success');
-    btn.classList.add('ghost');
-    
-    let processing = true;
-    while(processing) {
-        try {
-            const res = await fetch('e-invoice_upload.php?ajax_action=process_next');
-            const data = await res.json();
-            
-            if (data.done) {
-                processing = false;
-                btn.innerHTML = '✅ All Processed';
-                updateStats();
-                break;
-            }
-            
-            if (data.type === 'individual') {
-                updateRow(data.id, data);
-            } else if (data.type === 'consolidated') {
-                data.ids.forEach(id => updateRow(id, data));
-            }
-            updateStats();
-            
-        } catch (e) {
-            console.error(e);
-            processing = false;
-            btn.innerHTML = '❌ Network Error';
+/* upload zone (only exists on upload view) */
+var dropZone = el('dropZone'), fileInput = el('fileInput'), fileInfo = el('fileInfo');
+if (fileInput) {
+    fileInput.addEventListener('change', function(e){
+        var f = e.target.files[0];
+        if (f && fileInfo) {
+            el('fileName').textContent = f.name;
+            el('fileSize').textContent = (f.size/1024).toFixed(2) + ' KB';
+            fileInfo.style.display = 'block';
+            dropZone.style.display = 'none';
         }
-    }
+    });
 }
+if (dropZone) {
+    ['dragenter','dragover'].forEach(function(evt){ dropZone.addEventListener(evt, function(e){ e.preventDefault(); dropZone.classList.add('dragover'); }); });
+    ['dragleave','drop'].forEach(function(evt){ dropZone.addEventListener(evt, function(e){ e.preventDefault(); dropZone.classList.remove('dragover'); }); });
+    dropZone.addEventListener('drop', function(e){
+        var files = e.dataTransfer.files;
+        if (files.length > 0 && fileInput) { fileInput.files = files; fileInput.dispatchEvent(new Event('change')); }
+    });
+}
+var overlay = el('loadingOverlay');
+var uploadForm = el('uploadForm');
+if (uploadForm) uploadForm.addEventListener('submit', function(){ overlay.classList.add('active'); });
 
-function updateRow(id, data) {
-    const row = document.querySelector(`tr[data-id="${id}"]`);
-    if (!row) return;
-    
-    const statusCell = row.querySelector('.col-status');
-    const uuidCell = row.querySelector('.col-uuid');
-    const progressCell = row.querySelector('.col-progress');
-    
-    let badgeClass = 'pending';
-    let step = 1;
-    if (data.status === 'Submitted' || data.status === 'In Progress') { badgeClass = 'submitted'; step = 2; }
-    if (data.status === 'Valid') { badgeClass = 'valid'; step = 4; }
-    if (data.status === 'Invalid') { badgeClass = 'invalid'; step = 4; }
-    if (data.status === 'Error') { badgeClass = 'failed'; step = 4; }
-    
-    statusCell.innerHTML = `<span class="badge ${badgeClass}">${data.status}</span>`;
-    uuidCell.textContent = data.uuid || '—';
-    progressCell.innerHTML = renderProgressDots(step, data.status);
+var uploadId = <?= (int)($currentUpload['id'] ?? 0) ?>;
+
+/* ✅ Live log so you always see what's happening */
+function logMsg(msg, cls) {
+    var log = el('liveLog');
+    if (!log) return;
+    var t = new Date();
+    var hh = ('0'+t.getHours()).slice(-2), mm = ('0'+t.getMinutes()).slice(-2), ss = ('0'+t.getSeconds()).slice(-2);
+    var div = document.createElement('div');
+    div.className = cls || 'info';
+    div.textContent = '[' + hh + ':' + mm + ':' + ss + '] ' + msg;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
 }
 
 function renderProgressDots(step, status) {
-    const labels = ['Build', 'Submit', 'Validate', 'Result'];
-    const errState = (status === 'Invalid' || status === 'Error');
-    let out = '<div style="display:flex; align-items:center; gap:6px;">';
-    for (let i = 1; i <= 4; i++) {
-        let cls = '#e2e8f0';
+    var labels = ['Build', 'Submit', 'Validate', 'Result'];
+    var errState = (status === 'Invalid' || status === 'Error');
+    var out = '<div style="display:flex; align-items:center; gap:6px;">';
+    for (var i = 1; i <= 4; i++) {
+        var cls = '#e2e8f0';
         if (errState && i === 4) cls = '#e11d48';
         else if (i <= step) cls = '#10b981';
-        
-        out += `<div style="display:flex; align-items:center; gap:4px;">
-            <div style="width:10px; height:10px; border-radius:50%; background:${cls}"></div>
-            <span style="font-size:10px; font-weight:700; color:#94a3b8;">${labels[i-1]}</span>
-        </div>`;
+        out += '<div style="display:flex; align-items:center; gap:4px;">' +
+               '<div style="width:10px; height:10px; border-radius:50%; background:' + cls + '"></div>' +
+               '<span style="font-size:10px; font-weight:700; color:#94a3b8;">' + labels[i-1] + '</span></div>';
         if (i < 4) out += '<div style="width:12px; height:1px; background:#e2e8f0;"></div>';
     }
     out += '</div>';
     return out;
 }
 
-async function updateStats() {
+function updateRow(id, data) {
+    var row = document.querySelector('tr[data-id="' + id + '"]');
+    if (!row) return;
+    var statusCell = row.querySelector('.col-status');
+    var uuidCell = row.querySelector('.col-uuid');
+    var progressCell = row.querySelector('.col-progress');
+
+    var badgeClass = 'pending', step = 1;
+    if (data.status === 'Submitted' || data.status === 'In Progress') { badgeClass = 'submitted'; step = 2; }
+    if (data.status === 'Valid') { badgeClass = 'valid'; step = 4; }
+    if (data.status === 'Invalid') { badgeClass = 'invalid'; step = 4; }
+    if (data.status === 'Error') { badgeClass = 'failed'; step = 4; }
+
+    statusCell.innerHTML = '<span class="badge ' + badgeClass + '">' + data.status + '</span>';
+    uuidCell.textContent = data.uuid || '—';
+    progressCell.innerHTML = renderProgressDots(step, data.status);
+}
+
+function updateStats() {
     if (!uploadId) return;
-    try {
-        const res = await fetch(`e-invoice_upload.php?ajax_action=get_stats&upload_id=${uploadId}`);
-        const stats = await res.json();
-        document.getElementById('stat-pending').textContent = stats.pending;
-        document.getElementById('stat-submitted').textContent = stats.submitted;
-        document.getElementById('stat-valid').textContent = stats.valid;
-        document.getElementById('stat-invalid').textContent = stats.invalid;
-        document.getElementById('stat-error').textContent = stats.error;
-        
-        const done = stats.valid + stats.invalid + stats.error;
-        document.getElementById('progress-text').textContent = `${done} / ${stats.total} transmitted`;
-        const pct = stats.total > 0 ? Math.round((done / stats.total) * 100) : 0;
-        document.getElementById('progress-bar').style.width = `${pct}%`;
-    } catch(e) {}
+    fetch('e-invoice_upload.php?ajax_action=get_stats&upload_id=' + uploadId, {cache:'no-store'})
+        .then(function(r){ return r.json(); })
+        .then(function(s){
+            el('stat-pending').textContent = s.pending;
+            el('stat-submitted').textContent = s.submitted;
+            el('stat-valid').textContent = s.valid;
+            el('stat-invalid').textContent = s.invalid;
+            el('stat-error').textContent = s.error;
+            var done = s.valid + s.invalid + s.error;
+            el('progress-text').textContent = done + ' / ' + s.total + ' transmitted';
+            var pct = s.total > 0 ? Math.round((done / s.total) * 100) : 0;
+            el('progress-bar').style.width = pct + '%';
+        })
+        .catch(function(e){ logMsg('Stats refresh failed: ' + e.message, 'err'); });
+}
+
+function startProcessing() {
+    var btn = el('btnProcess');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="pulsing">⏳</span> Processing Queue…';
+    logMsg('Auto-process started. Priority: Individual → Consolidated.', 'info');
+
+    function next() {
+        fetch('e-invoice_upload.php?ajax_action=process_next', {cache:'no-store'})
+            .then(function(r){ return r.text(); })
+            .then(function(text){
+                var data;
+                try { data = JSON.parse(text); }
+                catch (e) {
+                    logMsg('Invalid server response: ' + text.substring(0, 300), 'err');
+                    stop('⚠️ Server Error');
+                    return;
+                }
+                if (data.error) { logMsg('Stopped: ' + data.error, 'err'); stop('⚠️ Stopped'); updateStats(); return; }
+                if (data.done) { logMsg('All jobs processed. ✔', 'ok'); stop('✅ All Processed'); updateStats(); return; }
+
+                if (data.type === 'individual') {
+                    logMsg('Individual ' + (data.sale_no || '#' + data.id) + ' → ' + data.status + (data.uuid ? ' (uuid ' + data.uuid.substring(0,8) + '…)' : ''), data.status === 'Error' ? 'err' : 'ok');
+                    updateRow(data.id, data);
+                } else {
+                    logMsg('Consolidated ' + data.date + ' (' + data.ids.length + ' records) → ' + data.status, data.status === 'Error' ? 'err' : 'ok');
+                    for (var i = 0; i < data.ids.length; i++) updateRow(data.ids[i], data);
+                }
+                updateStats();
+                next(); // continue loop
+            })
+            .catch(function(e){
+                logMsg('Network error: ' + e.message, 'err');
+                stop('❌ Network Error');
+            });
+    }
+
+    function stop(label) {
+        btn.innerHTML = label;
+        btn.disabled = false;
+    }
+
+    next();
 }
 </script>
 </body>
