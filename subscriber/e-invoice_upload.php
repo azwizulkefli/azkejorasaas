@@ -3,6 +3,7 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/settings.php';
 require_once __DIR__ . '/../includes/excel_reader.php';
 require_once __DIR__ . '/../includes/lhdn_submit.php';
+require_once __DIR__ . '/../includes/myinvois.php'; // ✅ Added for automatic token refresh
 requireCustomer();
 ensure_settings_table($pdo);
 $uid = currentUserId();
@@ -203,13 +204,47 @@ if (isset($_GET['ajax_action'])) {
             $company = $stmtCompany->fetch(PDO::FETCH_ASSOC);
             if (!$company) { echo json_encode(['done' => true, 'error' => 'Company profile not found.']); exit; }
 
-            $sandboxToken = $company['sandbox_token'] ?? null;
-            $prodToken = $company['prod_token'] ?? null;
-            $isSandbox = !empty($sandboxToken);
-            $tokenValue = $isSandbox ? $sandboxToken : $prodToken;
-            $apiBaseUrl = $isSandbox ? 'https://preprod-api.myinvois.hasil.gov.my' : 'https://api.myinvois.hasil.gov.my';
+            // ✅ Determine environment based on user preference
+            $uStmt = $pdo->prepare("SELECT ei_env FROM users WHERE id = ? LIMIT 1");
+            $uStmt->execute([$uid]);
+            $envIsProd = ($uStmt->fetchColumn() ?? 'sandbox') === 'prod';
 
-            if (empty($tokenValue)) { echo json_encode(['done' => true, 'error' => 'No LHDN access token. Generate one in Company & e-Invoice config.']); exit; }
+            $tokenCol = $envIsProd ? 'prod_token' : 'sandbox_token';
+            $expiryCol = $envIsProd ? 'prod_token_expiry' : 'sandbox_token_expiry';
+            $apiBaseUrl = $envIsProd ? 'https://api.myinvois.hasil.gov.my' : 'https://preprod-api.myinvois.hasil.gov.my';
+
+            // ✅ Helper to refresh token automatically
+            $refreshToken = function() use ($pdo, $uid, &$company, $tokenCol) {
+                if (function_exists('myinvois_request_token')) {
+                    $res = myinvois_request_token($pdo, $uid);
+                    if ($res['ok']) {
+                        $c = $pdo->prepare("SELECT * FROM companies WHERE user_id = ? LIMIT 1");
+                        $c->execute([$uid]);
+                        $company = $c->fetch(PDO::FETCH_ASSOC);
+                        return $company[$tokenCol] ?? null;
+                    }
+                    return ['error' => $res['error'] ?? 'Token refresh failed'];
+                }
+                return ['error' => 'myinvois_request_token function not found.'];
+            };
+
+            $tokenValue = $company[$tokenCol] ?? null;
+            $tokenExpiry = $company[$expiryCol] ?? null;
+
+            // ✅ Proactive check: if empty or expires within 60 seconds
+            if (empty($tokenValue) || empty($tokenExpiry) || strtotime($tokenExpiry) <= (time() + 60)) {
+                $refreshResult = $refreshToken();
+                if (is_array($refreshResult) && isset($refreshResult['error'])) {
+                    echo json_encode(['done' => true, 'error' => 'Token expired and refresh failed: ' . $refreshResult['error']]);
+                    exit;
+                }
+                $tokenValue = $refreshResult;
+            }
+
+            if (empty($tokenValue)) { 
+                echo json_encode(['done' => true, 'error' => 'No LHDN access token. Generate one in Company & e-Invoice config.']); 
+                exit; 
+            }
 
             $stmtSend = $pdo->prepare("SELECT value FROM settings WHERE module = 'einvoice' AND key = 'json_send'");
             $stmtSend->execute(); $jsonSendTemplate = $stmtSend->fetchColumn();
@@ -232,8 +267,16 @@ if (isset($_GET['ajax_action'])) {
 
                 $payloads = buildLHDNPayloads($indRec, $company, $jsonSendTemplate, $jsonConvertTemplate);
                 $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
-                $submitResponse = json_decode($submitResult['response'], true);
+                
+                // ✅ Reactive 401 check (Unauthorized) -> Refresh and retry once
+                if ($submitResult['code'] == 401) {
+                    $tokenValue = $refreshToken();
+                    if ($tokenValue && !is_array($tokenValue)) {
+                        $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
+                    }
+                }
 
+                $submitResponse = json_decode($submitResult['response'], true);
                 $submissionUid = $submitResponse['submissionUid'] ?? null;
                 $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
                 $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300) ? 'Submitted' : 'Error';
@@ -284,8 +327,16 @@ if (isset($_GET['ajax_action'])) {
 
                 $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
                 $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
-                $submitResponse = json_decode($submitResult['response'], true);
 
+                // ✅ Reactive 401 check (Unauthorized) -> Refresh and retry once
+                if ($submitResult['code'] == 401) {
+                    $tokenValue = $refreshToken();
+                    if ($tokenValue && !is_array($tokenValue)) {
+                        $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
+                    }
+                }
+
+                $submitResponse = json_decode($submitResult['response'], true);
                 $submissionUid = $submitResponse['submissionUid'] ?? null;
                 $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
                 $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300) ? 'Submitted' : 'Error';
