@@ -669,10 +669,9 @@ var overlay = el('loadingOverlay');
 var uploadForm = el('uploadForm');
 if (uploadForm) uploadForm.addEventListener('submit', function(){ overlay.classList.add('active'); });
 
-/* ✅ FIX: embed the id as a quoted JSON string — never as a raw number.
-   This preserves UUIDs / big integers exactly, so get_stats queries work. */
 var uploadId = <?= json_encode($currentUpload['id'] ?? '') ?>;
 
+/* ================= LIVE LOG ================= */
 function logMsg(msg, cls) {
     var log = el('liveLog');
     if (!log) return;
@@ -685,6 +684,7 @@ function logMsg(msg, cls) {
     log.scrollTop = log.scrollHeight;
 }
 
+/* ================= PROGRESS DOTS ================= */
 function renderProgressDots(step, status) {
     var labels = ['Build', 'Submit', 'Validate', 'Result'];
     var errState = (status === 'Invalid' || status === 'Error');
@@ -702,6 +702,7 @@ function renderProgressDots(step, status) {
     return out;
 }
 
+/* ================= UPDATE SINGLE ROW ================= */
 function updateRow(id, data) {
     var row = document.querySelector('tr[data-id="' + id + '"]');
     if (!row) return;
@@ -715,29 +716,117 @@ function updateRow(id, data) {
     if (data.status === 'Invalid') { badgeClass = 'invalid'; step = 4; }
     if (data.status === 'Error') { badgeClass = 'failed'; step = 4; }
 
-    statusCell.innerHTML = '<span class="badge ' + badgeClass + '">' + data.status + '</span>';
-    uuidCell.textContent = data.uuid || '—';
-    progressCell.innerHTML = renderProgressDots(step, data.status);
+    if (statusCell) statusCell.innerHTML = '<span class="badge ' + badgeClass + '">' + data.status + '</span>';
+    if (uuidCell) uuidCell.textContent = data.uuid || '—';
+    if (progressCell) progressCell.innerHTML = renderProgressDots(step, data.status);
 }
 
+/* ================= UPDATE STATS CARDS ================= */
 function updateStats() {
     if (!uploadId) return;
     fetch('e-invoice_upload.php?ajax_action=get_stats&upload_id=' + encodeURIComponent(uploadId), {cache:'no-store'})
         .then(function(r){ return r.json(); })
         .then(function(s){
-            /* ✅ FIX: never paint error strings / undefined into the cards */
             if (s.error) { logMsg('Stats error: ' + s.error, 'err'); return; }
-            el('stat-pending').textContent = s.pending;
+            el('stat-pending').textContent   = s.pending;
             el('stat-submitted').textContent = s.submitted;
-            el('stat-valid').textContent = s.valid;
-            el('stat-invalid').textContent = s.invalid;
-			el('stat-error').textContent = s.error_count;
-            var done = (s.done || 0);
-            el('progress-text').textContent = done + ' / ' + (s.total || 0) + ' transmitted';
-            var pct = s.total > 0 ? Math.round((done / s.total) * 100) : 0;
+            el('stat-valid').textContent     = s.valid;
+            el('stat-invalid').textContent   = s.invalid;
+            el('stat-error').textContent     = s.error_count;
+            var done = s.done || 0;
+            var total = s.total || 0;
+            el('progress-text').textContent = done + ' / ' + total + ' transmitted';
+            var pct = total > 0 ? Math.round((done / total) * 100) : 0;
             el('progress-bar').style.width = pct + '%';
         })
         .catch(function(e){ logMsg('Stats refresh failed: ' + e.message, 'err'); });
+}
+
+/* ================= START AUTO-PROCESS (the missing function!) ================= */
+function startProcessing() {
+    var btn = el('btnProcess');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="pulsing">⏳</span> Processing Queue…';
+    logMsg('Auto-process started. Priority: Individual → Consolidated.', 'info');
+
+    var jobCount = 0;
+
+    function stop(label) {
+        btn.innerHTML = label;
+        btn.disabled = false;
+        logMsg('Process stopped: ' + label, 'info');
+    }
+
+    function next() {
+        jobCount++;
+        logMsg('Requesting next job (#' + jobCount + ')…', 'info');
+
+        fetch('e-invoice_upload.php?ajax_action=process_next', {cache:'no-store'})
+            .then(function(r){
+                logMsg('Server responded with HTTP ' + r.status, 'info');
+                return r.text();
+            })
+            .then(function(text){
+                var data;
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    logMsg('Invalid JSON from server: ' + text.substring(0, 300), 'err');
+                    stop('⚠️ Server Error');
+                    return;
+                }
+
+                /* Server-side error */
+                if (data.error) {
+                    logMsg('Server error: ' + data.error, 'err');
+                    stop('⚠️ ' + data.error);
+                    updateStats();
+                    return;
+                }
+
+                /* All done */
+                if (data.done) {
+                    logMsg('✅ All jobs processed successfully.', 'ok');
+                    stop('✅ All Processed');
+                    updateStats();
+                    return;
+                }
+
+                /* Individual submission result */
+                if (data.type === 'individual') {
+                    var label = data.sale_no || ('#' + data.id);
+                    var cls = (data.status === 'Error' || data.status === 'Invalid') ? 'err' : 'ok';
+                    logMsg('Individual [' + label + '] → ' + data.status +
+                           (data.uuid ? ' (uuid: ' + data.uuid.substring(0, 12) + '…)' : '') +
+                           (data.long_id ? ' (longId: ' + data.long_id.substring(0, 12) + '…)' : ''), cls);
+                    updateRow(data.id, data);
+                }
+
+                /* Consolidated submission result */
+                if (data.type === 'consolidated') {
+                    var cls2 = (data.status === 'Error' || data.status === 'Invalid') ? 'err' : 'ok';
+                    logMsg('Consolidated [' + data.date + '] (' + data.ids.length + ' records) → ' + data.status +
+                           (data.uuid ? ' (uuid: ' + data.uuid.substring(0, 12) + '…)' : ''), cls2);
+                    for (var i = 0; i < data.ids.length; i++) {
+                        updateRow(data.ids[i], data);
+                    }
+                }
+
+                /* Update dashboard stats */
+                updateStats();
+
+                /* Small delay then process next job */
+                setTimeout(function(){ next(); }, 500);
+            })
+            .catch(function(e){
+                logMsg('Network/fetch error: ' + e.message, 'err');
+                stop('❌ Network Error');
+            });
+    }
+
+    /* Kick off the loop */
+    next();
 }
 </script>
 </body>
