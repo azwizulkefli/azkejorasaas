@@ -73,7 +73,6 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
     return ['send' => $jsonStr, 'convert' => $convertStr];
 }
 
-/* ✅ FIX: cURL with proper timeouts so the page never hangs */
 function submitCustomPayloadToLHDN($url, $invoiceData, $token) {
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
@@ -126,12 +125,12 @@ function renderProgressDots($step, $status) {
 if (isset($_GET['ajax_action'])) {
     while (ob_get_level()) ob_end_clean();
     ini_set('display_errors', '0');
-    if (session_status() === PHP_SESSION_ACTIVE) session_write_close(); // release session lock
+    if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
     header('Content-Type: application/json');
     header('Cache-Control: no-store');
 
     try {
-        if ($_GET['ajax_action'] === 'get_stats' && isset($_GET['upload_id'])) {
+        if ($_GET['ajax_action'] === 'get_stats' && !empty($_GET['upload_id'])) {
             $stmt = $pdo->prepare("SELECT 
                 COUNT(*) FILTER (WHERE lhdn_status IS NULL OR lhdn_status = 'Pending') as pending,
                 COUNT(*) FILTER (WHERE lhdn_status = 'Submitted' OR lhdn_status = 'In Progress') as submitted,
@@ -140,10 +139,18 @@ if (isset($_GET['ajax_action'])) {
                 COUNT(*) FILTER (WHERE lhdn_status = 'Error') as error,
                 COUNT(*) as total
             FROM einvoice_records WHERE upload_id = ? AND user_id = ? AND validation_status = 'valid'");
-            $stmt->execute([$_GET['upload_id'], $uid]);
-            $stats = $stmt->fetch(PDO::FETCH_ASSOC);
-            $stats['done'] = ($stats['valid'] + $stats['invalid'] + $stats['error']);
-            echo json_encode($stats);
+            $stmt->execute([$_GET['upload_id'], $uid]); // ✅ exact string id, no JS mangling
+            $s = $stmt->fetch(PDO::FETCH_ASSOC);
+
+			echo json_encode([
+			    'pending'     => (int)$s['pending'],
+			    'submitted'   => (int)$s['submitted'],
+			    'valid'       => (int)$s['valid'],
+			    'invalid'     => (int)$s['invalid'],
+			    'error_count' => (int)$s['error'],
+			    'total'       => (int)$s['total'],
+			    'done'        => (int)$s['valid'] + (int)$s['invalid'] + (int)$s['error']
+			]);
             exit;
         }
 
@@ -197,14 +204,13 @@ if (isset($_GET['ajax_action'])) {
                     $longId = $detailsResponse['longId'] ?? null;
                 }
                 if ($lhdnStatus === 'Error' && !empty($submitResult['curl_error'])) {
-                    $docStatus = 'Error';
                     $submitResponse = ['curl_error' => $submitResult['curl_error'], 'raw' => $submitResult['response']];
                 }
 
                 $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id = ?")
                     ->execute([$docStatus, $uuid, $submissionUid, $longId, json_encode($submitResponse), $indRec['id']]);
 
-                echo json_encode(['done' => false, 'type' => 'individual', 'id' => $indRec['id'], 'sale_no' => $indRec['sale_no'], 'status' => $docStatus, 'uuid' => $uuid, 'submission_id' => $submissionUid, 'long_id' => $longId]);
+                echo json_encode(['done' => false, 'type' => 'individual', 'id' => (string)$indRec['id'], 'sale_no' => $indRec['sale_no'], 'status' => $docStatus, 'uuid' => $uuid, 'submission_id' => $submissionUid, 'long_id' => $longId]);
                 exit;
             }
 
@@ -221,7 +227,7 @@ if (isset($_GET['ajax_action'])) {
 
                 $grandTotal = array_sum(array_column($records, 'total_amount'));
                 $consolidatedData = [
-                    'sale_no' => 'CONSOL-' . str_replace('-', '', $saleDate) . '-' . substr($uid, 0, 8),
+                    'sale_no' => 'CONSOL-' . str_replace('-', '', $saleDate) . '-' . substr(md5($uid), 0, 8),
                     'customer_name' => 'Consolidated Sales', 'customer_address' => 'Multiple Customers',
                     'customer_email' => $me['email'] ?? 'na@na.com', 'customer_tin' => 'EI00000000010',
                     'customer_ic' => '000000000000', 'total_amount' => $grandTotal,
@@ -248,7 +254,7 @@ if (isset($_GET['ajax_action'])) {
                     $submitResponse = ['curl_error' => $submitResult['curl_error'], 'raw' => $submitResult['response']];
                 }
 
-                $recordIds = array_column($records, 'id');
+                $recordIds = array_map('strval', array_column($records, 'id'));
                 $placeholders = implode(',', array_fill(0, count($recordIds), '?'));
                 $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id IN ($placeholders)")
                     ->execute(array_merge([$docStatus, $uuid, $submissionUid, $longId, json_encode($submitResponse)], $recordIds));
@@ -328,7 +334,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                         $pdo->rollBack();
                         header("Location: e-invoice_upload.php?err=" . urlencode('Upload failed: ' . $e->getMessage())); exit;
                     }
-                    header("Location: e-invoice_upload.php?upload=" . $uploadId); exit;
+                    header("Location: e-invoice_upload.php?upload=" . urlencode($uploadId)); exit;
                 } else { 
                     header("Location: e-invoice_upload.php?err=" . urlencode($result['error'] ?? 'No data rows.')); exit; 
                 }
@@ -370,7 +376,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         if ($uploadId) {
             $pdo->prepare("UPDATE einvoice_records SET lhdn_status = NULL, lhdn_uuid = NULL, lhdn_submission_id = NULL, lhdn_long_id = NULL, lhdn_response = NULL WHERE upload_id = ? AND user_id = ?")
                 ->execute([$uploadId, $uid]);
-            header("Location: e-invoice_upload.php?upload=" . $uploadId); exit;
+            header("Location: e-invoice_upload.php?upload=" . urlencode($uploadId)); exit;
         }
     }
 }
@@ -487,9 +493,9 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
     <?php endif; ?>
 
     <div class="steps">
-      <div class="step"><div class="step-num">1</div><h3>Download Template</h3><p>Download our Excel template with all required fields pre-formatted.</p><a href="einvoice_datatemplate.csv" class="btn ghost" style="margin-top:12px">📥 Download</a></div>
-      <div class="step"><div class="step-num">2</div><h3>Fill Your Data</h3><p>Add your invoice records. Ensure all mandatory fields are filled correctly.</p></div>
-      <div class="step"><div class="step-num">3</div><h3>Upload & Submit</h3><p>Upload the file, review validation, then process submission to LHDN MyInvois.</p></div>
+      <div class="step"><h3>1. Download Template</h3><p>Download our Excel template with all required fields pre-formatted.</p><a href="einvoice_datatemplate.csv" class="btn ghost" style="margin-top:12px">📥 Download</a></div>
+      <div class="step"><h3>2. Fill Your Data</h3><p>Add your invoice records. Ensure all mandatory fields are filled correctly.</p></div>
+      <div class="step"><h3>3. Upload & Submit</h3><p>Upload the file, review validation, then process submission to LHDN MyInvois.</p></div>
     </div>
 
     <?php if (!$currentUpload): ?>
@@ -529,7 +535,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
                   <td style="color:#e11d48"><?= $up['invalid_records'] ?></td>
                   <td><span class="badge <?= $up['status'] ?>"><?= $up['status'] ?></span></td>
                   <td>
-                    <a href="?upload=<?= $up['id'] ?>" class="btn ghost" style="padding:6px 12px;font-size:11px">View</a>
+                    <a href="?upload=<?= urlencode($up['id']) ?>" class="btn ghost" style="padding:6px 12px;font-size:11px">View</a>
                     <form method="POST" style="display:inline" onsubmit="return confirm('Delete this upload and all records?');">
                       <input type="hidden" name="action" value="delete_upload">
                       <input type="hidden" name="upload_id" value="<?= htmlspecialchars($up['id']) ?>">
@@ -611,7 +617,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
                             if ($lhdnStatus === 'In Progress') $step = 3;
                             if (in_array($lhdnStatus, ['Valid', 'Invalid', 'Error'])) $step = 4;
                         ?>
-                        <tr data-id="<?= $rec['id'] ?>">
+                        <tr data-id="<?= htmlspecialchars($rec['id']) ?>">
                             <td><span class="badge <?= $type ?>"><?= ucfirst($type) ?></span></td>
                             <td><b><?= htmlspecialchars($rec['sale_no']) ?></b></td>
                             <td><?= htmlspecialchars($rec['customer_name']) ?></td>
@@ -639,7 +645,6 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
 <script>
 function el(id){ return document.getElementById(id); }
 
-/* upload zone (only exists on upload view) */
 var dropZone = el('dropZone'), fileInput = el('fileInput'), fileInfo = el('fileInfo');
 if (fileInput) {
     fileInput.addEventListener('change', function(e){
@@ -664,9 +669,10 @@ var overlay = el('loadingOverlay');
 var uploadForm = el('uploadForm');
 if (uploadForm) uploadForm.addEventListener('submit', function(){ overlay.classList.add('active'); });
 
-var uploadId = <?= (int)($currentUpload['id'] ?? 0) ?>;
+/* ✅ FIX: embed the id as a quoted JSON string — never as a raw number.
+   This preserves UUIDs / big integers exactly, so get_stats queries work. */
+var uploadId = <?= json_encode($currentUpload['id'] ?? '') ?>;
 
-/* ✅ Live log so you always see what's happening */
 function logMsg(msg, cls) {
     var log = el('liveLog');
     if (!log) return;
@@ -716,65 +722,22 @@ function updateRow(id, data) {
 
 function updateStats() {
     if (!uploadId) return;
-    fetch('e-invoice_upload.php?ajax_action=get_stats&upload_id=' + uploadId, {cache:'no-store'})
+    fetch('e-invoice_upload.php?ajax_action=get_stats&upload_id=' + encodeURIComponent(uploadId), {cache:'no-store'})
         .then(function(r){ return r.json(); })
         .then(function(s){
+            /* ✅ FIX: never paint error strings / undefined into the cards */
+            if (s.error) { logMsg('Stats error: ' + s.error, 'err'); return; }
             el('stat-pending').textContent = s.pending;
             el('stat-submitted').textContent = s.submitted;
             el('stat-valid').textContent = s.valid;
             el('stat-invalid').textContent = s.invalid;
-            el('stat-error').textContent = s.error;
-            var done = s.valid + s.invalid + s.error;
-            el('progress-text').textContent = done + ' / ' + s.total + ' transmitted';
+			el('stat-error').textContent = s.error_count;
+            var done = (s.done || 0);
+            el('progress-text').textContent = done + ' / ' + (s.total || 0) + ' transmitted';
             var pct = s.total > 0 ? Math.round((done / s.total) * 100) : 0;
             el('progress-bar').style.width = pct + '%';
         })
         .catch(function(e){ logMsg('Stats refresh failed: ' + e.message, 'err'); });
-}
-
-function startProcessing() {
-    var btn = el('btnProcess');
-    if (!btn) return;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="pulsing">⏳</span> Processing Queue…';
-    logMsg('Auto-process started. Priority: Individual → Consolidated.', 'info');
-
-    function next() {
-        fetch('e-invoice_upload.php?ajax_action=process_next', {cache:'no-store'})
-            .then(function(r){ return r.text(); })
-            .then(function(text){
-                var data;
-                try { data = JSON.parse(text); }
-                catch (e) {
-                    logMsg('Invalid server response: ' + text.substring(0, 300), 'err');
-                    stop('⚠️ Server Error');
-                    return;
-                }
-                if (data.error) { logMsg('Stopped: ' + data.error, 'err'); stop('⚠️ Stopped'); updateStats(); return; }
-                if (data.done) { logMsg('All jobs processed. ✔', 'ok'); stop('✅ All Processed'); updateStats(); return; }
-
-                if (data.type === 'individual') {
-                    logMsg('Individual ' + (data.sale_no || '#' + data.id) + ' → ' + data.status + (data.uuid ? ' (uuid ' + data.uuid.substring(0,8) + '…)' : ''), data.status === 'Error' ? 'err' : 'ok');
-                    updateRow(data.id, data);
-                } else {
-                    logMsg('Consolidated ' + data.date + ' (' + data.ids.length + ' records) → ' + data.status, data.status === 'Error' ? 'err' : 'ok');
-                    for (var i = 0; i < data.ids.length; i++) updateRow(data.ids[i], data);
-                }
-                updateStats();
-                next(); // continue loop
-            })
-            .catch(function(e){
-                logMsg('Network error: ' + e.message, 'err');
-                stop('❌ Network Error');
-            });
-    }
-
-    function stop(label) {
-        btn.innerHTML = label;
-        btn.disabled = false;
-    }
-
-    next();
 }
 </script>
 </body>
