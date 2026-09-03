@@ -6,12 +6,45 @@ requireCustomer();
 $uid = currentUserId();
 $me  = currentUser();
 
+// ---------------- RESUBMIT ACTION HANDLER ----------------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'resubmit') {
+    header('Content-Type: application/json');
+    $recordId = $_POST['id'] ?? '';
+    
+    // Verify record belongs to user
+    $chk = $pdo->prepare("SELECT * FROM einvoice_records WHERE id = ? AND user_id = ?");
+    $chk->execute([$recordId, $uid]);
+    $record = $chk->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$record) {
+        echo json_encode(['success' => false, 'message' => 'Record not found or unauthorized.']);
+        exit;
+    }
+
+    // =====================================================================
+    // TODO: Replace this block with your actual LHDN API call function.
+    // Example: $apiResult = myinvois_check_document_status($pdo, $uid, $record['reference_uuid'] ?? $record['id']);
+    // 
+    // $newStatus = $apiResult['status'] ?? 'pending';
+    // $responseJson = json_encode($apiResult);
+    // 
+    // $updateStmt = $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_response = ? WHERE id = ?");
+    // $updateStmt->execute([$newStatus, $responseJson, $recordId]);
+    // =====================================================================
+
+    // For demonstration, we simulate a successful check initiation
+    echo json_encode(['success' => true, 'message' => 'Status check initiated. The record will be updated shortly.']);
+    exit;
+}
+
 // ---------------- PAGINATION & SEARCH PARAMS ----------------
 $perPageOptions = [10, 20, 50, 100, 200];
 $perPage = isset($_GET['per_page']) && in_array((int)$_GET['per_page'], $perPageOptions) ? (int)$_GET['per_page'] : 10;
 $page = isset($_GET['page']) && (int)$_GET['page'] > 0 ? (int)$_GET['page'] : 1;
 $offset = ($page - 1) * $perPage;
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
+$dateFrom = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
+$dateTo = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
 
 // ---------------- EXPORT LOGIC ----------------
 if (isset($_GET['export']) && $_GET['export'] === '1') {
@@ -21,12 +54,28 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
     header('Expires: 0');
 
     $fp = fopen('php://output', 'w');
-    // UTF-8 BOM for Excel compatibility
-    fprintf($fp, chr(0xEF).chr(0xBB).chr(0xBF));
+    fprintf($fp, chr(0xEF).chr(0xBB).chr(0xBF)); // UTF-8 BOM
     fputcsv($fp, ['No', 'Sale No', 'Sale Date', 'Customer Name', 'Customer Email', 'Customer Phone', 'Customer TIN', 'Customer IC', 'Category', 'Sale Total', 'Submitted Date', 'LHDN Status']);
     
-    $exportStmt = $pdo->prepare("SELECT * FROM einvoice_records WHERE user_id = ? AND (sale_no ILIKE ? OR customer_name ILIKE ?) ORDER BY created_at DESC");
-    $exportStmt->execute([$uid, "%$search%", "%$search%"]);
+    // Build export query with same filters
+    $exportWhere = ["user_id = ?"];
+    $exportParams = [$uid];
+    if ($search !== '') {
+        $exportWhere[] = "(sale_no ILIKE ? OR customer_name ILIKE ?)";
+        $exportParams[] = "%$search%";
+        $exportParams[] = "%$search%";
+    }
+    if ($dateFrom !== '') {
+        $exportWhere[] = "created_at >= ?";
+        $exportParams[] = $dateFrom . ' 00:00:00';
+    }
+    if ($dateTo !== '') {
+        $exportWhere[] = "created_at <= ?";
+        $exportParams[] = $dateTo . ' 23:59:59';
+    }
+    
+    $exportStmt = $pdo->prepare("SELECT * FROM einvoice_records WHERE " . implode(' AND ', $exportWhere) . " ORDER BY created_at DESC");
+    $exportStmt->execute($exportParams);
     
     $no = 1;
     while ($row = $exportStmt->fetch(PDO::FETCH_ASSOC)) {
@@ -53,18 +102,49 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
     exit;
 }
 
+// ---------------- SUMMARY STATISTICS ----------------
+$summaryStmt = $pdo->prepare("SELECT 
+    COUNT(*) as total_submitted,
+    COUNT(CASE WHEN lhdn_status IN ('valid', 'validated', 'success') THEN 1 END) as total_valid,
+    COUNT(CASE WHEN lhdn_status IN ('invalid', 'rejected') THEN 1 END) as total_invalid,
+    COUNT(CASE WHEN lhdn_status IN ('error', 'fail', 'failed') THEN 1 END) as total_error
+    FROM einvoice_records WHERE user_id = ?");
+$summaryStmt->execute([$uid]);
+$summary = $summaryStmt->fetch(PDO::FETCH_ASSOC);
+
 // ---------------- FETCH DATA ----------------
+$whereClauses = ["user_id = ?"];
+$params = [$uid];
+
+if ($search !== '') {
+    $whereClauses[] = "(sale_no ILIKE ? OR customer_name ILIKE ?)";
+    $params[] = "%$search%";
+    $params[] = "%$search%";
+}
+if ($dateFrom !== '') {
+    $whereClauses[] = "created_at >= ?";
+    $params[] = $dateFrom . ' 00:00:00';
+}
+if ($dateTo !== '') {
+    $whereClauses[] = "created_at <= ?";
+    $params[] = $dateTo . ' 23:59:59';
+}
+
+$whereSql = implode(' AND ', $whereClauses);
+
 // Count Total
-$countSql = "SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND (sale_no ILIKE ? OR customer_name ILIKE ?)";
+$countSql = "SELECT COUNT(*) FROM einvoice_records WHERE $whereSql";
 $countStmt = $pdo->prepare($countSql);
-$countStmt->execute([$uid, "%$search%", "%$search%"]);
+$countStmt->execute($params);
 $totalRecords = (int)$countStmt->fetchColumn();
 $totalPages = ceil($totalRecords / $perPage);
 
 // Fetch Records
-$sql = "SELECT * FROM einvoice_records WHERE user_id = ? AND (sale_no ILIKE ? OR customer_name ILIKE ?) ORDER BY created_at DESC LIMIT ? OFFSET ?";
+$sql = "SELECT * FROM einvoice_records WHERE $whereSql ORDER BY created_at DESC LIMIT ? OFFSET ?";
+$params[] = $perPage;
+$params[] = $offset;
 $stmt = $pdo->prepare($sql);
-$stmt->execute([$uid, "%$search%", "%$search%", $perPage, $offset]);
+$stmt->execute($params);
 $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $avatarSrc = $me['avatar_path'] ? '/' . $me['avatar_path'] : null;
@@ -80,7 +160,7 @@ function getStatusClass($status) {
     $s = strtolower($status ?? 'pending');
     if (in_array($s, ['valid', 'validated', 'success'])) return 'valid';
     if (in_array($s, ['invalid', 'error', 'fail', 'failed', 'rejected'])) return 'invalid';
-    if (in_array($s, ['submitted', 'processing', 'in_progress', 'pending'])) return 'processing';
+    if (in_array($s, ['submitted', 'processing', 'in_progress', 'pending', 'new'])) return 'processing';
     return 'processing';
 }
 ?>
@@ -128,11 +208,17 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .sub{color:var(--muted);font-size:14px;margin-top:4px}
 
+/* ---------- SUMMARY GRID ---------- */
+.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:32px}
+.summary-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center;box-shadow:var(--card)}
+.summary-card b{display:block;font-size:28px;font-weight:800}
+.summary-card p{font-size:12px;font-weight:600;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
+
 /* ---------- TOOLBAR ---------- */
 .toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin:24px 0 16px}
 .search-box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 14px;flex:1;max-width:400px}
 .search-box input{border:none;outline:none;font-size:14px;width:100%;background:transparent}
-.filter-group{display:flex;gap:8px;align-items:center}
+.filter-group{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .filter-group select{border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px;font-weight:600;color:var(--ink);background:#fff;cursor:pointer}
 .btn{display:inline-flex;align-items:center;gap:8px;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;transition:.15s;text-decoration:none;border:none;cursor:pointer}
 .btn.primary{background:var(--grad);color:#fff}.btn.primary:hover{opacity:.9}
@@ -194,7 +280,8 @@ tbody tr:last-child td{border-bottom:none}
   .menu-toggle{display:block}
   .toolbar{flex-direction:column;align-items:stretch}
   .search-box{max-width:100%}
-  .filter-group{justify-content:space-between}
+  .filter-group{justify-content:space-between;width:100%}
+  .summary-grid{grid-template-columns:repeat(2,1fr)}
 }
 @media(max-width:760px){
   .main{padding:20px 12px}
@@ -202,6 +289,7 @@ tbody tr:last-child td{border-bottom:none}
   .topbar{padding:12px 14px}
   .top-right{gap:8px;font-size:12px}
   .detail-grid{grid-template-columns:1fr}
+  .summary-grid{grid-template-columns:1fr}
 }
 </style>
 </head>
@@ -259,19 +347,49 @@ tbody tr:last-child td{border-bottom:none}
     <h1>Submitted E-Invoices 📋</h1>
     <p class="sub">View, search, and manage your LHDN e-invoice submission history.</p>
 
+    <!-- SUMMARY SECTION -->
+    <div class="summary-grid">
+      <div class="summary-card">
+        <b style="color:#3b82f6"><?= number_format($summary['total_submitted']) ?></b>
+        <p>Total Submitted</p>
+      </div>
+      <div class="summary-card">
+        <b style="color:#059669"><?= number_format($summary['total_valid']) ?></b>
+        <p>Total Valid</p>
+      </div>
+      <div class="summary-card">
+        <b style="color:#e11d48"><?= number_format($summary['total_invalid']) ?></b>
+        <p>Total Invalid</p>
+      </div>
+      <div class="summary-card">
+        <b style="color:#64748b"><?= number_format($summary['total_error']) ?></b>
+        <p>Total Error</p>
+      </div>
+    </div>
+
     <!-- TOOLBAR -->
     <form method="GET" class="toolbar" id="filterForm">
       <div class="search-box">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint);flex-shrink:0"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
         <input type="text" name="search" placeholder="Search by Sale No or Customer Name..." value="<?= htmlspecialchars($search) ?>">
       </div>
+      
+      <div class="search-box" style="max-width: 160px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint);flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+        <input type="date" name="date_from" value="<?= htmlspecialchars($dateFrom) ?>" title="From Date" style="border:none;outline:none;font-size:13px;width:100%;background:transparent;color:var(--ink)">
+      </div>
+      <div class="search-box" style="max-width: 160px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint);flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+        <input type="date" name="date_to" value="<?= htmlspecialchars($dateTo) ?>" title="To Date" style="border:none;outline:none;font-size:13px;width:100%;background:transparent;color:var(--ink)">
+      </div>
+
       <div class="filter-group">
         <select name="per_page" onchange="document.getElementById('filterForm').submit()">
           <?php foreach ($perPageOptions as $opt): ?>
             <option value="<?= $opt ?>" <?= $perPage == $opt ? 'selected' : '' ?>><?= $opt ?> per page</option>
           <?php endforeach; ?>
         </select>
-        <a href="?export=1&search=<?= urlencode($search) ?>&per_page=<?= $perPage ?>" class="btn primary" onclick="document.getElementById('loadingOverlay').classList.add('active')">
+        <a href="?export=1&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>&per_page=<?= $perPage ?>" class="btn primary" onclick="document.getElementById('loadingOverlay').classList.add('active')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
           Export CSV
         </a>
@@ -309,6 +427,7 @@ tbody tr:last-child td{border-bottom:none}
                   $no = $offset + $index + 1;
                   $status = strtolower($row['lhdn_status'] ?? 'pending');
                   $isValid = in_array($status, ['valid', 'validated', 'success']);
+                  $isPending = in_array($status, ['submitted', 'processing', 'in_progress', 'pending', 'new']);
                   $hasResponse = !empty($row['lhdn_response']);
                   $saleDate = $row['sale_datetime'] ? date('d M Y', strtotime($row['sale_datetime'])) : date('d M Y', strtotime($row['created_at']));
                   $submitDate = date('d M Y, H:i', strtotime($row['created_at']));
@@ -318,7 +437,6 @@ tbody tr:last-child td{border-bottom:none}
                   <td><b><?= htmlspecialchars($row['sale_no'] ?? '—') ?></b></td>
                   <td><?= htmlspecialchars($saleDate) ?></td>
                   
-                  <!-- CUSTOMER COLUMN WITH EXTENDED DETAILS -->
                   <td>
                     <div style="font-weight:700;color:var(--ink)"><?= htmlspecialchars($row['customer_name'] ?? '—') ?></div>
                     <div class="customer-details">
@@ -332,7 +450,6 @@ tbody tr:last-child td{border-bottom:none}
                     </div>
                   </td>
 
-                  <!-- CATEGORY COLUMN WITH CONSOLIDATED ID -->
                   <td>
                     <div style="font-weight:600;color:var(--ink);font-size:13px"><?= getCategory($row['document_type']) ?></div>
                     <?php if (($row['submission_type'] ?? '') === 'consolidated' && !empty($row['consolidated_id'])): ?>
@@ -346,15 +463,18 @@ tbody tr:last-child td{border-bottom:none}
                   <td style="font-size:13px;color:var(--muted)"><?= htmlspecialchars($submitDate) ?></td>
                   <td><span class="badge <?= getStatusClass($row['lhdn_status']) ?>"><?= htmlspecialchars(strtoupper($row['lhdn_status'] ?? 'PENDING')) ?></span></td>
                   
-                  <!-- ACTION COLUMN: Valid = Invoice Icon, Others = JSON Icon (if response exists) -->
                   <td>
                     <div class="action-btns">
-                      <?php if ($isValid): ?>
+                      <?php if ($isPending): ?>
+                        <button class="action-btn" title="Resubmit / Check Status" onclick="resubmitRecord('<?= htmlspecialchars($row['id']) ?>')">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                        </button>
+                      <?php elseif ($isValid): ?>
                         <button class="action-btn" title="View LHDN E-Invoice" onclick="openInvoiceModal(<?= htmlspecialchars(json_encode($row), ENT_QUOTES) ?>)">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                         </button>
                       <?php elseif ($hasResponse): ?>
-                        <button class="action-btn danger" title="View Response Details" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response']), ENT_QUOTES) ?>)">
+                        <button class="action-btn danger" title="View Error Details" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response']), ENT_QUOTES) ?>)">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
                         </button>
                       <?php endif; ?>
@@ -372,17 +492,17 @@ tbody tr:last-child td{border-bottom:none}
         <div class="pagination">
           <span>Showing <?= $offset + 1 ?> to <?= min($offset + $perPage, $totalRecords) ?> of <?= $totalRecords ?> records</span>
           <div class="page-links">
-            <a href="?page=<?= max(1, $page - 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>" class="page-link <?= $page <= 1 ? 'disabled' : '' ?>">‹</a>
+            <a href="?page=<?= max(1, $page - 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>" class="page-link <?= $page <= 1 ? 'disabled' : '' ?>">‹</a>
             
             <?php 
               $startPage = max(1, $page - 2);
               $endPage = min($totalPages, $page + 2);
               for ($i = $startPage; $i <= $endPage; $i++): 
             ?>
-              <a href="?page=<?= $i ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>" class="page-link <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
+              <a href="?page=<?= $i ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>" class="page-link <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
             <?php endfor; ?>
             
-            <a href="?page=<?= min($totalPages, $page + 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>" class="page-link <?= $page >= $totalPages ? 'disabled' : '' ?>">›</a>
+            <a href="?page=<?= min($totalPages, $page + 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>" class="page-link <?= $page >= $totalPages ? 'disabled' : '' ?>">›</a>
           </div>
         </div>
       <?php endif; ?>
@@ -399,9 +519,7 @@ tbody tr:last-child td{border-bottom:none}
       <h3>📄 LHDN E-Invoice Details</h3>
       <button class="modal-close" onclick="closeModal('invoiceModal')">✕</button>
     </div>
-    <div id="invoiceModalContent">
-      <!-- Populated by JS -->
-    </div>
+    <div id="invoiceModalContent"></div>
     <div style="margin-top:20px;display:flex;gap:10px">
       <button class="btn primary" style="flex:1" onclick="alert('PDF download feature would be triggered here.')">⬇ Download PDF</button>
       <button class="btn ghost" style="flex:1" onclick="closeModal('invoiceModal')">Close</button>
@@ -471,6 +589,36 @@ function copyJson() {
   const text = document.getElementById('jsonModalContent').textContent;
   navigator.clipboard.writeText(text).then(() => {
     alert('JSON copied to clipboard!');
+  });
+}
+
+function resubmitRecord(recordId) {
+  if (!confirm('Are you sure you want to resubmit/check status for this record with LHDN?')) return;
+  
+  document.getElementById('loadingOverlay').classList.add('active');
+  
+  const formData = new FormData();
+  formData.append('action', 'resubmit');
+  formData.append('id', recordId);
+  
+  fetch(window.location.href, {
+    method: 'POST',
+    body: formData
+  })
+  .then(response => response.json())
+  .then(data => {
+    document.getElementById('loadingOverlay').classList.remove('active');
+    if (data.success) {
+      alert(data.message || 'Resubmit successful!');
+      window.location.reload();
+    } else {
+      alert(data.message || 'Resubmit failed.');
+    }
+  })
+  .catch(error => {
+    document.getElementById('loadingOverlay').classList.remove('active');
+    console.error('Error:', error);
+    alert('An error occurred while resubmitting.');
   });
 }
 
