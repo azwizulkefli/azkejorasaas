@@ -23,7 +23,7 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
     $fp = fopen('php://output', 'w');
     // UTF-8 BOM for Excel compatibility
     fprintf($fp, chr(0xEF).chr(0xBB).chr(0xBF));
-    fputcsv($fp, ['No', 'Sale No', 'Sale Date', 'Customer Name', 'Category', 'Sale Total', 'Submitted Date', 'LHDN Status']);
+    fputcsv($fp, ['No', 'Sale No', 'Sale Date', 'Customer Name', 'Customer Email', 'Customer Phone', 'Customer TIN', 'Customer IC', 'Category', 'Sale Total', 'Submitted Date', 'LHDN Status']);
     
     $exportStmt = $pdo->prepare("SELECT * FROM einvoice_records WHERE user_id = ? AND (sale_no ILIKE ? OR customer_name ILIKE ?) ORDER BY created_at DESC");
     $exportStmt->execute([$uid, "%$search%", "%$search%"]);
@@ -39,6 +39,10 @@ if (isset($_GET['export']) && $_GET['export'] === '1') {
             $row['sale_no'],
             $saleDate,
             $row['customer_name'],
+            $row['customer_email'],
+            $row['customer_phone'],
+            $row['customer_tin'],
+            $row['customer_ic'],
             $category,
             number_format($row['total_amount'], 2),
             date('Y-m-d H:i', strtotime($row['created_at'])),
@@ -137,9 +141,9 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 /* ---------- TABLE ---------- */
 .card{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--card);overflow:hidden}
 .table-responsive{overflow-x:auto;-webkit-overflow-scrolling:touch}
-table{width:100%;border-collapse:collapse;font-size:14px;min-width:900px}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:1000px}
 th{padding:14px 16px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}
-td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-align:middle}
+td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-align:top}
 tbody tr:hover{background:#f8fafc}
 tbody tr:last-child td{border-bottom:none}
 
@@ -147,6 +151,9 @@ tbody tr:last-child td{border-bottom:none}
 .badge.valid{background:#d1fae5;color:#059669}
 .badge.invalid{background:#ffe4e6;color:#e11d48}
 .badge.processing{background:#dbeafe;color:#3b82f6}
+
+.customer-details{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5;display:grid;gap:3px}
+.customer-details div{display:flex;align-items:center;gap:6px;word-break:break-all}
 
 .action-btns{display:flex;gap:6px}
 .action-btn{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;color:var(--muted);transition:.15s;border:1px solid var(--line);background:#fff}
@@ -215,9 +222,9 @@ tbody tr:last-child td{border-bottom:none}
   </div>
   <nav class="sidebar-nav">
     <a href="main.php" class="menu-item">🏠 Home</a>
-    <a href="e-invoice.php" class="menu-item active">🧾 E-Invoice</a>
-    <a href="e-invoice_submitted.php" class="menu-item">🧾 View Submitted</a>
-      <div class="menu-section">Subscription</div>
+    <a href="e-invoice.php" class="menu-item">🧾 E-Invoice</a>
+    <a href="e-invoice_submitted.php" class="menu-item active">📋 View Submitted</a>
+    <div class="menu-section">Subscription</div>
     <a href="s_payment.php" class="menu-item">💳 Payment</a>
     <a href="s_report.php" class="menu-item">📄 Report</a>
     <div class="menu-section">Setup</div>
@@ -280,7 +287,7 @@ tbody tr:last-child td{border-bottom:none}
               <th style="width:50px">No</th>
               <th>Sale No</th>
               <th>Sale Date</th>
-              <th>Customer Name</th>
+              <th>Customer Details</th>
               <th>Category</th>
               <th style="text-align:right">Sale Total</th>
               <th>Submitted Date</th>
@@ -301,7 +308,8 @@ tbody tr:last-child td{border-bottom:none}
                 <?php 
                   $no = $offset + $index + 1;
                   $status = strtolower($row['lhdn_status'] ?? 'pending');
-                  $isError = in_array($status, ['invalid', 'error', 'fail', 'failed', 'rejected']);
+                  $isValid = in_array($status, ['valid', 'validated', 'success']);
+                  $hasResponse = !empty($row['lhdn_response']);
                   $saleDate = $row['sale_datetime'] ? date('d M Y', strtotime($row['sale_datetime'])) : date('d M Y', strtotime($row['created_at']));
                   $submitDate = date('d M Y, H:i', strtotime($row['created_at']));
                 ?>
@@ -309,18 +317,44 @@ tbody tr:last-child td{border-bottom:none}
                   <td style="color:var(--faint);font-weight:600"><?= $no ?></td>
                   <td><b><?= htmlspecialchars($row['sale_no'] ?? '—') ?></b></td>
                   <td><?= htmlspecialchars($saleDate) ?></td>
-                  <td><?= htmlspecialchars($row['customer_name'] ?? '—') ?></td>
-                  <td><span style="font-size:12px;font-weight:600;color:var(--muted)"><?= getCategory($row['document_type']) ?></span></td>
+                  
+                  <!-- CUSTOMER COLUMN WITH EXTENDED DETAILS -->
+                  <td>
+                    <div style="font-weight:700;color:var(--ink)"><?= htmlspecialchars($row['customer_name'] ?? '—') ?></div>
+                    <div class="customer-details">
+                      <?php if (!empty($row['customer_email'])): ?><div>✉️ <?= htmlspecialchars($row['customer_email']) ?></div><?php endif; ?>
+                      <?php if (!empty($row['customer_phone'])): ?><div>📞 <?= htmlspecialchars($row['customer_phone']) ?></div><?php endif; ?>
+                      <?php if (!empty($row['customer_tin'])): ?><div>🆔 TIN: <?= htmlspecialchars($row['customer_tin']) ?></div><?php endif; ?>
+                      <?php if (!empty($row['customer_ic'])): ?><div>🪪 IC: <?= htmlspecialchars($row['customer_ic']) ?></div><?php endif; ?>
+                      <?php if (empty($row['customer_email']) && empty($row['customer_phone']) && empty($row['customer_tin']) && empty($row['customer_ic'])): ?>
+                        <div style="color:var(--faint);font-style:italic">No additional details</div>
+                      <?php endif; ?>
+                    </div>
+                  </td>
+
+                  <!-- CATEGORY COLUMN WITH CONSOLIDATED ID -->
+                  <td>
+                    <div style="font-weight:600;color:var(--ink);font-size:13px"><?= getCategory($row['document_type']) ?></div>
+                    <?php if (($row['submission_type'] ?? '') === 'consolidated' && !empty($row['consolidated_id'])): ?>
+                      <div style="font-size:11px;color:var(--brand);margin-top:6px;font-family:ui-monospace,monospace;background:#eef1ff;padding:3px 8px;border-radius:6px;display:inline-flex;align-items:center;gap:4px" title="Consolidated ID: <?= htmlspecialchars($row['consolidated_id']) ?>">
+                        📦 <?= htmlspecialchars(substr($row['consolidated_id'], 0, 8)) ?>...
+                      </div>
+                    <?php endif; ?>
+                  </td>
+
                   <td style="text-align:right;font-weight:700;font-family:ui-monospace,monospace">RM <?= number_format($row['total_amount'], 2) ?></td>
                   <td style="font-size:13px;color:var(--muted)"><?= htmlspecialchars($submitDate) ?></td>
                   <td><span class="badge <?= getStatusClass($row['lhdn_status']) ?>"><?= htmlspecialchars(strtoupper($row['lhdn_status'] ?? 'PENDING')) ?></span></td>
+                  
+                  <!-- ACTION COLUMN: Valid = Invoice Icon, Others = JSON Icon (if response exists) -->
                   <td>
                     <div class="action-btns">
-                      <button class="action-btn" title="View LHDN E-Invoice" onclick="openInvoiceModal(<?= htmlspecialchars(json_encode($row), ENT_QUOTES) ?>)">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                      </button>
-                      <?php if ($isError && !empty($row['lhdn_response'])): ?>
-                        <button class="action-btn danger" title="View Error Details" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response']), ENT_QUOTES) ?>)">
+                      <?php if ($isValid): ?>
+                        <button class="action-btn" title="View LHDN E-Invoice" onclick="openInvoiceModal(<?= htmlspecialchars(json_encode($row), ENT_QUOTES) ?>)">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                        </button>
+                      <?php elseif ($hasResponse): ?>
+                        <button class="action-btn danger" title="View Response Details" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response']), ENT_QUOTES) ?>)">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
                         </button>
                       <?php endif; ?>
