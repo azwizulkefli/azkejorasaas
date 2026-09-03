@@ -98,12 +98,12 @@ if ($s) {
     }
 }
 
-// E-Invoice counts
-$einSt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_items WHERE user_id = ?");
+// ---------------- E-INVOICE COUNTS (Updated to einvoice_records) ----------------
+$einSt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ?");
 $einSt->execute([$uid]);
 $einCount = (int)$einSt->fetchColumn();
 
-$einGross = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM einvoice_items WHERE user_id = ?");
+$einGross = $pdo->prepare("SELECT COALESCE(SUM(total_amount),0) FROM einvoice_records WHERE user_id = ?");
 $einGross->execute([$uid]);
 $einGrossV = $einGross->fetchColumn();
 
@@ -113,36 +113,37 @@ $bkCount->execute([$uid]);
 $bkCountV = $bkCount->fetchColumn();
 
 // E-Invoice by time periods (week, month, year)
-$einWeek = $pdo->prepare("SELECT COUNT(*) FROM einvoice_items WHERE user_id = ? AND created_at >= NOW() - INTERVAL '7 days'");
+$einWeek = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '7 days'");
 $einWeek->execute([$uid]);
 $einWeekCount = (int)$einWeek->fetchColumn();
 
-$einMonth = $pdo->prepare("SELECT COUNT(*) FROM einvoice_items WHERE user_id = ? AND created_at >= NOW() - INTERVAL '30 days'");
+$einMonth = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '30 days'");
 $einMonth->execute([$uid]);
 $einMonthCount = (int)$einMonth->fetchColumn();
 
-$einYear = $pdo->prepare("SELECT COUNT(*) FROM einvoice_items WHERE user_id = ? AND created_at >= NOW() - INTERVAL '1 year'");
+$einYear = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '1 year'");
 $einYear->execute([$uid]);
 $einYearCount = (int)$einYear->fetchColumn();
 
-// E-Invoice by status
-$einByStatus = $pdo->prepare("SELECT status, COUNT(*) as count FROM einvoice_items WHERE user_id = ? GROUP BY status");
+// E-Invoice by status (using lhdn_status)
+$einByStatus = $pdo->prepare("SELECT lhdn_status, COUNT(*) as count FROM einvoice_records WHERE user_id = ? GROUP BY lhdn_status");
 $einByStatus->execute([$uid]);
 $statusMap = [];
 while ($row = $einByStatus->fetch()) {
-    $statusMap[$row['status']] = (int)$row['count'];
+    $status = strtolower($row['lhdn_status'] ?? 'pending');
+    $statusMap[$status] = ($statusMap[$status] ?? 0) + (int)$row['count'];
 }
 
 // Activity log (last 10 activities from multiple sources)
 $activities = [];
 
-// Recent einvoice items
-$einRecent = $pdo->prepare("SELECT 'einvoice' as type, description, created_at FROM einvoice_items WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+// Recent einvoice items (using sale_no and customer_name)
+$einRecent = $pdo->prepare("SELECT sale_no, customer_name, created_at FROM einvoice_records WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
 $einRecent->execute([$uid]);
 while ($row = $einRecent->fetch()) {
     $activities[] = [
         'type' => '🧾 E-Invoice',
-        'desc' => $row['description'] ?: 'Invoice processed',
+        'desc' => 'Processed ' . ($row['sale_no'] ?: 'Invoice') . ' for ' . ($row['customer_name'] ?: 'Customer'),
         'time' => $row['created_at']
     ];
 }
@@ -639,6 +640,13 @@ document.querySelectorAll('a[href]').forEach(link => {
 </script>
 
 <?php
+// Helper function check (ensure this exists in your auth.php or settings.php)
+if (!function_exists('needsPasswordSetup')) {
+    function needsPasswordSetup() {
+        global $me;
+        return empty($me['password_hash']) || strpos($me['password_hash'], '$2y$10$GoogleOAuth') === 0;
+    }
+}
 $showSetup = needsPasswordSetup() || (isset($_GET['setup_pwd']) && $_GET['setup_pwd'] == 1);
 ?>
 <div class="modal <?= $showSetup ? 'open' : '' ?>" id="setupPwdModal" style="z-index:80">
