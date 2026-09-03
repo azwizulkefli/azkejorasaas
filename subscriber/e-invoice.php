@@ -248,7 +248,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   <nav class="sidebar-nav">
     <a href="main.php" class="menu-item">🏠 Home</a>
     <a href="e-invoice.php" class="menu-item active">🧾 E-Invoice</a>
-    <a href="e-invoice_submitted.php" class="menu-item active">🧾 View Submitted</a>
+    <a href="e-invoice_submitted.php" class="menu-item">🧾 View Submitted</a>
     <div class="menu-section">Subscription</div>
     <a href="s_payment.php" class="menu-item">💳 Payment</a>
     <a href="s_report.php" class="menu-item">📄 Report</a>
@@ -325,8 +325,10 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
     </div>
 
     <!-- ========== STATISTICS ========== -->
-    <h2 style="font-size:20px;font-weight:700;margin-bottom:16px">📊 E-Invoice Summary</h2>
-      <button class="btn-config" onclick="self.location='e-invoice_submitted.php';"> View Submission Data</button>
+    <h2 style="font-size:20px;font-weight:700;margin-bottom:16px">📊 E-Invoice Summary &nbsp;&nbsp;
+          <button class="btn-config" onclick="self.location='e-invoice_submitted.php';"> View Submission Data</button>
+    </h2>
+
 
     <div class="summary-grid">
       <div class="summary-card">
