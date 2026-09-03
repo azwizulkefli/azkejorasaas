@@ -461,15 +461,15 @@ footer{border-top:1px solid var(--line);background:#fff;padding:40px 0}
   </div>
   <div class="cards3">
     <div class="card plan"><h3>Starter</h3><p style="color:var(--muted);font-size:14px;margin-top:4px">Perfect for sole proprietors & micro businesses</p>
-      <div class="price"><b>RM49</b><span>/ month</span></div>
+      <div class="price"><b>RM50</b><span>/ month</span></div>
       <ul><li>Up to 200 e-invoices / month</li><li>Manual entry + CSV upload</li><li>Live status tracking</li><li>LHDN invoice downloads</li><li>Email support</li></ul>
       <button class="btn ghost" onclick="openSignup()">Start Free Trial</button></div>
     <div class="card plan pop"><span class="flag">MOST POPULAR</span><h3>Growth</h3><p style="color:var(--muted);font-size:14px;margin-top:4px">Ideal for growing SMEs with regular invoicing</p>
-      <div class="price"><b>RM129</b><span>/ month</span></div>
+      <div class="price"><b>RM100</b><span>/ month</span></div>
       <ul><li>Up to 1,000 e-invoices / month</li><li>Bulk batch uploads</li><li>Credit note automation</li><li>Excel & PDF report exports</li><li>Priority support</li></ul>
       <button class="btn primary" onclick="openSignup()">Start Free Trial</button></div>
     <div class="card plan"><h3>Scale</h3><p style="color:var(--muted);font-size:14px;margin-top:4px">For multi-outlet retailers & large operations</p>
-      <div class="price"><b>RM299</b><span>/ month</span></div>
+      <div class="price"><b>RM200</b><span>/ month</span></div>
       <ul><li>Unlimited e-invoices</li><li>API + webhook integration</li><li>Custom user roles</li><li>Dedicated account manager</li><li>Advanced audit log</li></ul>
       <button class="btn ghost" onclick="openSignup()">Start Free Trial</button></div>
   </div>
