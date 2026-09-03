@@ -58,35 +58,38 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
     return ['send' => $jsonStr, 'convert' => $convertStr];
 }
 
-/* ================= HELPER: cURL API Calls (Fallback if not in lhdn_submit.php) ================= */
-if (!function_exists('submitToLHDN')) {
-    function submitToLHDN($pdo, $url, $invoiceData, $token) {
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_POST, true);
-        // The helper might expect an array and json_encode it, or a string. We handle both.
-        $payload = is_array($invoiceData) ? json_encode($invoiceData) : $invoiceData;
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json', 'Authorization: Bearer ' . $token]);
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        return ['code' => $httpCode, 'response' => $response];
-    }
+/* ================= HELPER: cURL API Calls (Custom Payload) ================= */
+// ✅ FIX: Renamed to avoid collision with submitToLHDN in lhdn_submit.php
+function submitCustomPayloadToLHDN($url, $invoiceData, $token) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_POST, true);
+    // Handles both array and string payloads
+    $payload = is_array($invoiceData) ? json_encode($invoiceData) : $invoiceData;
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Content-Type: application/json', 
+        'Authorization: Bearer ' . $token
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['code' => $httpCode, 'response' => $response];
 }
 
-if (!function_exists('getStatusFromLHDN')) {
-    function getStatusFromLHDN($pdo, $url, $token) {
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Authorization: Bearer ' . $token]);
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        return ['code' => $httpCode, 'response' => $response];
-    }
+// ✅ FIX: Removed unused $pdo parameter
+function getStatusFromLHDN($url, $token) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Authorization: Bearer ' . $token
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['code' => $httpCode, 'response' => $response];
 }
 
 /* ================= HANDLE FILE UPLOAD ================= */
@@ -244,9 +247,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 continue;
             }
 
-            // FIXED: Decode JSON string to array to satisfy lhdn_submit.php type hint for Argument #3 ($invoiceData)
-            $payloadArray = json_decode($payloads['convert'], true);
-            $submitResult = submitToLHDN($pdo, $apiBaseUrl . '/api/v1.0/documentsubmissions', $payloadArray, $tokenValue);
+            // ✅ FIX: Use the renamed custom payload function
+            $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
             $submitResponse = json_decode($submitResult['response'], true);
             
             $submissionUid = $submitResponse['submissionUid'] ?? null;
@@ -269,8 +271,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $statusUrl = $apiBaseUrl . "/api/v1.0/documentsubmissions/{$submissionUid}";
                 $detailsUrl = $apiBaseUrl . "/api/v1.0/documents/{$uuid}/details";
                 
-                $statusResult = getStatusFromLHDN($pdo, $statusUrl, $tokenValue);
-                $detailsResult = getStatusFromLHDN($pdo, $detailsUrl, $tokenValue);
+                // ✅ FIX: Updated to match the new function signature (removed $pdo)
+                $statusResult = getStatusFromLHDN($statusUrl, $tokenValue);
+                $detailsResult = getStatusFromLHDN($detailsUrl, $tokenValue);
                 
                 $statusResponse = json_decode($statusResult['response'], true);
                 $detailsResponse = json_decode($detailsResult['response'], true);
