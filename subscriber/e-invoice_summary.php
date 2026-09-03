@@ -1,15 +1,14 @@
 <?php
 session_start();
 require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/settings.php'; // ✅ Provides $pdo and DB constants safely
 requireCustomer();
-
-$pdo = new PDO("pgsql:host=" . DB_HOST . ";dbname=" . DB_NAME, DB_USER, DB_PASS);
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 $uid = currentUserId();
 $summary = $_SESSION['einvoice_summary'] ?? ['submitted' => 0, 'in_progress' => 0, 'valid' => 0, 'invalid' => 0, 'error' => 0];
 unset($_SESSION['einvoice_summary']); // Clear after reading
 
+// $pdo is now safely available from the included files
 $stmt = $pdo->prepare("SELECT * FROM einvoice_consolidated WHERE user_id = ? ORDER BY created_at DESC LIMIT 20");
 $stmt->execute([$uid]);
 $submissions = $stmt->fetchAll(PDO::FETCH_ASSOC);
