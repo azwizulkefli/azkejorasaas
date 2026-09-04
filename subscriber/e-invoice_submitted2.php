@@ -7,12 +7,23 @@ requireCustomer();
 $uid = currentUserId();
 $me  = currentUser();
 
+// ---------------- DELETE RECORD ACTION HANDLER ----------------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_record') {
+    header('Content-Type: application/json');
+    $recordId = $_POST['id'] ?? '';
+    
+    $stmt = $pdo->prepare("DELETE FROM einvoice_records WHERE id = ? AND user_id = ?");
+    $stmt->execute([$recordId, $uid]);
+    
+    echo json_encode(['success' => true, 'message' => 'Record deleted successfully.']);
+    exit;
+}
+
 // ---------------- RESUBMIT / CHECK STATUS ACTION HANDLER ----------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'resubmit') {
     header('Content-Type: application/json');
     $recordId = $_POST['id'] ?? '';
     
-    // 1. Verify record belongs to user
     $chk = $pdo->prepare("SELECT * FROM einvoice_records WHERE id = ? AND user_id = ?");
     $chk->execute([$recordId, $uid]);
     $record = $chk->fetch(PDO::FETCH_ASSOC);
@@ -22,7 +33,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    // 2. Check company credentials and token from companies table
+    $isConsolidated = strtolower($record['submission_type'] ?? 'individual') === 'consolidated';
+
     $envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
     $tokenCol  = $envIsProd ? 'prod_token' : 'sandbox_token';
     $expiryCol = $envIsProd ? 'prod_token_expiry' : 'sandbox_token_expiry';
@@ -37,26 +49,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $expiry   = $companyData[$expiryCol] ?? null;
     
     if (empty($clientId)) {
-        echo json_encode([
-            'success' => false, 
-            'message' => 'LHDN API credentials not configured. Please go to E-Invoice → Company Config → Credentials.'
-        ]);
+        echo json_encode(['success' => false, 'message' => 'LHDN API credentials not configured. Please go to E-Invoice → Company Config → Credentials.']);
         exit;
     }
 
-    // 3. Auto-refresh token if missing or expired (with 60s buffer)
     $needsRefresh = empty($token) || ($expiry && strtotime($expiry) <= time() + 60);
-    
     if ($needsRefresh) {
         $tokenRes = myinvois_request_token($pdo, $uid);
         if (!$tokenRes['ok']) {
-            echo json_encode([
-                'success' => false, 
-                'message' => 'Failed to get LHDN token: ' . ($tokenRes['error'] ?? 'Unknown error')
-            ]);
+            echo json_encode(['success' => false, 'message' => 'Failed to get LHDN token: ' . ($tokenRes['error'] ?? 'Unknown error')]);
             exit;
         }
-        // Re-fetch to get the newly saved token from companies table
         $coCheck->execute([$uid]);
         $companyData = $coCheck->fetch(PDO::FETCH_ASSOC);
         $token = $companyData[$tokenCol] ?? '';
@@ -67,18 +70,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    // 4. Call LHDN API to check document status
-    $docUuid = $record['reference_uuid'] ?: $record['id'];
+    if ($isConsolidated && !empty($record['consolidated_id'])) {
+        $consStmt = $pdo->prepare("SELECT ei_uuid, lhdn_status FROM einvoice_consolidated WHERE id = ? AND user_id = ?");
+        $consStmt->execute([$record['consolidated_id'], $uid]);
+        $consRecord = $consStmt->fetch(PDO::FETCH_ASSOC);
+        $docUuid = $consRecord['ei_uuid'] ?? null;
+    } else {
+        $docUuid = $record['lhdn_uuid'] ?: $record['reference_uuid'];
+    }
+    
+    if (empty($docUuid)) {
+        echo json_encode(['success' => false, 'message' => 'LHDN Document UUID is missing. The document may still be processing or failed to submit properly.']);
+        exit;
+    }
+
     $envUrl  = myinvois_base_url($me);
     $apiUrl  = rtrim($envUrl, '/') . '/api/v1.0/documents/' . urlencode($docUuid);
     
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $apiUrl);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Accept: application/json',
-        'Authorization: Bearer ' . $token
-    ]);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Accept: application/json', 'Authorization: Bearer ' . $token]);
     curl_setopt($ch, CURLOPT_TIMEOUT, 30);
     
     $response  = curl_exec($ch);
@@ -94,6 +106,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         echo json_encode(['success' => false, 'message' => 'Token unauthorized. Please refresh token manually in Company Config.']);
         exit;
     }
+    if ($httpCode === 404) {
+        echo json_encode(['success' => false, 'message' => 'Document not found in LHDN (HTTP 404). UUID may be incorrect or document was rejected before validation.']);
+        exit;
+    }
     if ($httpCode !== 200) {
         echo json_encode(['success' => false, 'message' => 'LHDN API error (HTTP ' . $httpCode . '): ' . $response]);
         exit;
@@ -101,12 +117,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
     $responseData = json_decode($response, true);
     
-    // 5. "AI Intelligence" Smart Parsing
     $newStatus = 'pending';
-    $lhdnUuid = $record['lhdn_uuid'];
-    $lhdnSubmissionId = $record['lhdn_submission_id'];
-    $lhdnLongId = $record['lhdn_long_id'];
-    $validationErrors = $record['validation_errors'];
+    $lhdnUuid = $record['lhdn_uuid'] ?? null;
+    $lhdnSubmissionId = $record['lhdn_submission_id'] ?? null;
+    $lhdnLongId = $record['lhdn_long_id'] ?? null;
+    $validationErrors = $record['validation_errors'] ?? null;
 
     if (is_array($responseData)) {
         $rawStatus = strtolower($responseData['status'] ?? $responseData['documentStatus'] ?? $responseData['validationStatus'] ?? 'pending');
@@ -125,26 +140,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     }
 
-    // 6. Update Database
-    $updateStmt = $pdo->prepare("
-        UPDATE einvoice_records 
-        SET lhdn_status = ?, lhdn_response = ?, 
-            lhdn_uuid = COALESCE(NULLIF(?, ''), lhdn_uuid),
-            lhdn_submission_id = COALESCE(NULLIF(?, ''), lhdn_submission_id),
-            lhdn_long_id = COALESCE(NULLIF(?, ''), lhdn_long_id),
-            validation_errors = COALESCE(NULLIF(?, ''), validation_errors)
-        WHERE id = ?
-    ");
-    $updateStmt->execute([$newStatus, json_encode($responseData), $lhdnUuid, $lhdnSubmissionId, $lhdnLongId, $validationErrors, $recordId]);
+    if ($isConsolidated && !empty($record['consolidated_id'])) {
+        $updateStmt = $pdo->prepare("
+            UPDATE einvoice_consolidated 
+            SET lhdn_status = ?, lhdn_response = ?, 
+                ei_uuid = COALESCE(NULLIF(?, ''), ei_uuid),
+                ei_submission_id = COALESCE(NULLIF(?, ''), ei_submission_id),
+                lhdn_uuid = COALESCE(NULLIF(?, ''), lhdn_uuid),
+                lhdn_long_id = COALESCE(NULLIF(?, ''), lhdn_long_id)
+            WHERE id = ? AND user_id = ?
+        ");
+        $updateStmt->execute([$newStatus, json_encode($responseData), $lhdnUuid, $lhdnSubmissionId, $lhdnUuid, $lhdnLongId, $record['consolidated_id'], $uid]);
+        
+        $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ? WHERE consolidated_id = ? AND user_id = ?")
+            ->execute([$newStatus, $record['consolidated_id'], $uid]);
+    } else {
+        $updateStmt = $pdo->prepare("
+            UPDATE einvoice_records 
+            SET lhdn_status = ?, lhdn_response = ?, 
+                lhdn_uuid = COALESCE(NULLIF(?, ''), lhdn_uuid),
+                lhdn_submission_id = COALESCE(NULLIF(?, ''), lhdn_submission_id),
+                lhdn_long_id = COALESCE(NULLIF(?, ''), lhdn_long_id),
+                validation_errors = COALESCE(NULLIF(?, ''), validation_errors)
+            WHERE id = ? AND user_id = ?
+        ");
+        $updateStmt->execute([$newStatus, json_encode($responseData), $lhdnUuid, $lhdnSubmissionId, $lhdnLongId, $validationErrors, $recordId, $uid]);
+    }
 
     echo json_encode(['success' => true, 'message' => 'Status updated to: ' . strtoupper($newStatus), 'new_status' => $newStatus]);
     exit;
 }
 
-// ---------------- REST OF THE PAGE LOGIC (Pagination, Export, Fetching) ----------------
-// ... [Keep the exact same pagination, export, and fetching logic from the previous version] ...
-// (For brevity, I'm keeping the HTML/JS structure identical to the previous working version)
-
+// ---------------- REST OF THE PAGE LOGIC ----------------
 $perPageOptions = [10, 20, 50, 100, 200];
 $perPage = isset($_GET['per_page']) && in_array((int)$_GET['per_page'], $perPageOptions) ? (int)$_GET['per_page'] : 10;
 $page = isset($_GET['page']) && (int)$_GET['page'] > 0 ? (int)$_GET['page'] : 1;
@@ -153,7 +180,10 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $dateFrom = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
 $dateTo = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
 
-// Summary Statistics
+$envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
+// Base URL for the public share link (without 'api.' or '-api')
+$shareBaseUrl = $envIsProd ? 'https://myinvois.hasil.gov.my' : 'https://preprod.myinvois.hasil.gov.my';
+
 $summaryStmt = $pdo->prepare("SELECT 
     COUNT(*) as total_submitted,
     COUNT(CASE WHEN lhdn_status IN ('valid', 'validated', 'success') THEN 1 END) as total_valid,
@@ -163,22 +193,37 @@ $summaryStmt = $pdo->prepare("SELECT
 $summaryStmt->execute([$uid]);
 $summary = $summaryStmt->fetch(PDO::FETCH_ASSOC);
 
-// Fetch Data
-$whereClauses = ["user_id = ?"];
+$whereClauses = ["r.user_id = ?"];
 $params = [$uid];
-if ($search !== '') { $whereClauses[] = "(sale_no ILIKE ? OR customer_name ILIKE ?)"; $params[] = "%$search%"; $params[] = "%$search%"; }
-if ($dateFrom !== '') { $whereClauses[] = "created_at >= ?"; $params[] = $dateFrom . ' 00:00:00'; }
-if ($dateTo !== '') { $whereClauses[] = "created_at <= ?"; $params[] = $dateTo . ' 23:59:59'; }
+if ($search !== '') { $whereClauses[] = "(r.sale_no ILIKE ? OR r.customer_name ILIKE ?)"; $params[] = "%$search%"; $params[] = "%$search%"; }
+if ($dateFrom !== '') { $whereClauses[] = "r.created_at >= ?"; $params[] = $dateFrom . ' 00:00:00'; }
+if ($dateTo !== '') { $whereClauses[] = "r.created_at <= ?"; $params[] = $dateTo . ' 23:59:59'; }
 $whereSql = implode(' AND ', $whereClauses);
 
-$countStmt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE $whereSql");
+$countStmt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records r WHERE $whereSql");
 $countStmt->execute($params);
 $totalRecords = (int)$countStmt->fetchColumn();
 $totalPages = ceil($totalRecords / $perPage);
 
-$sql = "SELECT * FROM einvoice_records WHERE $whereSql ORDER BY created_at DESC LIMIT ? OFFSET ?";
-$params[] = $perPage; $params[] = $offset;
-$stmt = $pdo->prepare($sql); $stmt->execute($params);
+$sql = "
+    SELECT 
+        r.*,
+        c.ei_json AS cons_jsonsend,
+        c.lhdn_status AS cons_lhdn_status,
+        c.lhdn_response AS cons_lhdn_response,
+        c.ei_uuid AS cons_lhdn_uuid,
+        c.ei_submission_id AS cons_ei_submission_id,
+        c.lhdn_long_id AS cons_lhdn_long_id
+    FROM einvoice_records r
+    LEFT JOIN einvoice_consolidated c ON r.consolidated_id = c.id
+    WHERE $whereSql 
+    ORDER BY r.created_at DESC 
+    LIMIT ? OFFSET ?
+";
+$params[] = $perPage; 
+$params[] = $offset;
+$stmt = $pdo->prepare($sql); 
+$stmt->execute($params);
 $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $avatarSrc = $me['avatar_path'] ? '/' . $me['avatar_path'] : null;
@@ -200,7 +245,6 @@ function getStatusClass($status) {
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>E-Invoice Records — AZ Kejora SaaS</title>
 <style>
-/* ... [Keep all CSS from previous version] ... */
 :root{--ink:#131327;--bg:#F6F7FB;--brand:#5457e5;--violet:#8b5cf6;--muted:#64748b;--faint:#94a3b8;--line:#e2e8f0;--grad:linear-gradient(90deg,var(--brand),var(--violet));--card:0 1px 2px rgba(19,19,39,.06),0 12px 32px -16px rgba(19,19,39,.12)}
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink)}a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 .loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.92);backdrop-filter:blur(4px);display:none;place-items:center;z-index:9999}.loading-overlay.active{display:grid}
@@ -261,7 +305,7 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
     <a href="e-invoice_submitted.php" class="menu-item active">📋 View Submitted</a>
     <div class="menu-section">Subscription</div>
     <a href="s_payment.php" class="menu-item">💳 Payment</a>
-    <a href="s_report.php" class="menu-item"> Report</a>
+    <a href="s_report.php" class="menu-item">📄 Report</a>
     <div class="menu-section">Setup</div>
     <a href="company.php" class="menu-item">🏢 Company</a>
     <a href="users.php" class="menu-item">👥 Users</a>
@@ -321,23 +365,50 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
     <div class="card">
       <div class="table-responsive">
         <table>
-          <thead><tr><th style="width:50px">No</th><th>Sale No</th><th>Sale Date</th><th>Customer Details</th><th>Category</th><th style="text-align:right">Sale Total</th><th>Submitted Date</th><th>LHDN Status</th><th style="width:100px">Action</th></tr></thead>
+          <thead><tr><th style="width:50px">No</th><th>Sale No</th><th>Sale Date</th><th>Customer Details</th><th>Category</th><th style="text-align:right">Sale Total</th><th>Submitted Date</th><th>LHDN Status</th><th style="width:140px">Action</th></tr></thead>
           <tbody>
             <?php if (empty($records)): ?>
               <tr><td colspan="9" style="text-align:center;padding:48px 16px;color:var(--faint)"><div style="font-size:32px;margin-bottom:8px">📭</div>No e-invoice records found matching your criteria.</td></tr>
             <?php else: ?>
               <?php foreach ($records as $index => $row): 
                 $no = $offset + $index + 1;
-                $status = strtolower($row['lhdn_status'] ?? 'pending');
+                
+                $isConsolidated = strtolower($row['submission_type'] ?? 'individual') === 'consolidated';
+                $displayStatus = $isConsolidated ? ($row['cons_lhdn_status'] ?? $row['lhdn_status']) : $row['lhdn_status'];
+                $displayResponse = $isConsolidated ? ($row['cons_lhdn_response'] ?? $row['lhdn_response']) : $row['lhdn_response'];
+                $displayJsonSend = $isConsolidated ? ($row['cons_jsonsend'] ?? $row['lhdn_jsonsend']) : $row['lhdn_jsonsend'];
+                $displayLhdnUuid = $isConsolidated ? ($row['cons_lhdn_uuid'] ?? $row['lhdn_uuid']) : $row['lhdn_uuid'];
+                $displaySubmissionId = $isConsolidated ? ($row['cons_ei_submission_id'] ?? $row['lhdn_submission_id']) : $row['lhdn_submission_id'];
+                $displayLhdnLongId = $isConsolidated ? ($row['cons_lhdn_long_id'] ?? $row['lhdn_long_id']) : $row['lhdn_long_id'];
+
+                if (is_array($displayResponse)) $displayResponse = json_encode($displayResponse);
+
+                $status = strtolower($displayStatus ?? 'pending');
                 $isValid = in_array($status, ['valid', 'validated', 'success']);
                 $isPending = in_array($status, ['submitted', 'processing', 'in_progress', 'pending', 'new']);
-                $hasResponse = !empty($row['lhdn_response']);
+                $isInvalid = in_array($status, ['invalid', 'error', 'fail', 'failed', 'rejected']);
+                
                 $saleDate = $row['sale_datetime'] ? date('d M Y', strtotime($row['sale_datetime'])) : date('d M Y', strtotime($row['created_at']));
                 $submitDate = date('d M Y, H:i', strtotime($row['created_at']));
+
+                // Generate LHDN Share URL if valid and IDs exist
+                $shareUrl = '';
+                if ($isValid && !empty($displayLhdnLongId) && !empty($displaySubmissionId)) {
+                    $shareUrl = $shareBaseUrl . '/' . rawurlencode($displayLhdnUuid) . '/share/' . rawurlencode($displayLhdnLongId);
+                }
               ?>
                 <tr>
                   <td style="color:var(--faint);font-weight:600"><?= $no ?></td>
-                  <td><b><?= htmlspecialchars($row['sale_no'] ?? '—') ?></b></td>
+                  
+                  <td>
+                    <b><?= htmlspecialchars($row['sale_no'] ?? '—') ?></b>
+                    <?php if ($isConsolidated && !empty($row['consolidated_id'])): ?>
+                      <div style="font-size:10px;color:var(--faint);font-family:ui-monospace,monospace;margin-top:4px;word-break:break-all" title="Consolidated ID">
+                        📦 <?= htmlspecialchars($row['consolidated_id']) ?>
+                      </div>
+                    <?php endif; ?>
+                  </td>
+                  
                   <td><?= htmlspecialchars($saleDate) ?></td>
                   <td>
                     <div style="font-weight:700;color:var(--ink)"><?= htmlspecialchars($row['customer_name'] ?? '—') ?></div>
@@ -351,26 +422,53 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                   </td>
                   <td>
                     <div style="font-weight:600;color:var(--ink);font-size:13px"><?= getCategory($row['document_type']) ?></div>
-                    <?php if (($row['submission_type'] ?? '') === 'consolidated' && !empty($row['consolidated_id'])): ?>
-                      <div style="font-size:11px;color:var(--brand);margin-top:6px;font-family:ui-monospace,monospace;background:#eef1ff;padding:3px 8px;border-radius:6px;display:inline-flex;align-items:center;gap:4px" title="Consolidated ID: <?= htmlspecialchars($row['consolidated_id']) ?>">📦 <?= htmlspecialchars(substr($row['consolidated_id'], 0, 8)) ?>...</div>
-                    <?php endif; ?>
                   </td>
                   <td style="text-align:right;font-weight:700;font-family:ui-monospace,monospace">RM <?= number_format($row['total_amount'], 2) ?></td>
-                  <td style="font-size:13px;color:var(--muted)"><?= htmlspecialchars($submitDate) ?></td>
-                  <td><span class="badge <?= getStatusClass($row['lhdn_status']) ?>"><?= htmlspecialchars(strtoupper($row['lhdn_status'] ?? 'PENDING')) ?></span></td>
+                  
+                  <td style="font-size:13px;color:var(--muted)">
+                    <?= htmlspecialchars($submitDate) ?>
+                    <div style="font-size:10px;color:var(--faint);margin-top:4px;text-transform:capitalize">
+                      <?= htmlspecialchars($row['submission_type'] ?? 'individual') ?>
+                    </div>
+                    <?php if (in_array($status, ['submitted', 'processing', 'in_progress', 'pending']) && !empty($displayLhdnUuid)): ?>
+                      <div style="font-size:10px;color:var(--faint);font-family:ui-monospace,monospace;margin-top:4px;word-break:break-all" title="LHDN UUID">
+                        🆔 <?= htmlspecialchars($displayLhdnUuid) ?>
+                      </div>
+                    <?php endif; ?>
+                  </td>
+                  
+                  <td><span class="badge <?= getStatusClass($displayStatus) ?>"><?= htmlspecialchars(strtoupper($displayStatus ?? 'PENDING')) ?></span></td>
                   <td>
                     <div class="action-btns">
-                      <?php if ($isPending): ?>
+                      <button class="action-btn" title="View JSON Sent" onclick="openJsonModal(<?= htmlspecialchars(json_encode($displayJsonSend ?? '{}'), ENT_QUOTES) ?>, 'JSON Sent to LHDN')">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M10 12l-2 2 2 2"></path><path d="M14 12l2 2-2 2"></path></svg>
+                      </button>
+
+                      <button class="action-btn" title="View JSON Response" onclick="openJsonModal(<?= htmlspecialchars(json_encode($displayResponse ?? '{}'), ENT_QUOTES) ?>, 'JSON Response from LHDN')">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M8 10h8"></path><path d="M8 14h4"></path></svg>
+                      </button>
+
+                      <?php if ($isPending && !$isConsolidated): ?>
                         <button class="action-btn" title="Check Status / Resubmit" onclick="resubmitRecord('<?= htmlspecialchars($row['id']) ?>')">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
                         </button>
                       <?php elseif ($isValid): ?>
-                        <button class="action-btn" title="View LHDN E-Invoice" onclick="openInvoiceModal(<?= htmlspecialchars(json_encode($row), ENT_QUOTES) ?>)">
+                        <?php if (!empty($shareUrl)): ?>
+                          <a href="<?= htmlspecialchars($shareUrl) ?>" target="_blank" class="action-btn" title="View LHDN E-Invoice (New Tab)">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                          </a>
+                        <?php endif; ?>
+                        <button class="action-btn" title="View Details" onclick="openInvoiceModal(<?= htmlspecialchars(json_encode(array_merge($row, [
+                            'lhdn_status' => $displayStatus,
+                            'lhdn_response' => $displayResponse,
+                            'lhdn_uuid' => $displayLhdnUuid,
+                            'lhdn_submission_id' => $displaySubmissionId
+                        ])), ENT_QUOTES) ?>)">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                         </button>
-                      <?php elseif ($hasResponse): ?>
-                        <button class="action-btn danger" title="View Error Details" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response']), ENT_QUOTES) ?>)">
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+                      <?php elseif ($isInvalid): ?>
+                        <button class="action-btn danger" title="Delete Record (Re-upload Required)" onclick="deleteRecord('<?= htmlspecialchars($row['id']) ?>')">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
                         </button>
                       <?php endif; ?>
                     </div>
@@ -400,7 +498,7 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
 
 <!-- Modals (Invoice & JSON) -->
 <div class="modal" id="invoiceModal" onclick="if(event.target===this)closeModal('invoiceModal')"><div class="modal-card"><div class="modal-header"><h3>📄 LHDN E-Invoice Details</h3><button class="modal-close" onclick="closeModal('invoiceModal')">✕</button></div><div id="invoiceModalContent"></div><div style="margin-top:20px;display:flex;gap:10px"><button class="btn primary" style="flex:1" onclick="alert('PDF download feature would be triggered here.')">⬇ Download PDF</button><button class="btn ghost" style="flex:1" onclick="closeModal('invoiceModal')">Close</button></div></div></div>
-<div class="modal" id="jsonModal" onclick="if(event.target===this)closeModal('jsonModal')"><div class="modal-card"><div class="modal-header"><h3> LHDN API Response (JSON)</h3><button class="modal-close" onclick="closeModal('jsonModal')">✕</button></div><pre class="json-block" id="jsonModalContent"></pre><div style="margin-top:16px;text-align:right"><button class="btn ghost" onclick="copyJson()">📋 Copy to Clipboard</button><button class="btn primary" onclick="closeModal('jsonModal')" style="margin-left:8px">Close</button></div></div></div>
+<div class="modal" id="jsonModal" onclick="if(event.target===this)closeModal('jsonModal')"><div class="modal-card"><div class="modal-header"><h3 id="jsonModalTitle">LHDN API Response (JSON)</h3><button class="modal-close" onclick="closeModal('jsonModal')">✕</button></div><pre class="json-block" id="jsonModalContent"></pre><div style="margin-top:16px;text-align:right"><button class="btn ghost" onclick="copyJson()">📋 Copy to Clipboard</button><button class="btn primary" onclick="closeModal('jsonModal')" style="margin-left:8px">Close</button></div></div></div>
 
 <script>
 function toggleSidebar(){document.getElementById('sidebar').classList.toggle('open');document.getElementById('sidebarOverlay').classList.toggle('open');}
@@ -411,8 +509,27 @@ function openInvoiceModal(record){
   content.innerHTML = `<div class="detail-grid"><div class="detail-item"><label>Sale No</label><span>${record.sale_no || '—'}</span></div><div class="detail-item"><label>Document Type</label><span>${record.document_type || '—'}</span></div><div class="detail-item"><label>Customer Name</label><span>${record.customer_name || '—'}</span></div><div class="detail-item"><label>Customer TIN</label><span>${record.customer_tin || '—'}</span></div><div class="detail-item"><label>Sale Amount</label><span>RM ${parseFloat(record.sale_amount || 0).toFixed(2)}</span></div><div class="detail-item"><label>Total Amount</label><span style="color:var(--brand);font-weight:800">RM ${parseFloat(record.total_amount || 0).toFixed(2)}</span></div><div class="detail-item"><label>LHDN Status</label><span style="text-transform:uppercase">${record.lhdn_status || 'PENDING'}</span></div><div class="detail-item"><label>Submission Date</label><span>${saleDate}</span></div></div>${record.lhdn_submission_id ? `<div class="detail-item" style="margin-bottom:16px"><label>LHDN Submission ID</label><span style="font-family:monospace;font-size:12px">${record.lhdn_submission_id}</span></div>` : ''}`;
   document.getElementById('invoiceModal').classList.add('open');document.body.style.overflow='hidden';
 }
-function openJsonModal(jsonString){try{const parsed = JSON.parse(jsonString);document.getElementById('jsonModalContent').textContent = JSON.stringify(parsed, null, 2);}catch(e){document.getElementById('jsonModalContent').textContent = jsonString;}document.getElementById('jsonModal').classList.add('open');document.body.style.overflow='hidden';}
+function openJsonModal(jsonString, modalTitle = 'LHDN API Response (JSON)'){
+  try {
+    let parsed = jsonString;
+    if (typeof jsonString === 'string') {
+      if (jsonString.trim() === '') {
+        parsed = { "message": "No JSON data available for this record." };
+      } else {
+        parsed = JSON.parse(jsonString);
+      }
+    }
+    document.getElementById('jsonModalContent').textContent = JSON.stringify(parsed, null, 2);
+  } catch(e) {
+    document.getElementById('jsonModalContent').textContent = jsonString || 'No JSON data available';
+  }
+  const titleEl = document.getElementById('jsonModalTitle');
+  if (titleEl) titleEl.textContent = modalTitle;
+  document.getElementById('jsonModal').classList.add('open');
+  document.body.style.overflow='hidden';
+}
 function copyJson(){const text = document.getElementById('jsonModalContent').textContent;navigator.clipboard.writeText(text).then(() => alert('JSON copied to clipboard!')).catch(() => alert('Failed to copy.'));}
+
 function resubmitRecord(recordId){
   if(!confirm('Check LHDN status for this record? This will refresh the token if expired and query the LHDN API.')) return;
   document.getElementById('loadingOverlay').classList.add('active');
@@ -424,6 +541,25 @@ function resubmitRecord(recordId){
     else{alert('Error: ' + (data.message || 'Failed to update status.'));}
   }).catch(error => {document.getElementById('loadingOverlay').classList.remove('active');console.error('Error:', error);alert('A network error occurred.');});
 }
+
+function deleteRecord(recordId) {
+  if (!confirm('Are you sure you want to delete this invalid/error record? You will need to correct and re-upload the data.')) return;
+  document.getElementById('loadingOverlay').classList.add('active');
+  const formData = new FormData();
+  formData.append('action', 'delete_record');
+  formData.append('id', recordId);
+  fetch(window.location.href, {method: 'POST', body: formData})
+  .then(response => response.json()).then(data => {
+    document.getElementById('loadingOverlay').classList.remove('active');
+    if (data.success) {
+      alert(data.message || 'Record deleted successfully!');
+      window.location.reload();
+    } else {
+      alert('Error: ' + (data.message || 'Failed to delete record.'));
+    }
+  }).catch(error => {document.getElementById('loadingOverlay').classList.remove('active');console.error('Error:', error);alert('A network error occurred.');});
+}
+
 document.addEventListener('keydown', function(e){if(e.key === 'Escape'){closeModal('invoiceModal');closeModal('jsonModal');}});
 </script>
 </body>
