@@ -310,7 +310,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
       <a href="e-invoice_upload.php" class="submit-card action-link">
         <span class="blob" style="background:#fef3c7"></span>
         <span class="ic-tile" style="background:linear-gradient(135deg,#f59e0b,#f97316)">📤</span>
-        <h3>Upload Excel / CSV</h3>
+        <h3>Upload CSV</h3>
         <p>Bulk upload your invoices from spreadsheets. We'll extract line items, compute SST, validate TINs and submit to LHDN in one batch.</p>
         <span class="arrow">Upload files →</span>
       </a>
