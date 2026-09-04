@@ -327,9 +327,6 @@ if (isset($_GET['ajax_action'])) {
                 );
 
                 if ($isInvalidTin) {
-                    // LHDN strictly forbids General TIN (EI00000000010) on Individual e-Invoices (ERR237).
-                    // If the customer's IC is not recognized as a valid TIN by LHDN, we MUST convert 
-                    // this invoice to a Consolidated batch to use the General TIN legally.
                     $pdo->prepare("UPDATE einvoice_records SET customer_tin = 'EI00000000010', submission_type = 'consolidated', lhdn_status = NULL, lhdn_uuid = NULL, lhdn_submission_id = NULL, lhdn_response = ? WHERE id = ?")
                         ->execute([json_encode(['auto_converted' => true, 'reason' => 'Invalid TIN (ERR406/ERR409)', 'original_error' => $combined]), $indRec['id']]);
                     
@@ -474,20 +471,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                         $validCount = 0; $invalidCount = 0;
                         foreach ($result['rows'] as $row) {
                             $row = normalizeInvoiceRecord($row);
-                            $validation = validateInvoiceRecord($row);
-                            $status = $validation['valid'] ? 'valid' : 'invalid';
-                            $errors = $validation['valid'] ? null : json_encode($validation['errors']);
 
-                            $email = $row['customer_email'] ?? '';
-                            $ic = $row['customer_ic'] ?? '';
+                            /* ✅ NEW RULE: fail ONLY when sale date is more than 72 hours in the future */
+                            $saleTs = strtotime(trim((string)($row['sale_datetime'] ?? '')));
+                            if (!$saleTs) $saleTs = time();
+                            $saleDatetime = date('Y-m-d H:i:s', $saleTs);
+
+                            $errors = [];
+                            if ($saleTs > (time() + 72 * 3600)) {
+                                $errors[] = 'Sale date is more than 72 hours in the future';
+                            }
+                            $status = empty($errors) ? 'valid' : 'invalid';
+                            $errorsJson = $status === 'valid' ? null : json_encode($errors);
+
+                            /* ✅ FLAG: email + 12-digit IC = individual; otherwise consolidated (still verified) */
+                            $email = trim((string)($row['customer_email'] ?? ''));
+                            $ic = trim((string)($row['customer_ic'] ?? ''));
                             $cleanIC = preg_replace('/[-\s]/', '', $ic);
-                            
-                            $isEmailValid = filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
-                            $isICValid = preg_match('/^\d{12}$/', $cleanIC);
 
-                            if ($isEmailValid && $isICValid) {
+                            if ($email !== '' && preg_match('/^\d{12}$/', $cleanIC)) {
                                 $submissionType = 'individual';
-                                $customerTin = $cleanIC; 
+                                $customerTin = $cleanIC;
                             } else {
                                 $submissionType = 'consolidated';
                                 $customerTin = 'EI00000000010';
@@ -497,9 +501,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                                 $uploadId, $uid, $row['document_type'] ?? '01', $row['sale_no'] ?? '', $row['customer_name'] ?? '', $row['customer_address'] ?? '', 
                                 $row['customer_postcode'] ?? '', $row['customer_phone'] ?? '', $email, $ic, 
                                 $row['customer_type'] ?? 'general', $row['sale_title'] ?? '', (float)($row['sale_amount'] ?? 0), (float)($row['sale_tax'] ?? 0), 
-                                (float)($row['total_amount'] ?? 0), $row['sale_datetime'] ?? date('Y-m-d H:i:s'), $status, $errors, $submissionType, $customerTin
+                                (float)($row['total_amount'] ?? 0), $saleDatetime, $status, $errorsJson, $submissionType, $customerTin
                             ]);
-                            $validation['valid'] ? $validCount++ : $invalidCount++;
+                            $status === 'valid' ? $validCount++ : $invalidCount++;
                         }
                         $pdo->prepare("UPDATE einvoice_uploads SET valid_records = ?, invalid_records = ?, status = 'completed' WHERE id = ?")->execute([$validCount, $invalidCount, $uploadId]);
                         $pdo->commit();
@@ -562,6 +566,7 @@ $uploadsList = $uploads->fetchAll(PDO::FETCH_ASSOC);
 $currentUpload = null;
 $recTotal = 0;
 $agg = ['valid' => 0, 'invalid' => 0, 'amount' => 0, 'submittable' => 0];
+$typeCounts = ['ind' => 0, 'cons' => 0];
 $lhdnStats = ['pending' => 0, 'submitted' => 0, 'valid' => 0, 'invalid' => 0, 'error' => 0, 'total' => 0, 'done' => 0];
 
 if (isset($_GET['upload'])) {
@@ -573,6 +578,11 @@ if (isset($_GET['upload'])) {
         $a = $pdo->prepare("SELECT COUNT(*) FILTER (WHERE validation_status='valid') AS valid, COUNT(*) FILTER (WHERE validation_status='invalid') AS invalid, COALESCE(SUM(total_amount),0) AS amount, COUNT(*) FILTER (WHERE validation_status='valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending')) AS submittable FROM einvoice_records WHERE upload_id = ?");
         $a->execute([$currentUpload['id']]); 
         $agg = $a->fetch(PDO::FETCH_ASSOC);
+
+        /* ✅ NEW: individual vs consolidated counters */
+        $tc = $pdo->prepare("SELECT COUNT(*) FILTER (WHERE submission_type='individual') AS ind, COUNT(*) FILTER (WHERE submission_type='consolidated') AS cons FROM einvoice_records WHERE upload_id = ?");
+        $tc->execute([$currentUpload['id']]);
+        $typeCounts = $tc->fetch(PDO::FETCH_ASSOC);
 
         $st = $pdo->prepare("SELECT 
             COUNT(*) FILTER (WHERE lhdn_status IS NULL OR lhdn_status = 'Pending') as pending,
@@ -730,11 +740,13 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
       <div class="card">
         <h2>Validation Results</h2>
         <p class="msub"><?= htmlspecialchars($currentUpload['filename']) ?> · Uploaded <?= date('M d, H:i', strtotime($currentUpload['created_at'])) ?></p>
-        <div class="summary-grid" style="grid-template-columns: repeat(4, 1fr);">
+        <!-- ✅ UPDATED: removed Total Amount; added Individual / Consolidated counters -->
+        <div class="summary-grid">
           <div class="summary-card"><b><?= $recTotal ?></b><p>Total Records</p></div>
           <div class="summary-card"><b style="color:#059669"><?= $agg['valid'] ?></b><p>Verified</p></div>
           <div class="summary-card"><b style="color:#e11d48"><?= $agg['invalid'] ?></b><p>Failed</p></div>
-          <div class="summary-card"><b><?= number_format((float)$agg['amount'], 2) ?></b><p>Total Amount (RM)</p></div>
+          <div class="summary-card"><b style="color:#4644cf"><?= (int)$typeCounts['ind'] ?></b><p>Individual</p></div>
+          <div class="summary-card"><b style="color:#d97706"><?= (int)$typeCounts['cons'] ?></b><p>Consolidated</p></div>
         </div>
       </div>
 
