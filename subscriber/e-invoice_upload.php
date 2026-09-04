@@ -30,32 +30,48 @@ function logInternal($pdo, $submissionId, $step, $status, $message, $payload = n
     $stmt->execute([$submissionId, $step, $status, $message, $payload ? (is_array($payload) ? json_encode($payload) : $payload) : null]);
 }
 
-function validateTINWithLHDN($tin, $icno, $apiBaseUrl, $token) {
+// ✅ NEW: Search for the actual TIN using IC / NRIC (Based on your sample code)
+function searchTINWithLHDN($icno, $apiBaseUrl, $token) {
     $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
-    if (strlen($cleanIc) !== 12) return false;
+    if (strlen($cleanIc) !== 12) return ['found' => false, 'tin' => null];
     
-    $url = $apiBaseUrl . "/api/v1.0/taxpayer/validate/" . urlencode($tin) . "?idType=NRIC&idValue=" . urlencode($cleanIc);
+    $url = $apiBaseUrl . '/api/v1.0/taxpayer/search/tin?' . http_build_query([
+        'idType'  => 'NRIC',
+        'idValue' => $cleanIc
+    ]);
     
     $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        "Authorization: Bearer " . $token,
-        "Content-Type: application/json",
-        "Accept: application/json"
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_HTTPHEADER     => [
+            'Authorization: Bearer ' . $token,
+            'Accept: application/json'
+        ]
     ]);
     
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     
-    return ($httpCode === 200);
+    if ($httpCode === 200) {
+        $data = json_decode($response, true);
+        // Extract TIN from various possible LHDN response formats
+        if (is_array($data)) {
+            if (isset($data[0]['tin'])) return ['found' => true, 'tin' => $data[0]['tin']];
+            if (isset($data['tin'])) return ['found' => true, 'tin' => $data['tin']];
+            if (isset($data['taxPayerTin'])) return ['found' => true, 'tin' => $data['taxPayerTin']];
+        } elseif (is_string($data)) {
+             return ['found' => true, 'tin' => $data];
+        }
+    }
+    
+    return ['found' => false, 'tin' => null, 'http' => $httpCode];
 }
 
 function findErrorInArray($arr) {
     if (!is_array($arr)) return null;
     
-    // 1. Check direct error keys first
     foreach (['error', 'message', 'errorMessages', 'validationErrors', 'curl_error', 'description', 'errors'] as $k) {
         if (isset($arr[$k]) && $arr[$k]) {
             $err = is_string($arr[$k]) ? $arr[$k] : json_encode($arr[$k]);
@@ -69,7 +85,6 @@ function findErrorInArray($arr) {
         }
     }
     
-    // 2. Recursively check nested arrays (including rejectedDocuments)
     foreach (['submission', 'details', 'raw', 'rejectedDocuments'] as $k) {
         if (isset($arr[$k]) && is_array($arr[$k])) {
             if ($k === 'rejectedDocuments') {
@@ -323,27 +338,26 @@ if (isset($_GET['ajax_action'])) {
             if ($indRec) {
                 $tin = $indRec['customer_tin'] ?? '';
                 $icno = $indRec['customer_ic'] ?? '';
+                $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
                 $useGeneralTin = false;
 
-                if (empty($tin) || $tin === 'EI00000000010') {
-                    $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
-                    if (strlen($cleanIc) === 12) {
-                        $tin = $cleanIc;
+                // ✅ NEW LOGIC: If TIN is missing, general, or incorrectly set to the IC number itself, SEARCH for the real TIN
+                if ((empty($tin) || $tin === 'EI00000000010' || preg_match('/^\d{12}$/', $tin)) && strlen($cleanIc) === 12) {
+                    
+                    $searchResult = searchTINWithLHDN($cleanIc, $apiBaseUrl, $tokenValue);
+                    
+                    if ($searchResult['found'] && !empty($searchResult['tin'])) {
+                        $tin = $searchResult['tin']; // e.g., C1234567890
+                        // Save the real TIN to the database
+                        $pdo->prepare("UPDATE einvoice_records SET customer_tin = ? WHERE id = ?")->execute([$tin, $indRec['id']]);
+                        $indRec['customer_tin'] = $tin;
                     } else {
+                        // LHDN doesn't have a TIN for this IC. Fallback to General TIN (Consolidated).
                         $useGeneralTin = true;
                     }
-                }
-
-                if (!$useGeneralTin && !empty($tin) && $tin !== 'EI00000000010') {
-                    $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
-                    if (strlen($cleanIc) === 12) {
-                        $isValid = validateTINWithLHDN($tin, $cleanIc, $apiBaseUrl, $tokenValue);
-                        if (!$isValid) {
-                            $useGeneralTin = true;
-                        }
-                    } else {
-                        $useGeneralTin = true;
-                    }
+                } elseif (empty($tin) || $tin === 'EI00000000010') {
+                    // No IC provided to search with, must fallback
+                    $useGeneralTin = true;
                 }
 
                 if ($useGeneralTin) {
@@ -356,7 +370,7 @@ if (isset($_GET['ajax_action'])) {
                         'id' => (string)$indRec['id'], 
                         'sale_no' => $indRec['sale_no'], 
                         'status' => 'Pending', 
-                        'error_msg' => 'Invalid TIN/IC. Auto-converted to Consolidated e-Invoice.'
+                        'error_msg' => 'No registered TIN found for IC. Auto-converted to Consolidated.'
                     ]);
                     exit;
                 }
@@ -375,7 +389,6 @@ if (isset($_GET['ajax_action'])) {
                 $submissionUid = $submitResponse['submissionUid'] ?? null;
                 $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
                 
-                // ✅ Check for immediate rejection (e.g., validation errors before acceptance)
                 $isRejected = empty($submissionUid) && !empty($submitResponse['rejectedDocuments']);
                 $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300 && !$isRejected) ? 'Submitted' : 'Error';
 
@@ -431,12 +444,11 @@ if (isset($_GET['ajax_action'])) {
                     'customer_ic' => '000000000000', 
                     'total_amount' => $grandTotal,
                     'sale_datetime' => $saleDate . ' 23:59:59', 
-                    'document_type' => '15' // ✅ CRITICAL: 15 = Consolidated e-Invoice (Fixes "Invalid document type/version" error)
+                    'document_type' => '15' // ✅ 15 = Consolidated e-Invoice
                 ];
 
                 $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
 
-                // ✅ STEP 1: Insert into einvoice_consolidated FIRST
                 $consolStmt = $pdo->prepare("
                     INSERT INTO einvoice_consolidated (
                         user_id, sale_date, total_records, total_amount, total_tax, grand_total, submission_status, ei_json, ei_convert
@@ -448,13 +460,11 @@ if (isset($_GET['ajax_action'])) {
                 ]);
                 $consolidatedId = $consolStmt->fetchColumn();
 
-                // ✅ STEP 2: Link all records to this new consolidated ID
                 $recordIds = array_map('strval', array_column($records, 'id'));
                 $placeholders = implode(',', array_fill(0, count($recordIds), '?'));
                 $linkStmt = $pdo->prepare("UPDATE einvoice_records SET consolidated_id = ? WHERE id IN ($placeholders)");
                 $linkStmt->execute(array_merge([$consolidatedId], $recordIds));
 
-                // ✅ STEP 3: Submit to LHDN
                 $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
 
                 if ($submitResult['code'] == 401) {
@@ -468,7 +478,6 @@ if (isset($_GET['ajax_action'])) {
                 $submissionUid = $submitResponse['submissionUid'] ?? null;
                 $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
                 
-                // ✅ Check for immediate rejection
                 $isRejected = empty($submissionUid) && !empty($submitResponse['rejectedDocuments']);
                 $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300 && !$isRejected) ? 'Submitted' : 'Error';
 
@@ -492,11 +501,9 @@ if (isset($_GET['ajax_action'])) {
                 
                 $errMsg = findErrorInArray($combined);
 
-                // ✅ STEP 4: Update einvoice_records with LHDN results
                 $updateRecStmt = $pdo->prepare("UPDATE einvoice_records SET lhdn_jsonsend = ?, lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id IN ($placeholders)");
                 $updateRecStmt->execute(array_merge([$payloads['send'], $docStatus, $uuid, $submissionUid, $longId, json_encode($combined)], $recordIds));
 
-                // ✅ STEP 5: Update einvoice_consolidated with ALL LHDN results
                 $updateConsolStmt = $pdo->prepare("
                     UPDATE einvoice_consolidated 
                     SET ei_submission_id = ?, 
@@ -582,7 +589,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
 
                             if ($email !== '' && preg_match('/^\d{12}$/', $cleanIC)) {
                                 $submissionType = 'individual';
-                                $customerTin = $cleanIC; 
+                                $customerTin = $cleanIC; // Tentative, will be searched/replaced during submission
                             } else {
                                 $submissionType = 'consolidated';
                                 $customerTin = 'EI00000000010';
