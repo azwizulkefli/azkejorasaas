@@ -185,38 +185,6 @@ tbody tr:hover{background:#f8fafc}
       <div class="summary-card"><b style="color:#64748b"><?= number_format($summary['error']) ?></b><p>Total Error</p></div>
     </div>
 
-    <div class="card">
-      <h2>Recent Consolidated Submissions</h2>
-      <div class="table-responsive">
-        <table>
-          <thead>
-            <tr>
-              <th>Sale Date</th>
-              <th>Records</th>
-              <th>Grand Total</th>
-              <th>LHDN Status</th>
-              <th>Submission ID</th>
-              <th>Timestamp</th>
-            </tr>
-          </thead>
-          <tbody>
-            <?php foreach ($submissions as $sub): ?>
-              <tr>
-                <td><b><?= htmlspecialchars($sub['sale_date'] ? date('d M Y', strtotime($sub['sale_date'])) : '—') ?></b></td>
-                <td><?= number_format($sub['total_records']) ?></td>
-                <td>RM <?= number_format($sub['grand_total'], 2) ?></td>
-                <td><span class="badge <?= strtolower($sub['lhdn_status'] ?: 'processing') ?>"><?= htmlspecialchars(ucfirst($sub['lhdn_status'] ?: 'Processing')) ?></span></td>
-                <td style="font-family:monospace;font-size:12px"><?= htmlspecialchars($sub['ei_submission_id'] ?? '—') ?></td>
-                <td><?= date('M d, H:i', strtotime($sub['created_at'])) ?></td>
-              </tr>
-            <?php endforeach; ?>
-            <?php if (empty($submissions)): ?>
-              <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--faint)">No consolidated submissions found.</td></tr>
-            <?php endif; ?>
-          </tbody>
-        </table>
-      </div>
-    </div>
 
     <div style="display:flex;gap:12px;margin-top:24px">
       <a href="e-invoice_submitted.php" class="btn primary">View All Submissions</a>
