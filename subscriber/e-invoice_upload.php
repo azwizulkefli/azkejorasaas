@@ -341,8 +341,8 @@ if (isset($_GET['ajax_action'])) {
                     exit;
                 }
 
-                $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id = ?")
-                    ->execute([$docStatus, $uuid, $submissionUid, $longId, json_encode($combined), $indRec['id']]);
+                $pdo->prepare("UPDATE einvoice_records SET lhdn_jsonsend = ?, lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id = ?")
+                    ->execute([$payloads['send'], $docStatus, $uuid, $submissionUid, $longId, json_encode($combined), $indRec['id']]);
 
                 echo json_encode(['done' => false, 'type' => 'individual', 'id' => (string)$indRec['id'], 'sale_no' => $indRec['sale_no'], 'status' => $docStatus, 'uuid' => $uuid, 'submission_id' => $submissionUid, 'long_id' => $longId, 'error_msg' => $errMsg]);
                 exit;
@@ -402,9 +402,9 @@ if (isset($_GET['ajax_action'])) {
                 $errMsg = findErrorInArray($combined);
 
                 $recordIds = array_map('strval', array_column($records, 'id'));
-                $placeholders = implode(',', array_fill(0, count($recordIds), '?'));
-                $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id IN ($placeholders)")
-                    ->execute(array_merge([$docStatus, $uuid, $submissionUid, $longId, json_encode($combined)], $recordIds));
+                $placeholders = implode(',', array_fill(0, count($recordIds), '?'));                
+                $pdo->prepare("UPDATE einvoice_records SET lhdn_jsonsend = ?, lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id IN ($placeholders)")
+                    ->execute(array_merge([$payloads['send'], $docStatus, $uuid, $submissionUid, $longId, json_encode($combined)], $recordIds));
 
                 echo json_encode(['done' => false, 'type' => 'consolidated', 'date' => $saleDate, 'ids' => $recordIds, 'status' => $docStatus, 'uuid' => $uuid, 'submission_id' => $submissionUid, 'long_id' => $longId, 'error_msg' => $errMsg]);
                 exit;
