@@ -191,9 +191,9 @@ $countCon = (int)$countConStmt->fetchColumn();
 $totalRecords = $countInd + $countCon;
 $totalPages = ceil($totalRecords / $perPage);
 
-// UNION Query
+// UNION Query (FIX: Cast c.lhdn_response to text to match r.lhdn_response)
 $sqlInd = "SELECT 'individual' AS record_type, r.id, r.sale_no, r.sale_datetime AS sale_date, r.customer_name, r.document_type, r.total_amount, r.created_at, r.lhdn_status, COALESCE(r.submission_type, 'individual') AS submission_type, NULL::uuid AS consolidated_id, NULL::int AS total_records, r.lhdn_uuid, r.lhdn_submission_id, r.lhdn_long_id, r.lhdn_response, r.lhdn_jsonsend FROM einvoice_records r WHERE " . implode(' AND ', $whereInd);
-$sqlCon = "SELECT 'consolidated' AS record_type, c.id, 'Consolidated Batch' AS sale_no, c.sale_date AS sale_date, c.total_records || ' Invoices' AS customer_name, 'Consolidated' AS document_type, c.grand_total AS total_amount, c.created_at, c.lhdn_status, 'consolidated' AS submission_type, c.id AS consolidated_id, c.total_records, c.ei_uuid AS lhdn_uuid, c.ei_submission_id AS lhdn_submission_id, c.lhdn_long_id, c.lhdn_response, c.ei_json AS lhdn_jsonsend FROM einvoice_consolidated c WHERE " . implode(' AND ', $whereCon);
+$sqlCon = "SELECT 'consolidated' AS record_type, c.id, 'Consolidated Batch' AS sale_no, c.sale_date::timestamp with time zone AS sale_date, c.total_records || ' Invoices' AS customer_name, 'Consolidated' AS document_type, c.grand_total AS total_amount, c.created_at, c.lhdn_status, 'consolidated' AS submission_type, c.id AS consolidated_id, c.total_records, c.ei_uuid AS lhdn_uuid, c.ei_submission_id AS lhdn_submission_id, c.lhdn_long_id, c.lhdn_response::text AS lhdn_response, c.ei_json AS lhdn_jsonsend FROM einvoice_consolidated c WHERE " . implode(' AND ', $whereCon);
 
 $unionSql = "($sqlInd) UNION ALL ($sqlCon) ORDER BY created_at DESC LIMIT ? OFFSET ?";
 $params = array_merge($pInd, $pCon, [$perPage, $offset]);
@@ -319,7 +319,6 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint);flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
         <input type="date" name="date_to" value="<?= htmlspecialchars($dateTo) ?>" title="To Date">
       </div>
-      <!-- NEW: LHDN Status Filter -->
       <div class="search-box" style="max-width: 180px;">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint);flex-shrink:0"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
         <select name="status_filter" onchange="document.getElementById('filterForm').submit()">
@@ -464,7 +463,6 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
 
 <div class="modal" id="jsonModal" onclick="if(event.target===this)closeModal('jsonModal')"><div class="modal-card"><div class="modal-header"><h3 id="jsonModalTitle">LHDN API Response (JSON)</h3><button class="modal-close" onclick="closeModal('jsonModal')">✕</button></div><pre class="json-block" id="jsonModalContent"></pre><div style="margin-top:16px;text-align:right"><button class="btn ghost" onclick="copyJson()">📋 Copy to Clipboard</button><button class="btn primary" onclick="closeModal('jsonModal')" style="margin-left:8px">Close</button></div></div></div>
 
-<!-- NEW: Consolidated Details Modal -->
 <div class="modal" id="consolidatedModal" onclick="if(event.target===this)closeModal('consolidatedModal')">
   <div class="modal-card" style="max-width: 800px;">
     <div class="modal-header">
