@@ -383,7 +383,7 @@ if (isset($_GET['ajax_action'])) {
                 exit;
             }
 
-            /* ---- 2) CONSOLIDATED (Now properly linked to einvoice_consolidated table) ---- */
+            /* ---- 2) CONSOLIDATED ---- */
             $stmt = $pdo->prepare("SELECT DATE(sale_datetime) as sale_date FROM einvoice_records WHERE user_id = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'consolidated' GROUP BY DATE(sale_datetime) ORDER BY sale_date ASC LIMIT 1");
             $stmt->execute([$uid]);
             $dateRow = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -465,13 +465,30 @@ if (isset($_GET['ajax_action'])) {
                 $updateRecStmt = $pdo->prepare("UPDATE einvoice_records SET lhdn_jsonsend = ?, lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id IN ($placeholders)");
                 $updateRecStmt->execute(array_merge([$payloads['send'], $docStatus, $uuid, $submissionUid, $longId, json_encode($combined)], $recordIds));
 
-                // ✅ STEP 5: Update einvoice_consolidated with LHDN results
+                // ✅ STEP 5: Update einvoice_consolidated with ALL LHDN results (Matching your schema exactly)
                 $updateConsolStmt = $pdo->prepare("
                     UPDATE einvoice_consolidated 
-                    SET ei_submission_id = ?, ei_uuid = ?, lhdn_status = ?, lhdn_response = ? 
+                    SET ei_submission_id = ?, 
+                        ei_uuid = ?, 
+                        lhdn_status = ?, 
+                        lhdn_response = ?,
+                        lhdn_uuid = ?,
+                        lhdn_long_id = ?,
+                        lhdn_jsonsend = ?,
+                        submission_status = ?
                     WHERE id = ?
                 ");
-                $updateConsolStmt->execute([$submissionUid, $uuid, $docStatus, json_encode($combined), $consolidatedId]);
+                $updateConsolStmt->execute([
+                    $submissionUid,       // ei_submission_id
+                    $uuid,                // ei_uuid
+                    $docStatus,           // lhdn_status
+                    json_encode($combined), // lhdn_response
+                    $uuid,                // lhdn_uuid (same as ei_uuid)
+                    $longId,              // lhdn_long_id
+                    $payloads['send'],    // lhdn_jsonsend
+                    $docStatus,           // submission_status (mirrors lhdn_status)
+                    $consolidatedId       // WHERE id = ?
+                ]);
 
                 echo json_encode(['done' => false, 'type' => 'consolidated', 'date' => $saleDate, 'ids' => $recordIds, 'status' => $docStatus, 'uuid' => $uuid, 'submission_id' => $submissionUid, 'long_id' => $longId, 'error_msg' => $errMsg]);
                 exit;
