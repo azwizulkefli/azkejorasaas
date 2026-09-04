@@ -9,7 +9,22 @@ $me  = currentUser();
 $summary = $_SESSION['einvoice_summary'] ?? ['submitted' => 0, 'in_progress' => 0, 'valid' => 0, 'invalid' => 0, 'error' => 0];
 unset($_SESSION['einvoice_summary']); // Clear after reading
 
-$stmt = $pdo->prepare("SELECT * FROM einvoice_consolidated WHERE user_id = ? ORDER BY created_at DESC LIMIT 20");
+// Updated query to read from einvoice_records and group by consolidated_id
+$stmt = $pdo->prepare("
+    SELECT 
+        consolidated_id,
+        MIN(sale_datetime) as sale_date,
+        COUNT(*) as total_records,
+        SUM(total_amount) as grand_total,
+        MAX(lhdn_status) as lhdn_status,
+        MAX(lhdn_submission_id) as ei_submission_id,
+        MAX(created_at) as created_at
+    FROM einvoice_records 
+    WHERE user_id = ? AND consolidated_id IS NOT NULL
+    GROUP BY consolidated_id
+    ORDER BY MAX(created_at) DESC 
+    LIMIT 20
+");
 $stmt->execute([$uid]);
 $submissions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -125,7 +140,7 @@ tbody tr:hover{background:#f8fafc}
   <nav class="sidebar-nav">
     <a href="main.php" class="menu-item">🏠 Home</a>
     <a href="e-invoice.php" class="menu-item active">🧾 E-Invoice</a>
-        <a href="e-invoice_submitted.php" class="menu-item">🧾 View Submitted</a>
+    <a href="e-invoice_submitted.php" class="menu-item">📋 View Submitted</a>
     <div class="menu-section">Subscription</div>
     <a href="s_payment.php" class="menu-item">💳 Payment</a>
     <a href="s_report.php" class="menu-item">📄 Report</a>
@@ -159,15 +174,15 @@ tbody tr:hover{background:#f8fafc}
 
   <main class="main">
     <h1>Submission Summary 📊</h1>
-    <p class="sub">Overview of your latest consolidated e-invoice processing run.</p>
+    <p class="sub">Overview of your latest consolidated e-invoice processing runs.</p>
     <br>
 
     <div class="summary-grid">
-      <div class="summary-card"><b style="color:#3b82f6"><?= $summary['submitted'] ?></b><p>Total Submitted</p></div>
-      <div class="summary-card"><b style="color:#f59e0b"><?= $summary['in_progress'] ?></b><p>In Progress</p></div>
-      <div class="summary-card"><b style="color:#059669"><?= $summary['valid'] ?></b><p>Total Valid</p></div>
-      <div class="summary-card"><b style="color:#e11d48"><?= $summary['invalid'] ?></b><p>Total Invalid</p></div>
-      <div class="summary-card"><b style="color:#64748b"><?= $summary['error'] ?></b><p>Total Error</p></div>
+      <div class="summary-card"><b style="color:#3b82f6"><?= number_format($summary['submitted']) ?></b><p>Total Submitted</p></div>
+      <div class="summary-card"><b style="color:#f59e0b"><?= number_format($summary['in_progress']) ?></b><p>In Progress</p></div>
+      <div class="summary-card"><b style="color:#059669"><?= number_format($summary['valid']) ?></b><p>Total Valid</p></div>
+      <div class="summary-card"><b style="color:#e11d48"><?= number_format($summary['invalid']) ?></b><p>Total Invalid</p></div>
+      <div class="summary-card"><b style="color:#64748b"><?= number_format($summary['error']) ?></b><p>Total Error</p></div>
     </div>
 
     <div class="card">
@@ -187,24 +202,26 @@ tbody tr:hover{background:#f8fafc}
           <tbody>
             <?php foreach ($submissions as $sub): ?>
               <tr>
-                <td><b><?= htmlspecialchars($sub['sale_date']) ?></b></td>
-                <td><?= $sub['total_records'] ?></td>
+                <td><b><?= htmlspecialchars($sub['sale_date'] ? date('d M Y', strtotime($sub['sale_date'])) : '—') ?></b></td>
+                <td><?= number_format($sub['total_records']) ?></td>
                 <td>RM <?= number_format($sub['grand_total'], 2) ?></td>
-                <td><span class="badge <?= strtolower($sub['lhdn_status'] ?: 'processing') ?>"><?= htmlspecialchars($sub['lhdn_status'] ?: 'Processing') ?></span></td>
+                <td><span class="badge <?= strtolower($sub['lhdn_status'] ?: 'processing') ?>"><?= htmlspecialchars(ucfirst($sub['lhdn_status'] ?: 'Processing')) ?></span></td>
                 <td style="font-family:monospace;font-size:12px"><?= htmlspecialchars($sub['ei_submission_id'] ?? '—') ?></td>
                 <td><?= date('M d, H:i', strtotime($sub['created_at'])) ?></td>
               </tr>
             <?php endforeach; ?>
             <?php if (empty($submissions)): ?>
-              <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--faint)">No submissions found.</td></tr>
+              <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--faint)">No consolidated submissions found.</td></tr>
             <?php endif; ?>
           </tbody>
         </table>
       </div>
     </div>
 
-    <a href="e-invoice_submitted.php" class="btn primary"> View Submission</a>&nbsp;
-        <a href="e-invoice_upload.php" class="btn primary">← Back to Upload</a>
+    <div style="display:flex;gap:12px;margin-top:24px">
+      <a href="e-invoice_submitted.php" class="btn primary">View All Submissions</a>
+      <a href="e-invoice_upload.php" class="btn primary" style="background:#fff;color:var(--brand);border:1px solid var(--line)">← Back to Upload</a>
+    </div>
   </main>
 
   <footer class="footer">© 2026 AZ Kejora SaaS · Supabase PostgreSQL · <?= htmlspecialchars($me['email']) ?></footer>
