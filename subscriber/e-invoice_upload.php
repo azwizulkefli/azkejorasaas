@@ -30,10 +30,17 @@ function logInternal($pdo, $submissionId, $step, $status, $message, $payload = n
     $stmt->execute([$submissionId, $step, $status, $message, $payload ? (is_array($payload) ? json_encode($payload) : $payload) : null]);
 }
 
+// ✅ NEW: Validate TIN against IC using LHDN API
 function validateTINWithLHDN($tin, $icno, $apiBaseUrl, $token) {
-    $cleanIc = preg_replace('/[-\s]/', '', $icno);
-    if (strlen($cleanIc) !== 12) return false;
+    // Clean the IC number (remove dashes and spaces)
+    $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
     
+    // Must be exactly 12 digits for NRIC validation
+    if (strlen($cleanIc) !== 12) {
+        return false; 
+    }
+    
+    // Exact URL structure as requested
     $url = $apiBaseUrl . "/api/v1.0/taxpayer/validate/" . urlencode($tin) . "?idType=NRIC&idValue=" . urlencode($cleanIc);
     
     $ch = curl_init($url);
@@ -49,6 +56,8 @@ function validateTINWithLHDN($tin, $icno, $apiBaseUrl, $token) {
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     
+    // LHDN returns 200 if the TIN is valid for this IC. 
+    // Returns 404 or 400 if not found/invalid.
     return ($httpCode === 200);
 }
 
@@ -308,34 +317,32 @@ if (isset($_GET['ajax_action'])) {
             if ($indRec) {
                 $tin = $indRec['customer_tin'] ?? '';
                 $icno = $indRec['customer_ic'] ?? '';
-                $email = $indRec['customer_email'] ?? '';
                 $useGeneralTin = false;
 
-                // 1. If TIN is missing or default, tentatively use the 12-digit IC
+                // 1. If TIN is missing or is the default general TIN, try using the 12-digit IC as the TIN
                 if (empty($tin) || $tin === 'EI00000000010') {
-                    $cleanIc = preg_replace('/[-\s]/', '', $icno);
-                    if (strlen($cleanIc) === 12 && !empty($email)) {
-                        $tin = $cleanIc; // Tentative TIN to be validated
+                    $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
+                    if (strlen($cleanIc) === 12) {
+                        $tin = $cleanIc; // Tentatively use IC as TIN to validate
                     } else {
-                        $useGeneralTin = true;
+                        $useGeneralTin = true; // Invalid IC format, must use general
                     }
                 }
 
-                // 2. Validate the tentative TIN + IC with LHDN API
+                // 2. ✅ Validate the tentative TIN against the IC using LHDN API
                 if (!$useGeneralTin && !empty($tin) && $tin !== 'EI00000000010') {
-                    $cleanIc = preg_replace('/[-\s]/', '', $icno);
+                    $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
                     if (strlen($cleanIc) === 12) {
                         $isValid = validateTINWithLHDN($tin, $cleanIc, $apiBaseUrl, $tokenValue);
                         if (!$isValid) {
-                            $useGeneralTin = true;
+                            $useGeneralTin = true; // TIN does not match IC or is invalid
                         }
                     } else {
                         $useGeneralTin = true;
                     }
                 }
 
-                // 3. ✅ CRITICAL FIX: If validation failed, we CANNOT submit as 'individual' with general TIN.
-                // We must convert it to 'consolidated' and skip individual submission.
+                // 3. ✅ If validation failed, convert to Consolidated immediately
                 if ($useGeneralTin) {
                     $pdo->prepare("UPDATE einvoice_records SET customer_tin = 'EI00000000010', submission_type = 'consolidated', lhdn_status = NULL WHERE id = ?")
                         ->execute([$indRec['id']]);
@@ -504,7 +511,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
 
                             $email = trim((string)($row['customer_email'] ?? ''));
                             $ic = trim((string)($row['customer_ic'] ?? ''));
-                            $cleanIC = preg_replace('/[-\s]/', '', $ic);
+                            $cleanIC = str_replace("-", "", str_replace(" ", "", $ic));
 
                             // Flag as individual tentatively; validation will happen during submission
                             if ($email !== '' && preg_match('/^\d{12}$/', $cleanIC)) {
