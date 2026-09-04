@@ -180,6 +180,10 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $dateFrom = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
 $dateTo = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
 
+$envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
+// Base URL for the public share link (without 'api.' or '-api')
+$shareBaseUrl = $envIsProd ? 'https://myinvois.hasil.gov.my' : 'https://preprod.myinvois.hasil.gov.my';
+
 $summaryStmt = $pdo->prepare("SELECT 
     COUNT(*) as total_submitted,
     COUNT(CASE WHEN lhdn_status IN ('valid', 'validated', 'success') THEN 1 END) as total_valid,
@@ -375,6 +379,7 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                 $displayJsonSend = $isConsolidated ? ($row['cons_jsonsend'] ?? $row['lhdn_jsonsend']) : $row['lhdn_jsonsend'];
                 $displayLhdnUuid = $isConsolidated ? ($row['cons_lhdn_uuid'] ?? $row['lhdn_uuid']) : $row['lhdn_uuid'];
                 $displaySubmissionId = $isConsolidated ? ($row['cons_ei_submission_id'] ?? $row['lhdn_submission_id']) : $row['lhdn_submission_id'];
+                $displayLhdnLongId = $isConsolidated ? ($row['cons_lhdn_long_id'] ?? $row['lhdn_long_id']) : $row['lhdn_long_id'];
 
                 if (is_array($displayResponse)) $displayResponse = json_encode($displayResponse);
 
@@ -385,12 +390,23 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                 
                 $saleDate = $row['sale_datetime'] ? date('d M Y', strtotime($row['sale_datetime'])) : date('d M Y', strtotime($row['created_at']));
                 $submitDate = date('d M Y, H:i', strtotime($row['created_at']));
+
+                // Generate LHDN Share URL if valid and IDs exist
+                $shareUrl = '';
+                if ($isValid && !empty($displayLhdnLongId) && !empty($displaySubmissionId)) {
+                    $shareUrl = $shareBaseUrl . '/' . rawurlencode($displayLhdnLongId) . '/share/' . rawurlencode($displaySubmissionId);
+                }
               ?>
                 <tr>
                   <td style="color:var(--faint);font-weight:600"><?= $no ?></td>
                   
                   <td>
                     <b><?= htmlspecialchars($row['sale_no'] ?? '—') ?></b>
+                    <?php if ($isConsolidated && !empty($row['consolidated_id'])): ?>
+                      <div style="font-size:10px;color:var(--faint);font-family:ui-monospace,monospace;margin-top:4px;word-break:break-all" title="Consolidated ID">
+                        📦 <?= htmlspecialchars($row['consolidated_id']) ?>
+                      </div>
+                    <?php endif; ?>
                   </td>
                   
                   <td><?= htmlspecialchars($saleDate) ?></td>
@@ -409,7 +425,6 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                   </td>
                   <td style="text-align:right;font-weight:700;font-family:ui-monospace,monospace">RM <?= number_format($row['total_amount'], 2) ?></td>
                   
-                  <!-- FIX #1: Show submission_type under Submitted Date -->
                   <td style="font-size:13px;color:var(--muted)">
                     <?= htmlspecialchars($submitDate) ?>
                     <div style="font-size:10px;color:var(--faint);margin-top:4px;text-transform:capitalize">
@@ -433,13 +448,17 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M8 10h8"></path><path d="M8 14h4"></path></svg>
                       </button>
 
-                      <!-- FIX #2: Hide refresh icon if submission_type is consolidated -->
                       <?php if ($isPending && !$isConsolidated): ?>
                         <button class="action-btn" title="Check Status / Resubmit" onclick="resubmitRecord('<?= htmlspecialchars($row['id']) ?>')">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
                         </button>
                       <?php elseif ($isValid): ?>
-                        <button class="action-btn" title="View LHDN E-Invoice" onclick="openInvoiceModal(<?= htmlspecialchars(json_encode(array_merge($row, [
+                        <?php if (!empty($shareUrl)): ?>
+                          <a href="<?= htmlspecialchars($shareUrl) ?>" target="_blank" class="action-btn" title="View LHDN E-Invoice (New Tab)">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                          </a>
+                        <?php endif; ?>
+                        <button class="action-btn" title="View Details" onclick="openInvoiceModal(<?= htmlspecialchars(json_encode(array_merge($row, [
                             'lhdn_status' => $displayStatus,
                             'lhdn_response' => $displayResponse,
                             'lhdn_uuid' => $displayLhdnUuid,
