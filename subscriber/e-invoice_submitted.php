@@ -12,7 +12,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     header('Content-Type: application/json');
     $recordId = $_POST['id'] ?? '';
     
-    // Deletes the specific record. Foreign key ON DELETE SET NULL ensures parent consolidated record remains intact.
     $stmt = $pdo->prepare("DELETE FROM einvoice_records WHERE id = ? AND user_id = ?");
     $stmt->execute([$recordId, $uid]);
     
@@ -25,7 +24,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     header('Content-Type: application/json');
     $recordId = $_POST['id'] ?? '';
     
-    // 1. Verify record belongs to user
     $chk = $pdo->prepare("SELECT * FROM einvoice_records WHERE id = ? AND user_id = ?");
     $chk->execute([$recordId, $uid]);
     $record = $chk->fetch(PDO::FETCH_ASSOC);
@@ -35,9 +33,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    $isConsolidated = ($record['submission_type'] ?? 'individual') === 'consolidated';
+    $isConsolidated = strtolower($record['submission_type'] ?? 'individual') === 'consolidated';
 
-    // 2. Check company credentials and token from companies table
     $envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
     $tokenCol  = $envIsProd ? 'prod_token' : 'sandbox_token';
     $expiryCol = $envIsProd ? 'prod_token_expiry' : 'sandbox_token_expiry';
@@ -56,7 +53,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    // 3. Auto-refresh token if missing or expired (with 60s buffer)
     $needsRefresh = empty($token) || ($expiry && strtotime($expiry) <= time() + 60);
     if ($needsRefresh) {
         $tokenRes = myinvois_request_token($pdo, $uid);
@@ -74,16 +70,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    // 4. Determine correct UUID and Status source (Consolidated vs Individual)
     if ($isConsolidated && !empty($record['consolidated_id'])) {
         $consStmt = $pdo->prepare("SELECT ei_uuid, lhdn_status FROM einvoice_consolidated WHERE id = ? AND user_id = ?");
         $consStmt->execute([$record['consolidated_id'], $uid]);
         $consRecord = $consStmt->fetch(PDO::FETCH_ASSOC);
         $docUuid = $consRecord['ei_uuid'] ?? null;
-        $currentStatus = strtolower($consRecord['lhdn_status'] ?? 'pending');
     } else {
         $docUuid = $record['lhdn_uuid'] ?: $record['reference_uuid'];
-        $currentStatus = strtolower($record['lhdn_status'] ?? 'pending');
     }
     
     if (empty($docUuid)) {
@@ -91,7 +84,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    // 5. Call LHDN API
     $envUrl  = myinvois_base_url($me);
     $apiUrl  = rtrim($envUrl, '/') . '/api/v1.0/documents/' . urlencode($docUuid);
     
@@ -125,7 +117,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
     $responseData = json_decode($response, true);
     
-    // 6. "AI Intelligence" Smart Parsing
     $newStatus = 'pending';
     $lhdnUuid = $record['lhdn_uuid'] ?? null;
     $lhdnSubmissionId = $record['lhdn_submission_id'] ?? null;
@@ -149,7 +140,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     }
 
-    // 7. Update Database (Consolidated vs Individual)
     if ($isConsolidated && !empty($record['consolidated_id'])) {
         $updateStmt = $pdo->prepare("
             UPDATE einvoice_consolidated 
@@ -162,7 +152,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         ");
         $updateStmt->execute([$newStatus, json_encode($responseData), $lhdnUuid, $lhdnSubmissionId, $lhdnUuid, $lhdnLongId, $record['consolidated_id'], $uid]);
         
-        // Cascade status update to all child records so the UI reflects it immediately
         $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ? WHERE consolidated_id = ? AND user_id = ?")
             ->execute([$newStatus, $record['consolidated_id'], $uid]);
     } else {
@@ -191,7 +180,6 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $dateFrom = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
 $dateTo = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
 
-// Summary Statistics
 $summaryStmt = $pdo->prepare("SELECT 
     COUNT(*) as total_submitted,
     COUNT(CASE WHEN lhdn_status IN ('valid', 'validated', 'success') THEN 1 END) as total_valid,
@@ -201,7 +189,6 @@ $summaryStmt = $pdo->prepare("SELECT
 $summaryStmt->execute([$uid]);
 $summary = $summaryStmt->fetch(PDO::FETCH_ASSOC);
 
-// Fetch Data with LEFT JOIN for Consolidated data
 $whereClauses = ["r.user_id = ?"];
 $params = [$uid];
 if ($search !== '') { $whereClauses[] = "(r.sale_no ILIKE ? OR r.customer_name ILIKE ?)"; $params[] = "%$search%"; $params[] = "%$search%"; }
@@ -382,29 +369,36 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
               <?php foreach ($records as $index => $row): 
                 $no = $offset + $index + 1;
                 
-                // Smart resolution: Use consolidated data if submission_type is consolidated
-                $isConsolidated = ($row['submission_type'] ?? 'individual') === 'consolidated';
+                $isConsolidated = strtolower($row['submission_type'] ?? 'individual') === 'consolidated';
                 $displayStatus = $isConsolidated ? ($row['cons_lhdn_status'] ?? $row['lhdn_status']) : $row['lhdn_status'];
                 $displayResponse = $isConsolidated ? ($row['cons_lhdn_response'] ?? $row['lhdn_response']) : $row['lhdn_response'];
                 $displayJsonSend = $isConsolidated ? ($row['cons_jsonsend'] ?? $row['lhdn_jsonsend']) : $row['lhdn_jsonsend'];
                 $displayLhdnUuid = $isConsolidated ? ($row['cons_lhdn_uuid'] ?? $row['lhdn_uuid']) : $row['lhdn_uuid'];
                 $displaySubmissionId = $isConsolidated ? ($row['cons_ei_submission_id'] ?? $row['lhdn_submission_id']) : $row['lhdn_submission_id'];
 
-                // Handle jsonb return type from PostgreSQL if applicable
                 if (is_array($displayResponse)) $displayResponse = json_encode($displayResponse);
 
                 $status = strtolower($displayStatus ?? 'pending');
                 $isValid = in_array($status, ['valid', 'validated', 'success']);
                 $isPending = in_array($status, ['submitted', 'processing', 'in_progress', 'pending', 'new']);
                 $isInvalid = in_array($status, ['invalid', 'error', 'fail', 'failed', 'rejected']);
-                $hasResponse = !empty($displayResponse);
                 
                 $saleDate = $row['sale_datetime'] ? date('d M Y', strtotime($row['sale_datetime'])) : date('d M Y', strtotime($row['created_at']));
                 $submitDate = date('d M Y, H:i', strtotime($row['created_at']));
               ?>
                 <tr>
                   <td style="color:var(--faint);font-weight:600"><?= $no ?></td>
-                  <td><b><?= htmlspecialchars($row['sale_no'] ?? '—') ?></b></td>
+                  
+                  <!-- FIX #2: Show consolidate_id under Sale No for consolidated records -->
+                  <td>
+                    <b><?= htmlspecialchars($row['sale_no'] ?? '—') ?></b>
+                    <?php if ($isConsolidated && !empty($row['consolidated_id'])): ?>
+                      <div style="font-size:10px;color:var(--faint);font-family:ui-monospace,monospace;margin-top:4px;word-break:break-all" title="Consolidated ID">
+                        📦 <?= htmlspecialchars($row['consolidated_id']) ?>
+                      </div>
+                    <?php endif; ?>
+                  </td>
+                  
                   <td><?= htmlspecialchars($saleDate) ?></td>
                   <td>
                     <div style="font-weight:700;color:var(--ink)"><?= htmlspecialchars($row['customer_name'] ?? '—') ?></div>
@@ -418,14 +412,15 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                   </td>
                   <td>
                     <div style="font-weight:600;color:var(--ink);font-size:13px"><?= getCategory($row['document_type']) ?></div>
-                    <?php if ($isConsolidated && !empty($row['consolidated_id'])): ?>
-                      <div style="font-size:11px;color:var(--brand);margin-top:6px;font-family:ui-monospace,monospace;background:#eef1ff;padding:3px 8px;border-radius:6px;display:inline-flex;align-items:center;gap:4px" title="Consolidated ID: <?= htmlspecialchars($row['consolidated_id']) ?>">📦 <?= htmlspecialchars(substr($row['consolidated_id'], 0, 8)) ?>...</div>
-                    <?php endif; ?>
                   </td>
                   <td style="text-align:right;font-weight:700;font-family:ui-monospace,monospace">RM <?= number_format($row['total_amount'], 2) ?></td>
                   
+                  <!-- FIX #1: Show submission_type under Submitted Date -->
                   <td style="font-size:13px;color:var(--muted)">
                     <?= htmlspecialchars($submitDate) ?>
+                    <div style="font-size:10px;color:var(--faint);margin-top:4px;text-transform:capitalize">
+                      <?= htmlspecialchars($row['submission_type'] ?? 'individual') ?>
+                    </div>
                     <?php if (in_array($status, ['submitted', 'processing', 'in_progress', 'pending']) && !empty($displayLhdnUuid)): ?>
                       <div style="font-size:10px;color:var(--faint);font-family:ui-monospace,monospace;margin-top:4px;word-break:break-all" title="LHDN UUID">
                         🆔 <?= htmlspecialchars($displayLhdnUuid) ?>
@@ -444,7 +439,8 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M8 10h8"></path><path d="M8 14h4"></path></svg>
                       </button>
 
-                      <?php if ($isPending): ?>
+                      <!-- FIX #2: Hide refresh icon if submission_type is consolidated -->
+                      <?php if ($isPending && !$isConsolidated): ?>
                         <button class="action-btn" title="Check Status / Resubmit" onclick="resubmitRecord('<?= htmlspecialchars($row['id']) ?>')">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
                         </button>
