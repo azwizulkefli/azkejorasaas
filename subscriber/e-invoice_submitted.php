@@ -394,7 +394,7 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                 // Generate LHDN Share URL if valid and IDs exist
                 $shareUrl = '';
                 if ($isValid && !empty($displayLhdnLongId) && !empty($displaySubmissionId)) {
-                    $shareUrl = $shareBaseUrl . '/' . rawurlencode($displayLhdnLongId) . '/share/' . rawurlencode($displaySubmissionId);
+                    $shareUrl = $shareBaseUrl . '/' . rawurlencode($displayLhdnUuid) . '/share/' . rawurlencode($displayLhdnLongId);
                 }
               ?>
                 <tr>
