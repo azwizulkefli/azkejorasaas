@@ -142,9 +142,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 }
 
 // ---------------- REST OF THE PAGE LOGIC (Pagination, Export, Fetching) ----------------
-// ... [Keep the exact same pagination, export, and fetching logic from the previous version] ...
-// (For brevity, I'm keeping the HTML/JS structure identical to the previous working version)
-
 $perPageOptions = [10, 20, 50, 100, 200];
 $perPage = isset($_GET['per_page']) && in_array((int)$_GET['per_page'], $perPageOptions) ? (int)$_GET['per_page'] : 10;
 $page = isset($_GET['page']) && (int)$_GET['page'] > 0 ? (int)$_GET['page'] : 1;
@@ -200,7 +197,6 @@ function getStatusClass($status) {
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>E-Invoice Records — AZ Kejora SaaS</title>
 <style>
-/* ... [Keep all CSS from previous version] ... */
 :root{--ink:#131327;--bg:#F6F7FB;--brand:#5457e5;--violet:#8b5cf6;--muted:#64748b;--faint:#94a3b8;--line:#e2e8f0;--grad:linear-gradient(90deg,var(--brand),var(--violet));--card:0 1px 2px rgba(19,19,39,.06),0 12px 32px -16px rgba(19,19,39,.12)}
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink)}a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 .loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.92);backdrop-filter:blur(4px);display:none;place-items:center;z-index:9999}.loading-overlay.active{display:grid}
@@ -321,7 +317,7 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
     <div class="card">
       <div class="table-responsive">
         <table>
-          <thead><tr><th style="width:50px">No</th><th>Sale No</th><th>Sale Date</th><th>Customer Details</th><th>Category</th><th style="text-align:right">Sale Total</th><th>Submitted Date</th><th>LHDN Status</th><th style="width:100px">Action</th></tr></thead>
+          <thead><tr><th style="width:50px">No</th><th>Sale No</th><th>Sale Date</th><th>Customer Details</th><th>Category</th><th style="text-align:right">Sale Total</th><th>Submitted Date</th><th>LHDN Status</th><th style="width:140px">Action</th></tr></thead>
           <tbody>
             <?php if (empty($records)): ?>
               <tr><td colspan="9" style="text-align:center;padding:48px 16px;color:var(--faint)"><div style="font-size:32px;margin-bottom:8px">📭</div>No e-invoice records found matching your criteria.</td></tr>
@@ -360,6 +356,19 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                   <td><span class="badge <?= getStatusClass($row['lhdn_status']) ?>"><?= htmlspecialchars(strtoupper($row['lhdn_status'] ?? 'PENDING')) ?></span></td>
                   <td>
                     <div class="action-btns">
+                      <!-- 1. JSON Sent Modal Button (for every data) -->
+                      <!-- Note: Change 'json_sent' to your actual column name if different (e.g., 'payload', 'request_json') -->
+                      <button class="action-btn" title="View JSON Sent" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_jsonsend'] ?? '{}'), ENT_QUOTES) ?>, 'JSON Sent to LHDN')">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M10 12l-2 2 2 2"></path><path d="M14 12l2 2-2 2"></path></svg>
+                      </button>
+
+                      
+                      <!-- 2. JSON Response Modal Button (for every data) -->
+                      <button class="action-btn" title="View JSON Response" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response'] ?? '{}'), ENT_QUOTES) ?>, 'JSON Response from LHDN')">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M8 10h8"></path><path d="M8 14h4"></path></svg>
+                      </button>
+
+                      <!-- 3. Existing Conditional Actions -->
                       <?php if ($isPending): ?>
                         <button class="action-btn" title="Check Status / Resubmit" onclick="resubmitRecord('<?= htmlspecialchars($row['id']) ?>')">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
@@ -369,7 +378,7 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                         </button>
                       <?php elseif ($hasResponse): ?>
-                        <button class="action-btn danger" title="View Error Details" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response']), ENT_QUOTES) ?>)">
+                        <button class="action-btn danger" title="View Error Details" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response']), ENT_QUOTES) ?>, 'LHDN Error Details')">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
                         </button>
                       <?php endif; ?>
@@ -400,7 +409,7 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
 
 <!-- Modals (Invoice & JSON) -->
 <div class="modal" id="invoiceModal" onclick="if(event.target===this)closeModal('invoiceModal')"><div class="modal-card"><div class="modal-header"><h3>📄 LHDN E-Invoice Details</h3><button class="modal-close" onclick="closeModal('invoiceModal')">✕</button></div><div id="invoiceModalContent"></div><div style="margin-top:20px;display:flex;gap:10px"><button class="btn primary" style="flex:1" onclick="alert('PDF download feature would be triggered here.')">⬇ Download PDF</button><button class="btn ghost" style="flex:1" onclick="closeModal('invoiceModal')">Close</button></div></div></div>
-<div class="modal" id="jsonModal" onclick="if(event.target===this)closeModal('jsonModal')"><div class="modal-card"><div class="modal-header"><h3> LHDN API Response (JSON)</h3><button class="modal-close" onclick="closeModal('jsonModal')">✕</button></div><pre class="json-block" id="jsonModalContent"></pre><div style="margin-top:16px;text-align:right"><button class="btn ghost" onclick="copyJson()">📋 Copy to Clipboard</button><button class="btn primary" onclick="closeModal('jsonModal')" style="margin-left:8px">Close</button></div></div></div>
+<div class="modal" id="jsonModal" onclick="if(event.target===this)closeModal('jsonModal')"><div class="modal-card"><div class="modal-header"><h3 id="jsonModalTitle">LHDN API Response (JSON)</h3><button class="modal-close" onclick="closeModal('jsonModal')">✕</button></div><pre class="json-block" id="jsonModalContent"></pre><div style="margin-top:16px;text-align:right"><button class="btn ghost" onclick="copyJson()">📋 Copy to Clipboard</button><button class="btn primary" onclick="closeModal('jsonModal')" style="margin-left:8px">Close</button></div></div></div>
 
 <script>
 function toggleSidebar(){document.getElementById('sidebar').classList.toggle('open');document.getElementById('sidebarOverlay').classList.toggle('open');}
@@ -411,7 +420,27 @@ function openInvoiceModal(record){
   content.innerHTML = `<div class="detail-grid"><div class="detail-item"><label>Sale No</label><span>${record.sale_no || '—'}</span></div><div class="detail-item"><label>Document Type</label><span>${record.document_type || '—'}</span></div><div class="detail-item"><label>Customer Name</label><span>${record.customer_name || '—'}</span></div><div class="detail-item"><label>Customer TIN</label><span>${record.customer_tin || '—'}</span></div><div class="detail-item"><label>Sale Amount</label><span>RM ${parseFloat(record.sale_amount || 0).toFixed(2)}</span></div><div class="detail-item"><label>Total Amount</label><span style="color:var(--brand);font-weight:800">RM ${parseFloat(record.total_amount || 0).toFixed(2)}</span></div><div class="detail-item"><label>LHDN Status</label><span style="text-transform:uppercase">${record.lhdn_status || 'PENDING'}</span></div><div class="detail-item"><label>Submission Date</label><span>${saleDate}</span></div></div>${record.lhdn_submission_id ? `<div class="detail-item" style="margin-bottom:16px"><label>LHDN Submission ID</label><span style="font-family:monospace;font-size:12px">${record.lhdn_submission_id}</span></div>` : ''}`;
   document.getElementById('invoiceModal').classList.add('open');document.body.style.overflow='hidden';
 }
-function openJsonModal(jsonString){try{const parsed = JSON.parse(jsonString);document.getElementById('jsonModalContent').textContent = JSON.stringify(parsed, null, 2);}catch(e){document.getElementById('jsonModalContent').textContent = jsonString;}document.getElementById('jsonModal').classList.add('open');document.body.style.overflow='hidden';}
+function openJsonModal(jsonString, modalTitle = 'LHDN API Response (JSON)'){
+  try {
+    let parsed = jsonString;
+    if (typeof jsonString === 'string') {
+      if (jsonString.trim() === '') {
+        parsed = { "message": "No JSON data available for this record." };
+      } else {
+        parsed = JSON.parse(jsonString);
+      }
+    }
+    document.getElementById('jsonModalContent').textContent = JSON.stringify(parsed, null, 2);
+  } catch(e) {
+    document.getElementById('jsonModalContent').textContent = jsonString || 'No JSON data available';
+  }
+  // Update modal title dynamically
+  const titleEl = document.getElementById('jsonModalTitle');
+  if (titleEl) titleEl.textContent = modalTitle;
+  
+  document.getElementById('jsonModal').classList.add('open');
+  document.body.style.overflow='hidden';
+}
 function copyJson(){const text = document.getElementById('jsonModalContent').textContent;navigator.clipboard.writeText(text).then(() => alert('JSON copied to clipboard!')).catch(() => alert('Failed to copy.'));}
 function resubmitRecord(recordId){
   if(!confirm('Check LHDN status for this record? This will refresh the token if expired and query the LHDN API.')) return;
