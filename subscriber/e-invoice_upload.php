@@ -30,17 +30,10 @@ function logInternal($pdo, $submissionId, $step, $status, $message, $payload = n
     $stmt->execute([$submissionId, $step, $status, $message, $payload ? (is_array($payload) ? json_encode($payload) : $payload) : null]);
 }
 
-// ✅ NEW: Validate TIN against IC using LHDN API
 function validateTINWithLHDN($tin, $icno, $apiBaseUrl, $token) {
-    // Clean the IC number (remove dashes and spaces)
     $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
+    if (strlen($cleanIc) !== 12) return false;
     
-    // Must be exactly 12 digits for NRIC validation
-    if (strlen($cleanIc) !== 12) {
-        return false; 
-    }
-    
-    // Exact URL structure as requested
     $url = $apiBaseUrl . "/api/v1.0/taxpayer/validate/" . urlencode($tin) . "?idType=NRIC&idValue=" . urlencode($cleanIc);
     
     $ch = curl_init($url);
@@ -56,8 +49,6 @@ function validateTINWithLHDN($tin, $icno, $apiBaseUrl, $token) {
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     
-    // LHDN returns 200 if the TIN is valid for this IC. 
-    // Returns 404 or 400 if not found/invalid.
     return ($httpCode === 200);
 }
 
@@ -113,7 +104,7 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
     $map = [
         '*|ei_invoiceno|*'           => $record['sale_no'] ?? '',
         '*|ei_invoicedate|*'         => date('Y-m-d', strtotime($record['sale_datetime'])),
-        '*|ei_invoicetype|*'         => $record['document_type'] ?? '03',
+        '*|ei_invoicetype|*'         => $record['document_type'] ?? '01',
         '*|ei_invoicecurrency|*'     => 'MYR',
         '*|ei_msiccode|*'            => $company['msic_code'] ?? '',
         '*|ei_msicname|*'            => $company['business_type'] ?? '',
@@ -319,30 +310,27 @@ if (isset($_GET['ajax_action'])) {
                 $icno = $indRec['customer_ic'] ?? '';
                 $useGeneralTin = false;
 
-                // 1. If TIN is missing or is the default general TIN, try using the 12-digit IC as the TIN
                 if (empty($tin) || $tin === 'EI00000000010') {
                     $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
                     if (strlen($cleanIc) === 12) {
-                        $tin = $cleanIc; // Tentatively use IC as TIN to validate
+                        $tin = $cleanIc;
                     } else {
-                        $useGeneralTin = true; // Invalid IC format, must use general
+                        $useGeneralTin = true;
                     }
                 }
 
-                // 2. ✅ Validate the tentative TIN against the IC using LHDN API
                 if (!$useGeneralTin && !empty($tin) && $tin !== 'EI00000000010') {
                     $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
                     if (strlen($cleanIc) === 12) {
                         $isValid = validateTINWithLHDN($tin, $cleanIc, $apiBaseUrl, $tokenValue);
                         if (!$isValid) {
-                            $useGeneralTin = true; // TIN does not match IC or is invalid
+                            $useGeneralTin = true;
                         }
                     } else {
                         $useGeneralTin = true;
                     }
                 }
 
-                // 3. ✅ If validation failed, convert to Consolidated immediately
                 if ($useGeneralTin) {
                     $pdo->prepare("UPDATE einvoice_records SET customer_tin = 'EI00000000010', submission_type = 'consolidated', lhdn_status = NULL WHERE id = ?")
                         ->execute([$indRec['id']]);
@@ -358,7 +346,6 @@ if (isset($_GET['ajax_action'])) {
                     exit;
                 }
 
-                // 4. If we reach here, the TIN is VALID. Build and Submit Payload.
                 $payloads = buildLHDNPayloads($indRec, $company, $jsonSendTemplate, $jsonConvertTemplate);
                 $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
                 
@@ -396,7 +383,7 @@ if (isset($_GET['ajax_action'])) {
                 exit;
             }
 
-            /* ---- 2) CONSOLIDATED ---- */
+            /* ---- 2) CONSOLIDATED (Now properly linked to einvoice_consolidated table) ---- */
             $stmt = $pdo->prepare("SELECT DATE(sale_datetime) as sale_date FROM einvoice_records WHERE user_id = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'consolidated' GROUP BY DATE(sale_datetime) ORDER BY sale_date ASC LIMIT 1");
             $stmt->execute([$uid]);
             $dateRow = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -408,18 +395,43 @@ if (isset($_GET['ajax_action'])) {
                 $records = $stmtRec->fetchAll(PDO::FETCH_ASSOC);
 
                 $grandTotal = array_sum(array_column($records, 'total_amount'));
+                $totalTax = array_sum(array_map('floatval', array_column($records, 'sale_tax')));
+
                 $consolidatedData = [
                     'sale_no' => 'CONSOL-' . str_replace('-', '', $saleDate) . '-' . substr(md5($uid), 0, 8),
                     'submission_type' => 'consolidated',
-                    'customer_name' => 'Consolidated Sales', 'customer_address' => 'Multiple Customers',
+                    'customer_name' => 'Consolidated Sales', 
+                    'customer_address' => 'Multiple Customers',
                     'customer_email' => $company['email'] ?? ($me['email'] ?? 'na@na.com'),
                     'customer_phone' => $company['phone'] ?? '0000000000',
                     'customer_tin' => 'EI00000000010',
-                    'customer_ic' => '000000000000', 'total_amount' => $grandTotal,
-                    'sale_datetime' => $saleDate . ' 23:59:59', 'document_type' => '15'
+                    'customer_ic' => '000000000000', 
+                    'total_amount' => $grandTotal,
+                    'sale_datetime' => $saleDate . ' 23:59:59', 
+                    'document_type' => '15' // ✅ 15 = Consolidated e-Invoice
                 ];
 
                 $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
+
+                // ✅ STEP 1: Insert into einvoice_consolidated FIRST
+                $consolStmt = $pdo->prepare("
+                    INSERT INTO einvoice_consolidated (
+                        user_id, sale_date, total_records, total_amount, total_tax, grand_total, submission_status, ei_json, ei_convert
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'processing', ?, ?) RETURNING id
+                ");
+                $consolStmt->execute([
+                    $uid, $saleDate, count($records), $grandTotal, $totalTax, $grandTotal, 
+                    $payloads['send'], $payloads['convert']
+                ]);
+                $consolidatedId = $consolStmt->fetchColumn();
+
+                // ✅ STEP 2: Link all records to this new consolidated ID
+                $recordIds = array_map('strval', array_column($records, 'id'));
+                $placeholders = implode(',', array_fill(0, count($recordIds), '?'));
+                $linkStmt = $pdo->prepare("UPDATE einvoice_records SET consolidated_id = ? WHERE id IN ($placeholders)");
+                $linkStmt->execute(array_merge([$consolidatedId], $recordIds));
+
+                // ✅ STEP 3: Submit to LHDN
                 $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
 
                 if ($submitResult['code'] == 401) {
@@ -449,10 +461,17 @@ if (isset($_GET['ajax_action'])) {
                 }
                 $errMsg = findErrorInArray($combined);
 
-                $recordIds = array_map('strval', array_column($records, 'id'));
-                $placeholders = implode(',', array_fill(0, count($recordIds), '?'));                
-                $pdo->prepare("UPDATE einvoice_records SET lhdn_jsonsend = ?, lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id IN ($placeholders)")
-                    ->execute(array_merge([$payloads['send'], $docStatus, $uuid, $submissionUid, $longId, json_encode($combined)], $recordIds));
+                // ✅ STEP 4: Update einvoice_records with LHDN results
+                $updateRecStmt = $pdo->prepare("UPDATE einvoice_records SET lhdn_jsonsend = ?, lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id IN ($placeholders)");
+                $updateRecStmt->execute(array_merge([$payloads['send'], $docStatus, $uuid, $submissionUid, $longId, json_encode($combined)], $recordIds));
+
+                // ✅ STEP 5: Update einvoice_consolidated with LHDN results
+                $updateConsolStmt = $pdo->prepare("
+                    UPDATE einvoice_consolidated 
+                    SET ei_submission_id = ?, ei_uuid = ?, lhdn_status = ?, lhdn_response = ? 
+                    WHERE id = ?
+                ");
+                $updateConsolStmt->execute([$submissionUid, $uuid, $docStatus, json_encode($combined), $consolidatedId]);
 
                 echo json_encode(['done' => false, 'type' => 'consolidated', 'date' => $saleDate, 'ids' => $recordIds, 'status' => $docStatus, 'uuid' => $uuid, 'submission_id' => $submissionUid, 'long_id' => $longId, 'error_msg' => $errMsg]);
                 exit;
@@ -513,7 +532,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                             $ic = trim((string)($row['customer_ic'] ?? ''));
                             $cleanIC = str_replace("-", "", str_replace(" ", "", $ic));
 
-                            // Flag as individual tentatively; validation will happen during submission
                             if ($email !== '' && preg_match('/^\d{12}$/', $cleanIC)) {
                                 $submissionType = 'individual';
                                 $customerTin = $cleanIC; 
