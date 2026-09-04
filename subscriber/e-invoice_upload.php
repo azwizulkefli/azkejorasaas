@@ -17,7 +17,8 @@ $alterations = [
     "ADD COLUMN IF NOT EXISTS lhdn_uuid VARCHAR(255)",
     "ADD COLUMN IF NOT EXISTS lhdn_submission_id VARCHAR(255)",
     "ADD COLUMN IF NOT EXISTS lhdn_long_id VARCHAR(255)",
-    "ADD COLUMN IF NOT EXISTS lhdn_response TEXT"
+    "ADD COLUMN IF NOT EXISTS lhdn_response TEXT",
+    "ADD COLUMN IF NOT EXISTS lhdn_jsonsend TEXT" // ✅ Added for safety if not run manually
 ];
 foreach ($alterations as $alt) {
     try { $pdo->exec("ALTER TABLE einvoice_records $alt"); } catch (Exception $e) {}
@@ -29,16 +30,50 @@ function logInternal($pdo, $submissionId, $step, $status, $message, $payload = n
     $stmt->execute([$submissionId, $step, $status, $message, $payload ? (is_array($payload) ? json_encode($payload) : $payload) : null]);
 }
 
-function lookupCustomerTIN($ic, $email, $baseUrl, $token) {
-    $cleanIC = preg_replace('/[-\s]/', '', $ic);
-    if (strlen($cleanIC) >= 12) return $cleanIC;
-    return 'EI00000000010';
+// ✅ NEW: Validate TIN + IC combination with LHDN API before submission
+function validateTINWithLHDN($tin, $icno, $apiBaseUrl, $token) {
+    $cleanIc = preg_replace('/[-\s]/', '', $icno);
+    if (strlen($cleanIc) !== 12) {
+        return false; // Cannot validate without exactly 12-digit IC
+    }
+    
+    $url = $apiBaseUrl . "/api/v1.0/taxpayer/validate/" . urlencode($tin) . "?idType=NRIC&idValue=" . urlencode($cleanIc);
+    
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        "Authorization: Bearer " . $token,
+        "Content-Type: application/json",
+        "Accept: application/json"
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    // LHDN returns 200 if valid. 404 or 400 if invalid/not found.
+    return ($httpCode === 200);
 }
 
 function findErrorInArray($arr) {
     if (!is_array($arr)) return null;
-    foreach (['error', 'message', 'errorMessages', 'validationErrors', 'curl_error'] as $k) {
-        if (isset($arr[$k]) && $arr[$k]) return is_string($arr[$k]) ? $arr[$k] : json_encode($arr[$k]);
+    foreach (['error', 'message', 'errorMessages', 'validationErrors', 'curl_error', 'description', 'errors'] as $k) {
+        if (isset($arr[$k]) && $arr[$k]) {
+            $err = is_string($arr[$k]) ? $arr[$k] : json_encode($arr[$k]);
+            
+            // ✅ Enhance explanation for common LHDN errors to give clear UI feedback
+            if (stripos($err, 'ERR406') !== false || stripos($err, 'ERR409') !== false || stripos($err, 'TIN is invalid') !== false || stripos($err, 'Search TIN') !== false) {
+                return "LHDN Rejected: Invalid TIN or TIN/IC mismatch. (System auto-fallback to General TIN triggered).";
+            }
+            if (stripos($err, 'ERR11') !== false || stripos($err, 'ERR12') !== false) {
+                return "LHDN Rejected: Invalid document format or missing mandatory fields.";
+            }
+            if (stripos($err, 'ERR28') !== false || stripos($err, 'NRIC') !== false) {
+                return "LHDN Rejected: Invalid customer details (e.g., missing or invalid 12-digit IC).";
+            }
+            return $err;
+        }
     }
     foreach (['submission', 'details', 'raw'] as $k) {
         if (isset($arr[$k]) && is_array($arr[$k])) {
@@ -280,13 +315,44 @@ if (isset($_GET['ajax_action'])) {
             $indRec = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($indRec) {
-                $tin = $indRec['customer_tin'];
+                $tin = $indRec['customer_tin'] ?? '';
+                $icno = $indRec['customer_ic'] ?? '';
+                $email = $indRec['customer_email'] ?? '';
+                
+                $useGeneralTin = false;
+
+                // 1. If TIN is missing or default, tentatively use the 12-digit IC
                 if (empty($tin) || $tin === 'EI00000000010') {
-                    $tin = lookupCustomerTIN($indRec['customer_ic'], $indRec['customer_email'], $apiBaseUrl, $tokenValue);
+                    $cleanIc = preg_replace('/[-\s]/', '', $icno);
+                    if (strlen($cleanIc) === 12 && !empty($email)) {
+                        $tin = $cleanIc; // Tentative TIN to be validated
+                    } else {
+                        $useGeneralTin = true;
+                    }
+                }
+
+                // 2. ✅ NEW: Validate the tentative TIN + IC with LHDN API
+                if (!$useGeneralTin && !empty($tin) && $tin !== 'EI00000000010') {
+                    $cleanIc = preg_replace('/[-\s]/', '', $icno);
+                    if (strlen($cleanIc) === 12) {
+                        $isValid = validateTINWithLHDN($tin, $cleanIc, $apiBaseUrl, $tokenValue);
+                        if (!$isValid) {
+                            $useGeneralTin = true;
+                        }
+                    } else {
+                        $useGeneralTin = true;
+                    }
+                }
+
+                // 3. ✅ If validation failed or IC is invalid, reconstruct payload for general TIN buyer
+                if ($useGeneralTin) {
+                    $tin = 'EI00000000010';
+                    // Update DB immediately to reflect the fallback
                     $pdo->prepare("UPDATE einvoice_records SET customer_tin = ? WHERE id = ?")->execute([$tin, $indRec['id']]);
                     $indRec['customer_tin'] = $tin;
                 }
 
+                // 4. Build and Submit Payload (now with validated or fallback general TIN)
                 $payloads = buildLHDNPayloads($indRec, $company, $jsonSendTemplate, $jsonConvertTemplate);
                 $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
                 
@@ -317,7 +383,7 @@ if (isset($_GET['ajax_action'])) {
                 }
                 $errMsg = findErrorInArray($combined);
                 
-                // ✅ AUTO-FALLBACK: Handle Invalid TIN (ERR406 / ERR409)
+                // ✅ AUTO-FALLBACK SAFETY NET: Handle Invalid TIN (ERR406 / ERR409) if it somehow slipped past pre-validation
                 $errMsgStr = is_string($errMsg) ? $errMsg : json_encode($errMsg);
                 $isInvalidTin = (
                     stripos($errMsgStr, 'ERR406') !== false || 
@@ -341,6 +407,7 @@ if (isset($_GET['ajax_action'])) {
                     exit;
                 }
 
+                // ✅ Save BOTH the sent payload and the response
                 $pdo->prepare("UPDATE einvoice_records SET lhdn_jsonsend = ?, lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id = ?")
                     ->execute([$payloads['send'], $docStatus, $uuid, $submissionUid, $longId, json_encode($combined), $indRec['id']]);
 
@@ -472,7 +539,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                         foreach ($result['rows'] as $row) {
                             $row = normalizeInvoiceRecord($row);
 
-                            /* ✅ NEW RULE: fail ONLY when sale date is more than 72 hours in the future */
                             $saleTs = strtotime(trim((string)($row['sale_datetime'] ?? '')));
                             if (!$saleTs) $saleTs = time();
                             $saleDatetime = date('Y-m-d H:i:s', $saleTs);
@@ -484,14 +550,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                             $status = empty($errors) ? 'valid' : 'invalid';
                             $errorsJson = $status === 'valid' ? null : json_encode($errors);
 
-                            /* ✅ FLAG: email + 12-digit IC = individual; otherwise consolidated (still verified) */
                             $email = trim((string)($row['customer_email'] ?? ''));
                             $ic = trim((string)($row['customer_ic'] ?? ''));
                             $cleanIC = preg_replace('/[-\s]/', '', $ic);
 
                             if ($email !== '' && preg_match('/^\d{12}$/', $cleanIC)) {
                                 $submissionType = 'individual';
-                                $customerTin = $cleanIC;
+                                $customerTin = $cleanIC; // Tentative, will be validated during submission
                             } else {
                                 $submissionType = 'consolidated';
                                 $customerTin = 'EI00000000010';
@@ -579,7 +644,6 @@ if (isset($_GET['upload'])) {
         $a->execute([$currentUpload['id']]); 
         $agg = $a->fetch(PDO::FETCH_ASSOC);
 
-        /* ✅ NEW: individual vs consolidated counters */
         $tc = $pdo->prepare("SELECT COUNT(*) FILTER (WHERE submission_type='individual') AS ind, COUNT(*) FILTER (WHERE submission_type='consolidated') AS cons FROM einvoice_records WHERE upload_id = ?");
         $tc->execute([$currentUpload['id']]);
         $typeCounts = $tc->fetch(PDO::FETCH_ASSOC);
@@ -740,7 +804,6 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
       <div class="card">
         <h2>Validation Results</h2>
         <p class="msub"><?= htmlspecialchars($currentUpload['filename']) ?> · Uploaded <?= date('M d, H:i', strtotime($currentUpload['created_at'])) ?></p>
-        <!-- ✅ UPDATED: removed Total Amount; added Individual / Consolidated counters -->
         <div class="summary-grid">
           <div class="summary-card"><b><?= $recTotal ?></b><p>Total Records</p></div>
           <div class="summary-card"><b style="color:#059669"><?= $agg['valid'] ?></b><p>Verified</p></div>
