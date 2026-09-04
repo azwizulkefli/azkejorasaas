@@ -7,6 +7,19 @@ requireCustomer();
 $uid = currentUserId();
 $me  = currentUser();
 
+// ---------------- AJAX: GET CONSOLIDATED DETAILS ----------------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'get_consolidated_details') {
+    header('Content-Type: application/json');
+    $consId = $_POST['consolidated_id'] ?? '';
+    
+    $stmt = $pdo->prepare("SELECT id, sale_no, customer_name, total_amount, lhdn_status, created_at FROM einvoice_records WHERE consolidated_id = ? AND user_id = ? ORDER BY created_at DESC");
+    $stmt->execute([$consId, $uid]);
+    $details = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    echo json_encode(['success' => true, 'data' => $details]);
+    exit;
+}
+
 // ---------------- DELETE RECORD ACTION HANDLER ----------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_record') {
     header('Content-Type: application/json');
@@ -32,8 +45,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         echo json_encode(['success' => false, 'message' => 'Record not found or unauthorized.']);
         exit;
     }
-
-    $isConsolidated = strtolower($record['submission_type'] ?? 'individual') === 'consolidated';
 
     $envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
     $tokenCol  = $envIsProd ? 'prod_token' : 'sandbox_token';
@@ -70,6 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
+    $isConsolidated = strtolower($record['submission_type'] ?? 'individual') === 'consolidated';
     if ($isConsolidated && !empty($record['consolidated_id'])) {
         $consStmt = $pdo->prepare("SELECT ei_uuid, lhdn_status FROM einvoice_consolidated WHERE id = ? AND user_id = ?");
         $consStmt->execute([$record['consolidated_id'], $uid]);
@@ -98,25 +110,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $curlError = curl_error($ch);
     curl_close($ch);
 
-    if ($curlError) {
-        echo json_encode(['success' => false, 'message' => 'Network error: ' . $curlError]);
-        exit;
-    }
-    if ($httpCode === 401) {
-        echo json_encode(['success' => false, 'message' => 'Token unauthorized. Please refresh token manually in Company Config.']);
-        exit;
-    }
-    if ($httpCode === 404) {
-        echo json_encode(['success' => false, 'message' => 'Document not found in LHDN (HTTP 404). UUID may be incorrect or document was rejected before validation.']);
-        exit;
-    }
-    if ($httpCode !== 200) {
-        echo json_encode(['success' => false, 'message' => 'LHDN API error (HTTP ' . $httpCode . '): ' . $response]);
-        exit;
-    }
+    if ($curlError) { echo json_encode(['success' => false, 'message' => 'Network error: ' . $curlError]); exit; }
+    if ($httpCode === 401) { echo json_encode(['success' => false, 'message' => 'Token unauthorized. Please refresh token manually in Company Config.']); exit; }
+    if ($httpCode === 404) { echo json_encode(['success' => false, 'message' => 'Document not found in LHDN (HTTP 404). UUID may be incorrect or document was rejected before validation.']); exit; }
+    if ($httpCode !== 200) { echo json_encode(['success' => false, 'message' => 'LHDN API error (HTTP ' . $httpCode . '): ' . $response]); exit; }
 
     $responseData = json_decode($response, true);
-    
     $newStatus = 'pending';
     $lhdnUuid = $record['lhdn_uuid'] ?? null;
     $lhdnSubmissionId = $record['lhdn_submission_id'] ?? null;
@@ -125,7 +124,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
     if (is_array($responseData)) {
         $rawStatus = strtolower($responseData['status'] ?? $responseData['documentStatus'] ?? $responseData['validationStatus'] ?? 'pending');
-        
         if (in_array($rawStatus, ['valid', 'validated', 'success', 'approved'])) $newStatus = 'valid';
         elseif (in_array($rawStatus, ['invalid', 'rejected', 'fail', 'failed', 'error'])) $newStatus = 'invalid';
         elseif (in_array($rawStatus, ['in_progress', 'pending', 'processing', 'submitted'])) $newStatus = 'in_progress';
@@ -141,29 +139,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 
     if ($isConsolidated && !empty($record['consolidated_id'])) {
-        $updateStmt = $pdo->prepare("
-            UPDATE einvoice_consolidated 
-            SET lhdn_status = ?, lhdn_response = ?, 
-                ei_uuid = COALESCE(NULLIF(?, ''), ei_uuid),
-                ei_submission_id = COALESCE(NULLIF(?, ''), ei_submission_id),
-                lhdn_uuid = COALESCE(NULLIF(?, ''), lhdn_uuid),
-                lhdn_long_id = COALESCE(NULLIF(?, ''), lhdn_long_id)
-            WHERE id = ? AND user_id = ?
-        ");
+        $updateStmt = $pdo->prepare("UPDATE einvoice_consolidated SET lhdn_status = ?, lhdn_response = ?, ei_uuid = COALESCE(NULLIF(?, ''), ei_uuid), ei_submission_id = COALESCE(NULLIF(?, ''), ei_submission_id), lhdn_uuid = COALESCE(NULLIF(?, ''), lhdn_uuid), lhdn_long_id = COALESCE(NULLIF(?, ''), lhdn_long_id) WHERE id = ? AND user_id = ?");
         $updateStmt->execute([$newStatus, json_encode($responseData), $lhdnUuid, $lhdnSubmissionId, $lhdnUuid, $lhdnLongId, $record['consolidated_id'], $uid]);
-        
-        $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ? WHERE consolidated_id = ? AND user_id = ?")
-            ->execute([$newStatus, $record['consolidated_id'], $uid]);
+        $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ? WHERE consolidated_id = ? AND user_id = ?")->execute([$newStatus, $record['consolidated_id'], $uid]);
     } else {
-        $updateStmt = $pdo->prepare("
-            UPDATE einvoice_records 
-            SET lhdn_status = ?, lhdn_response = ?, 
-                lhdn_uuid = COALESCE(NULLIF(?, ''), lhdn_uuid),
-                lhdn_submission_id = COALESCE(NULLIF(?, ''), lhdn_submission_id),
-                lhdn_long_id = COALESCE(NULLIF(?, ''), lhdn_long_id),
-                validation_errors = COALESCE(NULLIF(?, ''), validation_errors)
-            WHERE id = ? AND user_id = ?
-        ");
+        $updateStmt = $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_response = ?, lhdn_uuid = COALESCE(NULLIF(?, ''), lhdn_uuid), lhdn_submission_id = COALESCE(NULLIF(?, ''), lhdn_submission_id), lhdn_long_id = COALESCE(NULLIF(?, ''), lhdn_long_id), validation_errors = COALESCE(NULLIF(?, ''), validation_errors) WHERE id = ? AND user_id = ?");
         $updateStmt->execute([$newStatus, json_encode($responseData), $lhdnUuid, $lhdnSubmissionId, $lhdnLongId, $validationErrors, $recordId, $uid]);
     }
 
@@ -179,57 +159,52 @@ $offset = ($page - 1) * $perPage;
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $dateFrom = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
 $dateTo = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
+$statusFilter = isset($_GET['status_filter']) ? trim($_GET['status_filter']) : '';
 
 $envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
-// Base URL for the public share link (without 'api.' or '-api')
 $shareBaseUrl = $envIsProd ? 'https://myinvois.hasil.gov.my' : 'https://preprod.myinvois.hasil.gov.my';
 
-$summaryStmt = $pdo->prepare("SELECT 
-    COUNT(*) as total_submitted,
-    COUNT(CASE WHEN lhdn_status IN ('valid', 'validated', 'success') THEN 1 END) as total_valid,
-    COUNT(CASE WHEN lhdn_status IN ('invalid', 'rejected') THEN 1 END) as total_invalid,
-    COUNT(CASE WHEN lhdn_status IN ('error', 'fail', 'failed') THEN 1 END) as total_error
-    FROM einvoice_records WHERE user_id = ?");
-$summaryStmt->execute([$uid]);
-$summary = $summaryStmt->fetch(PDO::FETCH_ASSOC);
+// Build WHERE clauses for UNION
+$whereInd = ["r.user_id = ?", "(r.submission_type = 'individual' OR r.submission_type IS NULL)"];
+$pInd = [$uid];
+if ($search !== '') { $whereInd[] = "(r.sale_no ILIKE ? OR r.customer_name ILIKE ?)"; $pInd[] = "%$search%"; $pInd[] = "%$search%"; }
+if ($dateFrom !== '') { $whereInd[] = "r.created_at >= ?"; $pInd[] = $dateFrom . ' 00:00:00'; }
+if ($dateTo !== '') { $whereInd[] = "r.created_at <= ?"; $pInd[] = $dateTo . ' 23:59:59'; }
+if ($statusFilter !== '') { $whereInd[] = "r.lhdn_status ILIKE ?"; $pInd[] = "%$statusFilter%"; }
 
-$whereClauses = ["r.user_id = ?"];
-$params = [$uid];
-if ($search !== '') { $whereClauses[] = "(r.sale_no ILIKE ? OR r.customer_name ILIKE ?)"; $params[] = "%$search%"; $params[] = "%$search%"; }
-if ($dateFrom !== '') { $whereClauses[] = "r.created_at >= ?"; $params[] = $dateFrom . ' 00:00:00'; }
-if ($dateTo !== '') { $whereClauses[] = "r.created_at <= ?"; $params[] = $dateTo . ' 23:59:59'; }
-$whereSql = implode(' AND ', $whereClauses);
+$whereCon = ["c.user_id = ?"];
+$pCon = [$uid];
+if ($search !== '') { $whereCon[] = "(c.id::text ILIKE ? OR c.total_records::text ILIKE ?)"; $pCon[] = "%$search%"; $pCon[] = "%$search%"; }
+if ($dateFrom !== '') { $whereCon[] = "c.created_at >= ?"; $pCon[] = $dateFrom . ' 00:00:00'; }
+if ($dateTo !== '') { $whereCon[] = "c.created_at <= ?"; $pCon[] = $dateTo . ' 23:59:59'; }
+if ($statusFilter !== '') { $whereCon[] = "c.lhdn_status ILIKE ?"; $pCon[] = "%$statusFilter%"; }
 
-$countStmt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records r WHERE $whereSql");
-$countStmt->execute($params);
-$totalRecords = (int)$countStmt->fetchColumn();
+// Counts for pagination
+$countIndStmt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records r WHERE " . implode(' AND ', $whereInd));
+$countIndStmt->execute($pInd);
+$countInd = (int)$countIndStmt->fetchColumn();
+
+$countConStmt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_consolidated c WHERE " . implode(' AND ', $whereCon));
+$countConStmt->execute($pCon);
+$countCon = (int)$countConStmt->fetchColumn();
+
+$totalRecords = $countInd + $countCon;
 $totalPages = ceil($totalRecords / $perPage);
 
-$sql = "
-    SELECT 
-        r.*,
-        c.ei_json AS cons_jsonsend,
-        c.lhdn_status AS cons_lhdn_status,
-        c.lhdn_response AS cons_lhdn_response,
-        c.ei_uuid AS cons_lhdn_uuid,
-        c.ei_submission_id AS cons_ei_submission_id,
-        c.lhdn_long_id AS cons_lhdn_long_id
-    FROM einvoice_records r
-    LEFT JOIN einvoice_consolidated c ON r.consolidated_id = c.id
-    WHERE $whereSql 
-    ORDER BY r.created_at DESC 
-    LIMIT ? OFFSET ?
-";
-$params[] = $perPage; 
-$params[] = $offset;
-$stmt = $pdo->prepare($sql); 
+// UNION Query
+$sqlInd = "SELECT 'individual' AS record_type, r.id, r.sale_no, r.sale_datetime AS sale_date, r.customer_name, r.document_type, r.total_amount, r.created_at, r.lhdn_status, COALESCE(r.submission_type, 'individual') AS submission_type, NULL::uuid AS consolidated_id, NULL::int AS total_records, r.lhdn_uuid, r.lhdn_submission_id, r.lhdn_long_id, r.lhdn_response, r.lhdn_jsonsend FROM einvoice_records r WHERE " . implode(' AND ', $whereInd);
+$sqlCon = "SELECT 'consolidated' AS record_type, c.id, 'Consolidated Batch' AS sale_no, c.sale_date AS sale_date, c.total_records || ' Invoices' AS customer_name, 'Consolidated' AS document_type, c.grand_total AS total_amount, c.created_at, c.lhdn_status, 'consolidated' AS submission_type, c.id AS consolidated_id, c.total_records, c.ei_uuid AS lhdn_uuid, c.ei_submission_id AS lhdn_submission_id, c.lhdn_long_id, c.lhdn_response, c.ei_json AS lhdn_jsonsend FROM einvoice_consolidated c WHERE " . implode(' AND ', $whereCon);
+
+$unionSql = "($sqlInd) UNION ALL ($sqlCon) ORDER BY created_at DESC LIMIT ? OFFSET ?";
+$params = array_merge($pInd, $pCon, [$perPage, $offset]);
+$stmt = $pdo->prepare($unionSql);
 $stmt->execute($params);
 $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $avatarSrc = $me['avatar_path'] ? '/' . $me['avatar_path'] : null;
 
 function getCategory($docType) {
-    $map = ['01' => 'Invoice', '02' => 'Credit Note', '03' => 'Debit Note', '04' => 'Refund Note', '11' => 'Self-Billed'];
+    $map = ['01' => 'Invoice', '02' => 'Credit Note', '03' => 'Debit Note', '04' => 'Refund Note', '11' => 'Self-Billed', 'Consolidated' => 'Consolidated'];
     return $map[$docType] ?? ucfirst($docType ?? 'Unknown');
 }
 function getStatusClass($status) {
@@ -267,7 +242,7 @@ function getStatusClass($status) {
 .summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:32px}.summary-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;text-align:center;box-shadow:var(--card)}
 .summary-card b{display:block;font-size:28px;font-weight:800}.summary-card p{font-size:12px;font-weight:600;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
 .toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin:24px 0 16px}
-.search-box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 14px;flex:1;max-width:400px}.search-box input{border:none;outline:none;font-size:14px;width:100%;background:transparent}
+.search-box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 14px;flex:1;max-width:400px}.search-box input,.search-box select{border:none;outline:none;font-size:14px;width:100%;background:transparent;color:var(--ink);font-weight:600}
 .filter-group{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.filter-group select{border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px;font-weight:600;color:var(--ink);background:#fff;cursor:pointer}
 .btn{display:inline-flex;align-items:center;gap:8px;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;transition:.15s;text-decoration:none;border:none;cursor:pointer}
 .btn.primary{background:var(--grad);color:#fff}.btn.primary:hover{opacity:.9}.btn.ghost{background:#fff;border:1px solid var(--line);color:var(--muted)}
@@ -331,31 +306,36 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
     <h1>Submitted E-Invoices 📋</h1>
     <p class="sub">View, search, and manage your LHDN e-invoice submission history.</p>
 
-    <div class="summary-grid">
-      <div class="summary-card"><b style="color:#3b82f6"><?= number_format($summary['total_submitted'] ?? 0) ?></b><p>Total Submitted</p></div>
-      <div class="summary-card"><b style="color:#059669"><?= number_format($summary['total_valid'] ?? 0) ?></b><p>Total Valid</p></div>
-      <div class="summary-card"><b style="color:#e11d48"><?= number_format($summary['total_invalid'] ?? 0) ?></b><p>Total Invalid</p></div>
-      <div class="summary-card"><b style="color:#64748b"><?= number_format($summary['total_error'] ?? 0) ?></b><p>Total Error</p></div>
-    </div>
-
     <form method="GET" class="toolbar" id="filterForm">
       <div class="search-box">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint);flex-shrink:0"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-        <input type="text" name="search" placeholder="Search by Sale No or Customer Name..." value="<?= htmlspecialchars($search) ?>">
+        <input type="text" name="search" placeholder="Search by Sale No or Customer..." value="<?= htmlspecialchars($search) ?>">
       </div>
       <div class="search-box" style="max-width: 160px;">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint);flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-        <input type="date" name="date_from" value="<?= htmlspecialchars($dateFrom) ?>" style="border:none;outline:none;font-size:13px;width:100%;background:transparent;color:var(--ink)">
+        <input type="date" name="date_from" value="<?= htmlspecialchars($dateFrom) ?>" title="From Date">
       </div>
       <div class="search-box" style="max-width: 160px;">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint);flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-        <input type="date" name="date_to" value="<?= htmlspecialchars($dateTo) ?>" style="border:none;outline:none;font-size:13px;width:100%;background:transparent;color:var(--ink)">
+        <input type="date" name="date_to" value="<?= htmlspecialchars($dateTo) ?>" title="To Date">
+      </div>
+      <!-- NEW: LHDN Status Filter -->
+      <div class="search-box" style="max-width: 180px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint);flex-shrink:0"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
+        <select name="status_filter" onchange="document.getElementById('filterForm').submit()">
+          <option value="">All Statuses</option>
+          <option value="valid" <?= $statusFilter === 'valid' ? 'selected' : '' ?>>Valid</option>
+          <option value="invalid" <?= $statusFilter === 'invalid' ? 'selected' : '' ?>>Invalid</option>
+          <option value="in_progress" <?= $statusFilter === 'in_progress' ? 'selected' : '' ?>>In Progress</option>
+          <option value="pending" <?= $statusFilter === 'pending' ? 'selected' : '' ?>>Pending</option>
+          <option value="error" <?= $statusFilter === 'error' ? 'selected' : '' ?>>Error</option>
+        </select>
       </div>
       <div class="filter-group">
         <select name="per_page" onchange="document.getElementById('filterForm').submit()">
           <?php foreach ($perPageOptions as $opt): ?><option value="<?= $opt ?>" <?= $perPage == $opt ? 'selected' : '' ?>><?= $opt ?> per page</option><?php endforeach; ?>
         </select>
-        <a href="?export=1&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>&per_page=<?= $perPage ?>" class="btn primary" onclick="document.getElementById('loadingOverlay').classList.add('active')">
+        <a href="?export=1&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>&status_filter=<?= urlencode($statusFilter) ?>&per_page=<?= $perPage ?>" class="btn primary" onclick="document.getElementById('loadingOverlay').classList.add('active')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
           Export CSV
         </a>
@@ -365,111 +345,94 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
     <div class="card">
       <div class="table-responsive">
         <table>
-          <thead><tr><th style="width:50px">No</th><th>Sale No</th><th>Sale Date</th><th>Customer Details</th><th>Category</th><th style="text-align:right">Sale Total</th><th>Submitted Date</th><th>LHDN Status</th><th style="width:140px">Action</th></tr></thead>
+          <thead><tr><th style="width:50px">No</th><th>Sale No</th><th>Sale Date</th><th>Customer Details</th><th>Category</th><th style="text-align:right">Total</th><th>Submitted Date</th><th>LHDN Status</th><th style="width:140px">Action</th></tr></thead>
           <tbody>
             <?php if (empty($records)): ?>
               <tr><td colspan="9" style="text-align:center;padding:48px 16px;color:var(--faint)"><div style="font-size:32px;margin-bottom:8px">📭</div>No e-invoice records found matching your criteria.</td></tr>
             <?php else: ?>
               <?php foreach ($records as $index => $row): 
                 $no = $offset + $index + 1;
+                $isConsolidated = $row['record_type'] === 'consolidated';
                 
-                $isConsolidated = strtolower($row['submission_type'] ?? 'individual') === 'consolidated';
-                $displayStatus = $isConsolidated ? ($row['cons_lhdn_status'] ?? $row['lhdn_status']) : $row['lhdn_status'];
-                $displayResponse = $isConsolidated ? ($row['cons_lhdn_response'] ?? $row['lhdn_response']) : $row['lhdn_response'];
-                $displayJsonSend = $isConsolidated ? ($row['cons_jsonsend'] ?? $row['lhdn_jsonsend']) : $row['lhdn_jsonsend'];
-                $displayLhdnUuid = $isConsolidated ? ($row['cons_lhdn_uuid'] ?? $row['lhdn_uuid']) : $row['lhdn_uuid'];
-                $displaySubmissionId = $isConsolidated ? ($row['cons_ei_submission_id'] ?? $row['lhdn_submission_id']) : $row['lhdn_submission_id'];
-                $displayLhdnLongId = $isConsolidated ? ($row['cons_lhdn_long_id'] ?? $row['lhdn_long_id']) : $row['lhdn_long_id'];
-
-                if (is_array($displayResponse)) $displayResponse = json_encode($displayResponse);
-
-                $status = strtolower($displayStatus ?? 'pending');
+                $status = strtolower($row['lhdn_status'] ?? 'pending');
                 $isValid = in_array($status, ['valid', 'validated', 'success']);
                 $isPending = in_array($status, ['submitted', 'processing', 'in_progress', 'pending', 'new']);
                 $isInvalid = in_array($status, ['invalid', 'error', 'fail', 'failed', 'rejected']);
                 
-                $saleDate = $row['sale_datetime'] ? date('d M Y', strtotime($row['sale_datetime'])) : date('d M Y', strtotime($row['created_at']));
+                $saleDate = $row['sale_date'] ? date('d M Y', strtotime($row['sale_date'])) : date('d M Y', strtotime($row['created_at']));
                 $submitDate = date('d M Y, H:i', strtotime($row['created_at']));
 
-                // Generate LHDN Share URL if valid and IDs exist
                 $shareUrl = '';
-                if ($isValid && !empty($displayLhdnLongId) && !empty($displaySubmissionId)) {
-                    $shareUrl = $shareBaseUrl . '/' . rawurlencode($displayLhdnUuid) . '/share/' . rawurlencode($displayLhdnLongId);
+                if ($isValid && !empty($row['lhdn_long_id']) && !empty($row['lhdn_submission_id'])) {
+                    $shareUrl = $shareBaseUrl . '/' . rawurlencode($row['lhdn_uuid']) . '/share/' . rawurlencode($row['lhdn_long_id']);
                 }
               ?>
                 <tr>
                   <td style="color:var(--faint);font-weight:600"><?= $no ?></td>
-                  
                   <td>
                     <b><?= htmlspecialchars($row['sale_no'] ?? '—') ?></b>
                     <?php if ($isConsolidated && !empty($row['consolidated_id'])): ?>
-                      <div style="font-size:10px;color:var(--faint);font-family:ui-monospace,monospace;margin-top:4px;word-break:break-all" title="Consolidated ID">
-                        📦 <?= htmlspecialchars($row['consolidated_id']) ?>
+                      <div style="font-size:10px;color:var(--faint);font-family:ui-monospace,monospace;margin-top:4px;" title="Consolidated ID">
+                        📦 <?= htmlspecialchars(substr($row['consolidated_id'], 0, 8)) ?>...
                       </div>
                     <?php endif; ?>
                   </td>
-                  
                   <td><?= htmlspecialchars($saleDate) ?></td>
                   <td>
-                    <div style="font-weight:700;color:var(--ink)"><?= htmlspecialchars($row['customer_name'] ?? '—') ?></div>
-                    <div class="customer-details">
-                      <?php if (!empty($row['customer_email'])): ?><div>✉️ <?= htmlspecialchars($row['customer_email']) ?></div><?php endif; ?>
-                      <?php if (!empty($row['customer_phone'])): ?><div>📞 <?= htmlspecialchars($row['customer_phone']) ?></div><?php endif; ?>
-                      <?php if (!empty($row['customer_tin'])): ?><div>🆔 TIN: <?= htmlspecialchars($row['customer_tin']) ?></div><?php endif; ?>
-                      <?php if (!empty($row['customer_ic'])): ?><div>🪪 IC: <?= htmlspecialchars($row['customer_ic']) ?></div><?php endif; ?>
-                      <?php if (empty($row['customer_email']) && empty($row['customer_phone']) && empty($row['customer_tin']) && empty($row['customer_ic'])): ?><div style="color:var(--faint);font-style:italic">No additional details</div><?php endif; ?>
-                    </div>
-                  </td>
-                  <td>
-                    <div style="font-weight:600;color:var(--ink);font-size:13px"><?= getCategory($row['document_type']) ?></div>
-                  </td>
-                  <td style="text-align:right;font-weight:700;font-family:ui-monospace,monospace">RM <?= number_format($row['total_amount'], 2) ?></td>
-                  
-                  <td style="font-size:13px;color:var(--muted)">
-                    <?= htmlspecialchars($submitDate) ?>
-                    <div style="font-size:10px;color:var(--faint);margin-top:4px;text-transform:capitalize">
-                      <?= htmlspecialchars($row['submission_type'] ?? 'individual') ?>
-                    </div>
-                    <?php if (in_array($status, ['submitted', 'processing', 'in_progress', 'pending']) && !empty($displayLhdnUuid)): ?>
-                      <div style="font-size:10px;color:var(--faint);font-family:ui-monospace,monospace;margin-top:4px;word-break:break-all" title="LHDN UUID">
-                        🆔 <?= htmlspecialchars($displayLhdnUuid) ?>
+                    <?php if ($isConsolidated): ?>
+                      <div style="font-weight:700;color:var(--ink)"><?= htmlspecialchars($row['customer_name']) ?></div>
+                      <div class="customer-details"><div>📦 Batch Submission</div></div>
+                    <?php else: ?>
+                      <div style="font-weight:700;color:var(--ink)"><?= htmlspecialchars($row['customer_name'] ?? '—') ?></div>
+                      <div class="customer-details">
+                        <?php if (!empty($row['customer_email'])): ?><div>✉️ <?= htmlspecialchars($row['customer_email']) ?></div><?php endif; ?>
+                        <?php if (!empty($row['customer_phone'])): ?><div>📞 <?= htmlspecialchars($row['customer_phone']) ?></div><?php endif; ?>
+                        <?php if (!empty($row['customer_tin'])): ?><div>🆔 TIN: <?= htmlspecialchars($row['customer_tin']) ?></div><?php endif; ?>
+                        <?php if (empty($row['customer_email']) && empty($row['customer_phone']) && empty($row['customer_tin'])): ?><div style="color:var(--faint);font-style:italic">No additional details</div><?php endif; ?>
                       </div>
                     <?php endif; ?>
                   </td>
-                  
-                  <td><span class="badge <?= getStatusClass($displayStatus) ?>"><?= htmlspecialchars(strtoupper($displayStatus ?? 'PENDING')) ?></span></td>
+                  <td><div style="font-weight:600;color:var(--ink);font-size:13px"><?= getCategory($row['document_type']) ?></div></td>
+                  <td style="text-align:right;font-weight:700;font-family:ui-monospace,monospace">RM <?= number_format($row['total_amount'], 2) ?></td>
+                  <td style="font-size:13px;color:var(--muted)">
+                    <?= htmlspecialchars($submitDate) ?>
+                    <div style="font-size:10px;color:var(--faint);margin-top:4px;text-transform:capitalize"><?= htmlspecialchars($row['submission_type'] ?? 'individual') ?></div>
+                    <?php if (!$isConsolidated && in_array($status, ['submitted', 'processing', 'in_progress', 'pending']) && !empty($row['lhdn_uuid'])): ?>
+                      <div style="font-size:10px;color:var(--faint);font-family:ui-monospace,monospace;margin-top:4px;word-break:break-all" title="LHDN UUID">🆔 <?= htmlspecialchars($row['lhdn_uuid']) ?></div>
+                    <?php endif; ?>
+                  </td>
+                  <td><span class="badge <?= getStatusClass($row['lhdn_status']) ?>"><?= htmlspecialchars(strtoupper($row['lhdn_status'] ?? 'PENDING')) ?></span></td>
                   <td>
                     <div class="action-btns">
-                      <button class="action-btn" title="View JSON Sent" onclick="openJsonModal(<?= htmlspecialchars(json_encode($displayJsonSend ?? '{}'), ENT_QUOTES) ?>, 'JSON Sent to LHDN')">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M10 12l-2 2 2 2"></path><path d="M14 12l2 2-2 2"></path></svg>
-                      </button>
-
-                      <button class="action-btn" title="View JSON Response" onclick="openJsonModal(<?= htmlspecialchars(json_encode($displayResponse ?? '{}'), ENT_QUOTES) ?>, 'JSON Response from LHDN')">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M8 10h8"></path><path d="M8 14h4"></path></svg>
-                      </button>
-
-                      <?php if ($isPending && !$isConsolidated): ?>
-                        <button class="action-btn" title="Check Status / Resubmit" onclick="resubmitRecord('<?= htmlspecialchars($row['id']) ?>')">
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-                        </button>
-                      <?php elseif ($isValid): ?>
-                        <?php if (!empty($shareUrl)): ?>
-                          <a href="<?= htmlspecialchars($shareUrl) ?>" target="_blank" class="action-btn" title="View LHDN E-Invoice (New Tab)">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
-                          </a>
-                        <?php endif; ?>
-                        <button class="action-btn" title="View Details" onclick="openInvoiceModal(<?= htmlspecialchars(json_encode(array_merge($row, [
-                            'lhdn_status' => $displayStatus,
-                            'lhdn_response' => $displayResponse,
-                            'lhdn_uuid' => $displayLhdnUuid,
-                            'lhdn_submission_id' => $displaySubmissionId
-                        ])), ENT_QUOTES) ?>)">
+                      <?php if ($isConsolidated): ?>
+                        <button class="action-btn" title="View Batch Details" onclick="openConsolidatedModal('<?= htmlspecialchars($row['consolidated_id']) ?>')">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                         </button>
-                      <?php elseif ($isInvalid): ?>
-                        <button class="action-btn danger" title="Delete Record (Re-upload Required)" onclick="deleteRecord('<?= htmlspecialchars($row['id']) ?>')">
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                      <?php else: ?>
+                        <button class="action-btn" title="View JSON Sent" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_jsonsend'] ?? '{}'), ENT_QUOTES) ?>, 'JSON Sent to LHDN')">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M10 12l-2 2 2 2"></path><path d="M14 12l2 2-2 2"></path></svg>
                         </button>
+                        <button class="action-btn" title="View JSON Response" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response'] ?? '{}'), ENT_QUOTES) ?>, 'JSON Response from LHDN')">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M8 10h8"></path><path d="M8 14h4"></path></svg>
+                        </button>
+                        <?php if ($isPending): ?>
+                          <button class="action-btn" title="Check Status / Resubmit" onclick="resubmitRecord('<?= htmlspecialchars($row['id']) ?>')">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                          </button>
+                        <?php elseif ($isValid): ?>
+                          <?php if (!empty($shareUrl)): ?>
+                            <a href="<?= htmlspecialchars($shareUrl) ?>" target="_blank" class="action-btn" title="View LHDN E-Invoice (New Tab)">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                            </a>
+                          <?php endif; ?>
+                          <button class="action-btn" title="View Details" onclick="openInvoiceModal(<?= htmlspecialchars(json_encode($row), ENT_QUOTES) ?>)">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                          </button>
+                        <?php elseif ($isInvalid): ?>
+                          <button class="action-btn danger" title="Delete Record (Re-upload Required)" onclick="deleteRecord('<?= htmlspecialchars($row['id']) ?>')">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                          </button>
+                        <?php endif; ?>
                       <?php endif; ?>
                     </div>
                   </td>
@@ -483,11 +446,11 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
         <div class="pagination">
           <span>Showing <?= $offset + 1 ?> to <?= min($offset + $perPage, $totalRecords) ?> of <?= $totalRecords ?> records</span>
           <div class="page-links">
-            <a href="?page=<?= max(1, $page - 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>" class="page-link <?= $page <= 1 ? 'disabled' : '' ?>">‹</a>
+            <a href="?page=<?= max(1, $page - 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>&status_filter=<?= urlencode($statusFilter) ?>" class="page-link <?= $page <= 1 ? 'disabled' : '' ?>">‹</a>
             <?php $startPage = max(1, $page - 2); $endPage = min($totalPages, $page + 2); for ($i = $startPage; $i <= $endPage; $i++): ?>
-              <a href="?page=<?= $i ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>" class="page-link <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
+              <a href="?page=<?= $i ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>&status_filter=<?= urlencode($statusFilter) ?>" class="page-link <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
             <?php endfor; ?>
-            <a href="?page=<?= min($totalPages, $page + 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>" class="page-link <?= $page >= $totalPages ? 'disabled' : '' ?>">›</a>
+            <a href="?page=<?= min($totalPages, $page + 1) ?>&per_page=<?= $perPage ?>&search=<?= urlencode($search) ?>&date_from=<?= urlencode($dateFrom) ?>&date_to=<?= urlencode($dateTo) ?>&status_filter=<?= urlencode($statusFilter) ?>" class="page-link <?= $page >= $totalPages ? 'disabled' : '' ?>">›</a>
           </div>
         </div>
       <?php endif; ?>
@@ -496,28 +459,49 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
   <footer class="footer">© 2026 AZ Kejora SaaS · Supabase PostgreSQL · <?= htmlspecialchars($me['email']) ?></footer>
 </div>
 
-<!-- Modals (Invoice & JSON) -->
+<!-- Modals -->
 <div class="modal" id="invoiceModal" onclick="if(event.target===this)closeModal('invoiceModal')"><div class="modal-card"><div class="modal-header"><h3>📄 LHDN E-Invoice Details</h3><button class="modal-close" onclick="closeModal('invoiceModal')">✕</button></div><div id="invoiceModalContent"></div><div style="margin-top:20px;display:flex;gap:10px"><button class="btn primary" style="flex:1" onclick="alert('PDF download feature would be triggered here.')">⬇ Download PDF</button><button class="btn ghost" style="flex:1" onclick="closeModal('invoiceModal')">Close</button></div></div></div>
+
 <div class="modal" id="jsonModal" onclick="if(event.target===this)closeModal('jsonModal')"><div class="modal-card"><div class="modal-header"><h3 id="jsonModalTitle">LHDN API Response (JSON)</h3><button class="modal-close" onclick="closeModal('jsonModal')">✕</button></div><pre class="json-block" id="jsonModalContent"></pre><div style="margin-top:16px;text-align:right"><button class="btn ghost" onclick="copyJson()">📋 Copy to Clipboard</button><button class="btn primary" onclick="closeModal('jsonModal')" style="margin-left:8px">Close</button></div></div></div>
+
+<!-- NEW: Consolidated Details Modal -->
+<div class="modal" id="consolidatedModal" onclick="if(event.target===this)closeModal('consolidatedModal')">
+  <div class="modal-card" style="max-width: 800px;">
+    <div class="modal-header">
+      <h3>📦 Consolidated Batch Details</h3>
+      <button class="modal-close" onclick="closeModal('consolidatedModal')">✕</button>
+    </div>
+    <div id="consolidatedModalContent" style="text-align:center;padding:20px;">
+      <div class="spinner"></div>
+      <p style="margin-top:16px;color:var(--muted)">Loading details...</p>
+    </div>
+  </div>
+</div>
 
 <script>
 function toggleSidebar(){document.getElementById('sidebar').classList.toggle('open');document.getElementById('sidebarOverlay').classList.toggle('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');document.body.style.overflow='';}
+
+function getStatusClassJs(status) {
+    const s = (status || 'pending').toLowerCase();
+    if (['valid', 'validated', 'success'].includes(s)) return 'valid';
+    if (['invalid', 'error', 'fail', 'failed', 'rejected'].includes(s)) return 'invalid';
+    return 'processing';
+}
+
 function openInvoiceModal(record){
   const content = document.getElementById('invoiceModalContent');
-  const saleDate = record.sale_datetime ? new Date(record.sale_datetime).toLocaleDateString() : new Date(record.created_at).toLocaleDateString();
-  content.innerHTML = `<div class="detail-grid"><div class="detail-item"><label>Sale No</label><span>${record.sale_no || '—'}</span></div><div class="detail-item"><label>Document Type</label><span>${record.document_type || '—'}</span></div><div class="detail-item"><label>Customer Name</label><span>${record.customer_name || '—'}</span></div><div class="detail-item"><label>Customer TIN</label><span>${record.customer_tin || '—'}</span></div><div class="detail-item"><label>Sale Amount</label><span>RM ${parseFloat(record.sale_amount || 0).toFixed(2)}</span></div><div class="detail-item"><label>Total Amount</label><span style="color:var(--brand);font-weight:800">RM ${parseFloat(record.total_amount || 0).toFixed(2)}</span></div><div class="detail-item"><label>LHDN Status</label><span style="text-transform:uppercase">${record.lhdn_status || 'PENDING'}</span></div><div class="detail-item"><label>Submission Date</label><span>${saleDate}</span></div></div>${record.lhdn_submission_id ? `<div class="detail-item" style="margin-bottom:16px"><label>LHDN Submission ID</label><span style="font-family:monospace;font-size:12px">${record.lhdn_submission_id}</span></div>` : ''}`;
+  const saleDate = record.sale_date ? new Date(record.sale_date).toLocaleDateString() : new Date(record.created_at).toLocaleDateString();
+  content.innerHTML = `<div class="detail-grid"><div class="detail-item"><label>Sale No</label><span>${record.sale_no || '—'}</span></div><div class="detail-item"><label>Document Type</label><span>${record.document_type || '—'}</span></div><div class="detail-item"><label>Customer Name</label><span>${record.customer_name || '—'}</span></div><div class="detail-item"><label>Sale Amount</label><span>RM ${parseFloat(record.total_amount || 0).toFixed(2)}</span></div><div class="detail-item"><label>LHDN Status</label><span style="text-transform:uppercase">${record.lhdn_status || 'PENDING'}</span></div><div class="detail-item"><label>Submission Date</label><span>${saleDate}</span></div></div>${record.lhdn_submission_id ? `<div class="detail-item" style="margin-bottom:16px"><label>LHDN Submission ID</label><span style="font-family:monospace;font-size:12px">${record.lhdn_submission_id}</span></div>` : ''}`;
   document.getElementById('invoiceModal').classList.add('open');document.body.style.overflow='hidden';
 }
+
 function openJsonModal(jsonString, modalTitle = 'LHDN API Response (JSON)'){
   try {
     let parsed = jsonString;
     if (typeof jsonString === 'string') {
-      if (jsonString.trim() === '') {
-        parsed = { "message": "No JSON data available for this record." };
-      } else {
-        parsed = JSON.parse(jsonString);
-      }
+      if (jsonString.trim() === '') parsed = { "message": "No JSON data available for this record." };
+      else parsed = JSON.parse(jsonString);
     }
     document.getElementById('jsonModalContent').textContent = JSON.stringify(parsed, null, 2);
   } catch(e) {
@@ -525,10 +509,48 @@ function openJsonModal(jsonString, modalTitle = 'LHDN API Response (JSON)'){
   }
   const titleEl = document.getElementById('jsonModalTitle');
   if (titleEl) titleEl.textContent = modalTitle;
-  document.getElementById('jsonModal').classList.add('open');
-  document.body.style.overflow='hidden';
+  document.getElementById('jsonModal').classList.add('open');document.body.style.overflow='hidden';
 }
-function copyJson(){const text = document.getElementById('jsonModalContent').textContent;navigator.clipboard.writeText(text).then(() => alert('JSON copied to clipboard!')).catch(() => alert('Failed to copy.'));}
+
+function copyJson(){
+  const text = document.getElementById('jsonModalContent').textContent;
+  navigator.clipboard.writeText(text).then(() => alert('JSON copied to clipboard!')).catch(() => alert('Failed to copy.'));
+}
+
+function openConsolidatedModal(consId) {
+  document.getElementById('consolidatedModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  const content = document.getElementById('consolidatedModalContent');
+  content.innerHTML = '<div class="spinner"></div><p style="margin-top:16px;color:var(--muted)">Loading details...</p>';
+  
+  const formData = new FormData();
+  formData.append('action', 'get_consolidated_details');
+  formData.append('consolidated_id', consId);
+  
+  fetch(window.location.href, { method: 'POST', body: formData })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success && data.data.length > 0) {
+      let html = `<div class="table-responsive" style="max-height:400px;overflow-y:auto"><table style="min-width:600px"><thead><tr><th>Sale No</th><th>Customer</th><th style="text-align:right">Total</th><th>Status</th></tr></thead><tbody>`;
+      data.data.forEach(item => {
+        const statusClass = getStatusClassJs(item.lhdn_status);
+        html += `<tr>
+          <td><b>${item.sale_no || '—'}</b></td>
+          <td>${item.customer_name || '—'}</td>
+          <td style="text-align:right;font-family:monospace">RM ${parseFloat(item.total_amount || 0).toFixed(2)}</td>
+          <td><span class="badge ${statusClass}">${(item.lhdn_status || 'PENDING').toUpperCase()}</span></td>
+        </tr>`;
+      });
+      html += `</tbody></table></div>`;
+      content.innerHTML = html;
+    } else {
+      content.innerHTML = '<p style="color:var(--muted)">No individual records found for this batch.</p>';
+    }
+  })
+  .catch(err => {
+    content.innerHTML = '<p style="color:#e11d48">Failed to load details.</p>';
+  });
+}
 
 function resubmitRecord(recordId){
   if(!confirm('Check LHDN status for this record? This will refresh the token if expired and query the LHDN API.')) return;
@@ -560,7 +582,7 @@ function deleteRecord(recordId) {
   }).catch(error => {document.getElementById('loadingOverlay').classList.remove('active');console.error('Error:', error);alert('A network error occurred.');});
 }
 
-document.addEventListener('keydown', function(e){if(e.key === 'Escape'){closeModal('invoiceModal');closeModal('jsonModal');}});
+document.addEventListener('keydown', function(e){if(e.key === 'Escape'){closeModal('invoiceModal');closeModal('jsonModal');closeModal('consolidatedModal');}});
 </script>
 </body>
 </html>
