@@ -30,7 +30,6 @@ function logInternal($pdo, $submissionId, $step, $status, $message, $payload = n
     $stmt->execute([$submissionId, $step, $status, $message, $payload ? (is_array($payload) ? json_encode($payload) : $payload) : null]);
 }
 
-// ✅ NEW: Search for the actual TIN using IC / NRIC (Based on your sample code)
 function searchTINWithLHDN($icno, $apiBaseUrl, $token) {
     $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
     if (strlen($cleanIc) !== 12) return ['found' => false, 'tin' => null];
@@ -56,22 +55,18 @@ function searchTINWithLHDN($icno, $apiBaseUrl, $token) {
     
     if ($httpCode === 200) {
         $data = json_decode($response, true);
-        // Extract TIN from various possible LHDN response formats
         if (is_array($data)) {
             if (isset($data[0]['tin'])) return ['found' => true, 'tin' => $data[0]['tin']];
             if (isset($data['tin'])) return ['found' => true, 'tin' => $data['tin']];
-            if (isset($data['taxPayerTin'])) return ['found' => true, 'tin' => $data['taxPayerTin']];
         } elseif (is_string($data)) {
-             return ['found' => true, 'tin' => $data];
+            return ['found' => true, 'tin' => $data];
         }
     }
-    
     return ['found' => false, 'tin' => null, 'http' => $httpCode];
 }
 
 function findErrorInArray($arr) {
     if (!is_array($arr)) return null;
-    
     foreach (['error', 'message', 'errorMessages', 'validationErrors', 'curl_error', 'description', 'errors'] as $k) {
         if (isset($arr[$k]) && $arr[$k]) {
             $err = is_string($arr[$k]) ? $arr[$k] : json_encode($arr[$k]);
@@ -84,7 +79,6 @@ function findErrorInArray($arr) {
             return $err;
         }
     }
-    
     foreach (['submission', 'details', 'raw', 'rejectedDocuments'] as $k) {
         if (isset($arr[$k]) && is_array($arr[$k])) {
             if ($k === 'rejectedDocuments') {
@@ -113,6 +107,30 @@ function extractLhdnError($rec) {
     return null;
 }
 
+// ✅ NEW: Builds multiple detailed line items for Consolidated invoices
+function buildConsolidatedLineItems($records) {
+    $items = [];
+    foreach ($records as $index => $rec) {
+        $amount = number_format((float)$rec['total_amount'], 2, '.', '');
+        $desc = sprintf("%s | %s | %s", 
+            $rec['sale_no'] ?? 'NA', 
+            $rec['customer_name'] ?? 'Customer', 
+            $rec['customer_ic'] ?? 'NA'
+        );
+        $desc = str_replace(['"', "\n", "\r"], ['\\"', ' ', ' '], $desc);
+        
+        $items[] = '{' .
+            '"ID": [{"_": "' . ($index + 1) . '"}],' .
+            '"InvoicedQuantity": [{"_": 1, "unitCode": "C62"}],' .
+            '"LineExtensionAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}],' .
+            '"TaxTotal": [{"TaxAmount": [{"_": 0, "currencyID": "MYR"}], "TaxSubtotal": [{"TaxableAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}], "TaxAmount": [{"_": 0, "currencyID": "MYR"}], "Percent": [{"_": 0}], "TaxCategory": [{"ID": [{"_": "E"}], "TaxExemptionReason": [{"_": "Exempt"}], "TaxScheme": [{"ID": [{"_": "OTH"}, {"schemeID": "UN/ECE 5153"}, {"schemeAgencyID": "6"}]}]}]}]}],' .
+            '"Item": [{"CommodityClassification": [{"ItemClassificationCode": [{"_": "9800.00.0010", "listID": "PTC"}]}, {"ItemClassificationCode": [{"_": "004", "listID": "CLASS"}]}], "Description": [{"_": "' . $desc . '"}], "OriginCountry": [{"IdentificationCode": [{"_": "MYS"}]}]}],' .
+            '"Price": [{"PriceAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}]' .
+        '}';
+    }
+    return implode(',', $items);
+}
+
 function buildLineItems($record) {
     $amount = number_format((float)$record['total_amount'], 2, '.', '');
     $desc = ($record['submission_type'] ?? '') === 'consolidated' ? 'Consolidated daily sales' : ($record['sale_title'] ?? 'Sale Transaction');
@@ -128,11 +146,18 @@ function buildLineItems($record) {
     '}';
 }
 
-function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTemplate) {
+function buildLHDNPayloads($recordOrRecords, $company, $jsonSendTemplate, $jsonConvertTemplate, $grandTotal = null) {
+    $isConsolidated = is_array($recordOrRecords) && count($recordOrRecords) > 1;
+    $records = $isConsolidated ? $recordOrRecords : [$recordOrRecords];
+    $primary = $records[0];
+    
+    $lineItemsJson = $isConsolidated ? buildConsolidatedLineItems($records) : buildLineItems($primary);
+    $finalTotal = $grandTotal ?? $primary['total_amount'];
+
     $map = [
-        '*|ei_invoiceno|*'           => $record['sale_no'] ?? '',
-        '*|ei_invoicedate|*'         => date('Y-m-d', strtotime($record['sale_datetime'])),
-        '*|ei_invoicetype|*'         => $record['document_type'] ?? '01',
+        '*|ei_invoiceno|*'           => $primary['sale_no'] ?? '',
+        '*|ei_invoicedate|*'         => date('Y-m-d', strtotime($primary['sale_datetime'])),
+        '*|ei_invoicetype|*'         => $isConsolidated ? '15' : ($primary['document_type'] ?? '01'), // ✅ 15 for Consolidated
         '*|ei_invoicecurrency|*'     => 'MYR',
         '*|ei_msiccode|*'            => $company['msic_code'] ?? '',
         '*|ei_msicname|*'            => $company['business_type'] ?? '',
@@ -144,29 +169,30 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
         '*|ei_suppliertown|*'        => $company['town'] ?? '',
         '*|ei_supplierphone|*'       => $company['phone'] ?? '',
         '*|ei_supplieremail|*'       => $company['email'] ?? '',
-        '*|ei_customertin|*'         => $record['customer_tin'] ?? 'EI00000000010',
-        '*|ei_customername|*'        => $record['customer_name'] ?? 'Consolidated Sales',
-        '*|ei_customeradd1|*'        => $record['customer_address'] ?? 'Buyer Address 1',
-        '*|ei_customeradd2|*'        => $record['customer_address'] ?? 'Buyer Address 2',
-        '*|ei_customerpostcode|*'    => $record['customer_postcode'] ?? '00000',
-        '*|ei_customertown|*'        => $record['customer_town'] ?? 'N/A',
-        '*|ei_customerphone|*'       => $record['customer_phone'] ?? '0000000000',
-        '*|ei_customeremail|*'       => $record['customer_email'] ?? 'na@na.com',
-        '*|ei_customeric|*'          => $record['customer_ic'] ?? '000000000000',
-        '*|ei_invoicetotalamount|*'  => number_format((float)$record['total_amount'], 2, '.', ''),
-        '*|ei_cninvoice_referenceno|*' => $record['reference_no'] ?? 'NA',
-        '*|ei_cninvoice_uuid|*'      => $record['reference_uuid'] ?? 'NA',
-        '*|ei_invoicelineitem|*'     => buildLineItems($record),
-        '*|ei_shippingrecipienttin|*'=> $record['customer_tin'] ?? 'EI00000000010',
-        '*|ei_shippingrecipientname|*'=> $record['customer_name'] ?? 'Consolidated Sales'
+        '*|ei_customertin|*'         => $primary['customer_tin'] ?? 'EI00000000010',
+        '*|ei_customername|*'        => $primary['customer_name'] ?? 'General Buyer',
+        '*|ei_customeradd1|*'        => $primary['customer_address'] ?? 'Multiple Customers',
+        '*|ei_customeradd2|*'        => 'N/A',
+        '*|ei_customerpostcode|*'    => $primary['customer_postcode'] ?? '00000',
+        '*|ei_customertown|*'        => $primary['customer_town'] ?? 'N/A',
+        '*|ei_customerphone|*'       => $primary['customer_phone'] ?? '0000000000',
+        '*|ei_customeremail|*'       => $primary['customer_email'] ?? 'na@na.com',
+        '*|ei_customeric|*'          => $primary['customer_ic'] ?? '000000000000',
+        '*|ei_invoicetotalamount|*'  => number_format((float)$finalTotal, 2, '.', ''),
+        '*|ei_cninvoice_referenceno|*' => $primary['reference_no'] ?? 'NA',
+        '*|ei_cninvoice_uuid|*'      => $primary['reference_uuid'] ?? 'NA',
+        '*|ei_invoicelineitem|*'     => $lineItemsJson, // ✅ Injects multiple items for consolidated
+        '*|ei_shippingrecipienttin|*'=> $primary['customer_tin'] ?? 'EI00000000010',
+        '*|ei_shippingrecipientname|*'=> $primary['customer_name'] ?? 'General Buyer'
     ];
+    
     $jsonStr = str_replace(array_keys($map), array_values($map), $jsonSendTemplate);
     $base64Doc = base64_encode($jsonStr);
     $sha256 = hash('sha256', $jsonStr);
     $convertMap = [
         '*|ei_convertbase64|*'  => $base64Doc,
         '*|ei_convertsha256|*'  => $sha256,
-        '*|ei_invoiceno|*'      => $record['sale_no']
+        '*|ei_invoiceno|*'      => $primary['sale_no']
     ];
     $convertStr = str_replace(array_keys($convertMap), array_values($convertMap), $jsonConvertTemplate);
     return ['send' => $jsonStr, 'convert' => $convertStr];
@@ -341,22 +367,16 @@ if (isset($_GET['ajax_action'])) {
                 $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
                 $useGeneralTin = false;
 
-                // ✅ NEW LOGIC: If TIN is missing, general, or incorrectly set to the IC number itself, SEARCH for the real TIN
                 if ((empty($tin) || $tin === 'EI00000000010' || preg_match('/^\d{12}$/', $tin)) && strlen($cleanIc) === 12) {
-                    
                     $searchResult = searchTINWithLHDN($cleanIc, $apiBaseUrl, $tokenValue);
-                    
                     if ($searchResult['found'] && !empty($searchResult['tin'])) {
-                        $tin = $searchResult['tin']; // e.g., C1234567890
-                        // Save the real TIN to the database
+                        $tin = $searchResult['tin'];
                         $pdo->prepare("UPDATE einvoice_records SET customer_tin = ? WHERE id = ?")->execute([$tin, $indRec['id']]);
                         $indRec['customer_tin'] = $tin;
                     } else {
-                        // LHDN doesn't have a TIN for this IC. Fallback to General TIN (Consolidated).
                         $useGeneralTin = true;
                     }
                 } elseif (empty($tin) || $tin === 'EI00000000010') {
-                    // No IC provided to search with, must fallback
                     $useGeneralTin = true;
                 }
 
@@ -387,7 +407,7 @@ if (isset($_GET['ajax_action'])) {
 
                 $submitResponse = json_decode($submitResult['response'], true);
                 $submissionUid = $submitResponse['submissionUid'] ?? null;
-                $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
+                $uuid = isset($submitResponse['acceptedDocuments'][0]['uuid']) ? $submitResponse['acceptedDocuments'][0]['uuid'] : null;
                 
                 $isRejected = empty($submissionUid) && !empty($submitResponse['rejectedDocuments']);
                 $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300 && !$isRejected) ? 'Submitted' : 'Error';
@@ -419,35 +439,42 @@ if (isset($_GET['ajax_action'])) {
                 exit;
             }
 
-            /* ---- 2) CONSOLIDATED ---- */
+            /* ---- 2) CONSOLIDATED (Now builds multiple detailed line items) ---- */
             $stmt = $pdo->prepare("SELECT DATE(sale_datetime) as sale_date FROM einvoice_records WHERE user_id = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'consolidated' GROUP BY DATE(sale_datetime) ORDER BY sale_date ASC LIMIT 1");
             $stmt->execute([$uid]);
             $dateRow = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($dateRow) {
                 $saleDate = $dateRow['sale_date'];
-                $stmtRec = $pdo->prepare("SELECT * FROM einvoice_records WHERE user_id = ? AND DATE(sale_datetime) = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'consolidated'");
+                $stmtRec = $pdo->prepare("SELECT * FROM einvoice_records WHERE user_id = ? AND DATE(sale_datetime) = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'consolidated' ORDER BY id ASC");
                 $stmtRec->execute([$uid, $saleDate]);
                 $records = $stmtRec->fetchAll(PDO::FETCH_ASSOC);
 
                 $grandTotal = array_sum(array_column($records, 'total_amount'));
                 $totalTax = array_sum(array_map('floatval', array_column($records, 'sale_tax')));
 
-                $consolidatedData = [
-                    'sale_no' => 'CONSOL-' . str_replace('-', '', $saleDate) . '-' . substr(md5($uid), 0, 8),
-                    'submission_type' => 'consolidated',
-                    'customer_name' => 'Consolidated Sales', 
-                    'customer_address' => 'Multiple Customers',
-                    'customer_email' => $company['email'] ?? ($me['email'] ?? 'na@na.com'),
-                    'customer_phone' => $company['phone'] ?? '0000000000',
+                $consolidatedSaleNo = 'CONSOL-' . str_replace('-', '', $saleDate) . '-' . substr(md5($uid), 0, 8);
+                
+                // Create a mock primary record for header mapping
+                $primaryMock = [
+                    'sale_no' => $consolidatedSaleNo,
+                    'sale_datetime' => $saleDate . ' 23:59:59',
+                    'document_type' => '15', // ✅ CRITICAL: Must be 15
                     'customer_tin' => 'EI00000000010',
-                    'customer_ic' => '000000000000', 
+                    'customer_name' => 'General Buyer',
+                    'customer_address' => 'Multiple Customers',
+                    'customer_postcode' => '00000',
+                    'customer_town' => 'N/A',
+                    'customer_phone' => $company['phone'] ?? '0000000000',
+                    'customer_email' => $company['email'] ?? 'na@na.com',
+                    'customer_ic' => '000000000000',
                     'total_amount' => $grandTotal,
-                    'sale_datetime' => $saleDate . ' 23:59:59', 
-                    'document_type' => '01' // ✅ 15 = Consolidated e-Invoice
+                    'reference_no' => 'NA',
+                    'reference_uuid' => 'NA'
                 ];
 
-                $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
+                // ✅ Pass the ARRAY of records to generate multiple line items
+                $payloads = buildLHDNPayloads($records, $company, $jsonSendTemplate, $jsonConvertTemplate, $grandTotal);
 
                 $consolStmt = $pdo->prepare("
                     INSERT INTO einvoice_consolidated (
@@ -476,7 +503,7 @@ if (isset($_GET['ajax_action'])) {
 
                 $submitResponse = json_decode($submitResult['response'], true);
                 $submissionUid = $submitResponse['submissionUid'] ?? null;
-                $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
+                $uuid = isset($submitResponse['acceptedDocuments'][0]['uuid']) ? $submitResponse['acceptedDocuments'][0]['uuid'] : null;
                 
                 $isRejected = empty($submissionUid) && !empty($submitResponse['rejectedDocuments']);
                 $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300 && !$isRejected) ? 'Submitted' : 'Error';
@@ -587,9 +614,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                             $ic = trim((string)($row['customer_ic'] ?? ''));
                             $cleanIC = str_replace("-", "", str_replace(" ", "", $ic));
 
+                            // Tentatively mark as individual; the process_next logic will search for TIN and convert to consolidated if invalid
                             if ($email !== '' && preg_match('/^\d{12}$/', $cleanIC)) {
                                 $submissionType = 'individual';
-                                $customerTin = $cleanIC; // Tentative, will be searched/replaced during submission
+                                $customerTin = $cleanIC; 
                             } else {
                                 $submissionType = 'consolidated';
                                 $customerTin = 'EI00000000010';
