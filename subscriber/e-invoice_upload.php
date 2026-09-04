@@ -18,7 +18,7 @@ $alterations = [
     "ADD COLUMN IF NOT EXISTS lhdn_submission_id VARCHAR(255)",
     "ADD COLUMN IF NOT EXISTS lhdn_long_id VARCHAR(255)",
     "ADD COLUMN IF NOT EXISTS lhdn_response TEXT",
-    "ADD COLUMN IF NOT EXISTS lhdn_jsonsend TEXT" // ✅ Added for safety if not run manually
+    "ADD COLUMN IF NOT EXISTS lhdn_jsonsend TEXT"
 ];
 foreach ($alterations as $alt) {
     try { $pdo->exec("ALTER TABLE einvoice_records $alt"); } catch (Exception $e) {}
@@ -30,12 +30,9 @@ function logInternal($pdo, $submissionId, $step, $status, $message, $payload = n
     $stmt->execute([$submissionId, $step, $status, $message, $payload ? (is_array($payload) ? json_encode($payload) : $payload) : null]);
 }
 
-// ✅ NEW: Validate TIN + IC combination with LHDN API before submission
 function validateTINWithLHDN($tin, $icno, $apiBaseUrl, $token) {
     $cleanIc = preg_replace('/[-\s]/', '', $icno);
-    if (strlen($cleanIc) !== 12) {
-        return false; // Cannot validate without exactly 12-digit IC
-    }
+    if (strlen($cleanIc) !== 12) return false;
     
     $url = $apiBaseUrl . "/api/v1.0/taxpayer/validate/" . urlencode($tin) . "?idType=NRIC&idValue=" . urlencode($cleanIc);
     
@@ -52,7 +49,6 @@ function validateTINWithLHDN($tin, $icno, $apiBaseUrl, $token) {
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     
-    // LHDN returns 200 if valid. 404 or 400 if invalid/not found.
     return ($httpCode === 200);
 }
 
@@ -61,16 +57,11 @@ function findErrorInArray($arr) {
     foreach (['error', 'message', 'errorMessages', 'validationErrors', 'curl_error', 'description', 'errors'] as $k) {
         if (isset($arr[$k]) && $arr[$k]) {
             $err = is_string($arr[$k]) ? $arr[$k] : json_encode($arr[$k]);
-            
-            // ✅ Enhance explanation for common LHDN errors to give clear UI feedback
-            if (stripos($err, 'ERR406') !== false || stripos($err, 'ERR409') !== false || stripos($err, 'TIN is invalid') !== false || stripos($err, 'Search TIN') !== false) {
-                return "LHDN Rejected: Invalid TIN or TIN/IC mismatch. (System auto-fallback to General TIN triggered).";
+            if (stripos($err, 'ERR237') !== false || stripos($err, 'ERR253') !== false) {
+                return "LHDN Rejected: General TIN (EI00000000010) cannot be used for Individual e-Invoices. Auto-converted to Consolidated.";
             }
-            if (stripos($err, 'ERR11') !== false || stripos($err, 'ERR12') !== false) {
-                return "LHDN Rejected: Invalid document format or missing mandatory fields.";
-            }
-            if (stripos($err, 'ERR28') !== false || stripos($err, 'NRIC') !== false) {
-                return "LHDN Rejected: Invalid customer details (e.g., missing or invalid 12-digit IC).";
+            if (stripos($err, 'ERR406') !== false || stripos($err, 'ERR409') !== false || stripos($err, 'TIN is invalid') !== false) {
+                return "LHDN Rejected: Invalid TIN or TIN/IC mismatch. Auto-converted to Consolidated.";
             }
             return $err;
         }
@@ -199,7 +190,7 @@ function renderProgressDots($step, $status) {
     return $out;
 }
 
-/* ================= AJAX ENDPOINTS (always valid JSON) ================= */
+/* ================= AJAX ENDPOINTS ================= */
 if (isset($_GET['ajax_action'])) {
     while (ob_get_level()) ob_end_clean();
     ini_set('display_errors', '0');
@@ -299,7 +290,7 @@ if (isset($_GET['ajax_action'])) {
             }
 
             if (empty($tokenValue)) { 
-                echo json_encode(['done' => true, 'error' => 'No LHDN access token. Generate one in Company & e-Invoice config.']); 
+                echo json_encode(['done' => true, 'error' => 'No LHDN access token.']); 
                 exit; 
             }
 
@@ -307,7 +298,7 @@ if (isset($_GET['ajax_action'])) {
             $stmtSend->execute(); $jsonSendTemplate = $stmtSend->fetchColumn();
             $stmtConvert = $pdo->prepare("SELECT value FROM settings WHERE module = 'einvoice' AND key = 'json_convert'");
             $stmtConvert->execute(); $jsonConvertTemplate = $stmtConvert->fetchColumn();
-            if (!$jsonSendTemplate || !$jsonConvertTemplate) { echo json_encode(['done' => true, 'error' => 'JSON templates not configured in settings.']); exit; }
+            if (!$jsonSendTemplate || !$jsonConvertTemplate) { echo json_encode(['done' => true, 'error' => 'JSON templates not configured.']); exit; }
 
             /* ---- 1) INDIVIDUAL ---- */
             $stmt = $pdo->prepare("SELECT * FROM einvoice_records WHERE user_id = ? AND validation_status = 'valid' AND (lhdn_status IS NULL OR lhdn_status = 'Pending') AND submission_type = 'individual' ORDER BY id ASC LIMIT 1");
@@ -318,7 +309,6 @@ if (isset($_GET['ajax_action'])) {
                 $tin = $indRec['customer_tin'] ?? '';
                 $icno = $indRec['customer_ic'] ?? '';
                 $email = $indRec['customer_email'] ?? '';
-                
                 $useGeneralTin = false;
 
                 // 1. If TIN is missing or default, tentatively use the 12-digit IC
@@ -331,7 +321,7 @@ if (isset($_GET['ajax_action'])) {
                     }
                 }
 
-                // 2. ✅ NEW: Validate the tentative TIN + IC with LHDN API
+                // 2. Validate the tentative TIN + IC with LHDN API
                 if (!$useGeneralTin && !empty($tin) && $tin !== 'EI00000000010') {
                     $cleanIc = preg_replace('/[-\s]/', '', $icno);
                     if (strlen($cleanIc) === 12) {
@@ -344,15 +334,24 @@ if (isset($_GET['ajax_action'])) {
                     }
                 }
 
-                // 3. ✅ If validation failed or IC is invalid, reconstruct payload for general TIN buyer
+                // 3. ✅ CRITICAL FIX: If validation failed, we CANNOT submit as 'individual' with general TIN.
+                // We must convert it to 'consolidated' and skip individual submission.
                 if ($useGeneralTin) {
-                    $tin = 'EI00000000010';
-                    // Update DB immediately to reflect the fallback
-                    $pdo->prepare("UPDATE einvoice_records SET customer_tin = ? WHERE id = ?")->execute([$tin, $indRec['id']]);
-                    $indRec['customer_tin'] = $tin;
+                    $pdo->prepare("UPDATE einvoice_records SET customer_tin = 'EI00000000010', submission_type = 'consolidated', lhdn_status = NULL WHERE id = ?")
+                        ->execute([$indRec['id']]);
+                    
+                    echo json_encode([
+                        'done' => false, 
+                        'type' => 'converted', 
+                        'id' => (string)$indRec['id'], 
+                        'sale_no' => $indRec['sale_no'], 
+                        'status' => 'Pending', 
+                        'error_msg' => 'Invalid TIN/IC. Auto-converted to Consolidated e-Invoice.'
+                    ]);
+                    exit;
                 }
 
-                // 4. Build and Submit Payload (now with validated or fallback general TIN)
+                // 4. If we reach here, the TIN is VALID. Build and Submit Payload.
                 $payloads = buildLHDNPayloads($indRec, $company, $jsonSendTemplate, $jsonConvertTemplate);
                 $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
                 
@@ -382,32 +381,7 @@ if (isset($_GET['ajax_action'])) {
                     $combined = ['curl_error' => $submitResult['curl_error'], 'raw' => $submitResult['response']];
                 }
                 $errMsg = findErrorInArray($combined);
-                
-                // ✅ AUTO-FALLBACK SAFETY NET: Handle Invalid TIN (ERR406 / ERR409) if it somehow slipped past pre-validation
-                $errMsgStr = is_string($errMsg) ? $errMsg : json_encode($errMsg);
-                $isInvalidTin = (
-                    stripos($errMsgStr, 'ERR406') !== false || 
-                    stripos($errMsgStr, 'ERR409') !== false || 
-                    stripos($errMsgStr, 'TIN is invalid') !== false ||
-                    stripos($errMsgStr, 'Search TIN') !== false
-                );
 
-                if ($isInvalidTin) {
-                    $pdo->prepare("UPDATE einvoice_records SET customer_tin = 'EI00000000010', submission_type = 'consolidated', lhdn_status = NULL, lhdn_uuid = NULL, lhdn_submission_id = NULL, lhdn_response = ? WHERE id = ?")
-                        ->execute([json_encode(['auto_converted' => true, 'reason' => 'Invalid TIN (ERR406/ERR409)', 'original_error' => $combined]), $indRec['id']]);
-                    
-                    echo json_encode([
-                        'done' => false, 
-                        'type' => 'converted', 
-                        'id' => (string)$indRec['id'], 
-                        'sale_no' => $indRec['sale_no'], 
-                        'status' => 'Pending', 
-                        'error_msg' => 'Invalid TIN. Auto-converted to Consolidated.'
-                    ]);
-                    exit;
-                }
-
-                // ✅ Save BOTH the sent payload and the response
                 $pdo->prepare("UPDATE einvoice_records SET lhdn_jsonsend = ?, lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id = ?")
                     ->execute([$payloads['send'], $docStatus, $uuid, $submissionUid, $longId, json_encode($combined), $indRec['id']]);
 
@@ -477,27 +451,6 @@ if (isset($_GET['ajax_action'])) {
                 exit;
             }
 
-            $upId = $_GET['upload_id'] ?? '';
-            if ($upId !== '') {
-                $st2 = $pdo->prepare("SELECT 
-                    COUNT(*) FILTER (WHERE lhdn_status = 'Submitted' OR lhdn_status = 'In Progress') as submitted,
-                    COUNT(*) FILTER (WHERE lhdn_status = 'Valid') as valid,
-                    COUNT(*) FILTER (WHERE lhdn_status = 'Invalid') as invalid,
-                    COUNT(*) FILTER (WHERE lhdn_status = 'Error') as error
-                FROM einvoice_records WHERE upload_id = ? AND user_id = ? AND validation_status = 'valid'");
-                $st2->execute([$upId, $uid]);
-                $fs = $st2->fetch(PDO::FETCH_ASSOC);
-                if (session_status() !== PHP_SESSION_ACTIVE) session_start();
-                $_SESSION['einvoice_summary'] = [
-                    'submitted'   => (int)$fs['submitted'],
-                    'in_progress' => 0,
-                    'valid'       => (int)$fs['valid'],
-                    'invalid'     => (int)$fs['invalid'],
-                    'error'       => (int)$fs['error']
-                ];
-                session_write_close();
-            }
-
             echo json_encode(['done' => true]);
             exit;
         }
@@ -538,7 +491,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                         $validCount = 0; $invalidCount = 0;
                         foreach ($result['rows'] as $row) {
                             $row = normalizeInvoiceRecord($row);
-
                             $saleTs = strtotime(trim((string)($row['sale_datetime'] ?? '')));
                             if (!$saleTs) $saleTs = time();
                             $saleDatetime = date('Y-m-d H:i:s', $saleTs);
@@ -554,9 +506,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
                             $ic = trim((string)($row['customer_ic'] ?? ''));
                             $cleanIC = preg_replace('/[-\s]/', '', $ic);
 
+                            // Flag as individual tentatively; validation will happen during submission
                             if ($email !== '' && preg_match('/^\d{12}$/', $cleanIC)) {
                                 $submissionType = 'individual';
-                                $customerTin = $cleanIC; // Tentative, will be validated during submission
+                                $customerTin = $cleanIC; 
                             } else {
                                 $submissionType = 'consolidated';
                                 $customerTin = 'EI00000000010';
