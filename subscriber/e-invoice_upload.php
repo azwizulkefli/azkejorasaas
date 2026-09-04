@@ -416,7 +416,7 @@ if (isset($_GET['ajax_action'])) {
                     'customer_phone' => $company['phone'] ?? '0000000000',
                     'customer_tin' => 'EI00000000010',
                     'customer_ic' => '000000000000', 'total_amount' => $grandTotal,
-                    'sale_datetime' => $saleDate . ' 23:59:59', 'document_type' => '03'
+                    'sale_datetime' => $saleDate . ' 23:59:59', 'document_type' => '15'
                 ];
 
                 $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
