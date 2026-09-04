@@ -7,6 +7,18 @@ requireCustomer();
 $uid = currentUserId();
 $me  = currentUser();
 
+// ---------------- DELETE RECORD ACTION HANDLER ----------------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_record') {
+    header('Content-Type: application/json');
+    $recordId = $_POST['id'] ?? '';
+    
+    $stmt = $pdo->prepare("DELETE FROM einvoice_records WHERE id = ? AND user_id = ?");
+    $stmt->execute([$recordId, $uid]);
+    
+    echo json_encode(['success' => true, 'message' => 'Record deleted successfully.']);
+    exit;
+}
+
 // ---------------- RESUBMIT / CHECK STATUS ACTION HANDLER ----------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'resubmit') {
     header('Content-Type: application/json');
@@ -21,6 +33,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         echo json_encode(['success' => false, 'message' => 'Record not found or unauthorized.']);
         exit;
     }
+
+    $currentStatus = strtolower($record['lhdn_status'] ?? 'pending');
 
     // 2. Check company credentials and token from companies table
     $envIsProd = ($me['ei_env'] ?? 'sandbox') === 'prod';
@@ -67,8 +81,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    // 4. Call LHDN API to check document status
-    $docUuid = $record['reference_uuid'] ?: $record['id'];
+    // 4. Determine correct UUID for LHDN API
+    // CRITICAL FIX: LHDN API requires the LHDN-assigned UUID (lhdn_uuid), NOT the local reference_uuid or id.
+    $docUuid = $record['lhdn_uuid'] ?: $record['reference_uuid'];
+    
+    if (empty($docUuid)) {
+        echo json_encode([
+            'success' => false, 
+            'message' => 'LHDN Document UUID is missing. The document may still be processing or failed to submit properly. Please wait a few minutes and try again.'
+        ]);
+        exit;
+    }
+
     $envUrl  = myinvois_base_url($me);
     $apiUrl  = rtrim($envUrl, '/') . '/api/v1.0/documents/' . urlencode($docUuid);
     
@@ -92,6 +116,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
     if ($httpCode === 401) {
         echo json_encode(['success' => false, 'message' => 'Token unauthorized. Please refresh token manually in Company Config.']);
+        exit;
+    }
+    if ($httpCode === 404) {
+        echo json_encode([
+            'success' => false, 
+            'message' => 'Document not found in LHDN (HTTP 404). This usually means the LHDN UUID is incorrect or the document was rejected before validation. Please check your submission logs.'
+        ]);
         exit;
     }
     if ($httpCode !== 200) {
@@ -327,6 +358,7 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                 $status = strtolower($row['lhdn_status'] ?? 'pending');
                 $isValid = in_array($status, ['valid', 'validated', 'success']);
                 $isPending = in_array($status, ['submitted', 'processing', 'in_progress', 'pending', 'new']);
+                $isInvalid = in_array($status, ['invalid', 'error', 'fail', 'failed', 'rejected']);
                 $hasResponse = !empty($row['lhdn_response']);
                 $saleDate = $row['sale_datetime'] ? date('d M Y', strtotime($row['sale_datetime'])) : date('d M Y', strtotime($row['created_at']));
                 $submitDate = date('d M Y, H:i', strtotime($row['created_at']));
@@ -352,18 +384,26 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                     <?php endif; ?>
                   </td>
                   <td style="text-align:right;font-weight:700;font-family:ui-monospace,monospace">RM <?= number_format($row['total_amount'], 2) ?></td>
-                  <td style="font-size:13px;color:var(--muted)"><?= htmlspecialchars($submitDate) ?></td>
+                  
+                  <!-- FIX #2: Display UUID under Submitted Date for pending/submitted statuses -->
+                  <td style="font-size:13px;color:var(--muted)">
+                    <?= htmlspecialchars($submitDate) ?>
+                    <?php if (in_array($status, ['submitted', 'processing', 'in_progress', 'pending']) && !empty($row['lhdn_uuid'])): ?>
+                      <div style="font-size:10px;color:var(--faint);font-family:ui-monospace,monospace;margin-top:4px;word-break:break-all" title="LHDN UUID">
+                        🆔 <?= htmlspecialchars($row['lhdn_uuid']) ?>
+                      </div>
+                    <?php endif; ?>
+                  </td>
+                  
                   <td><span class="badge <?= getStatusClass($row['lhdn_status']) ?>"><?= htmlspecialchars(strtoupper($row['lhdn_status'] ?? 'PENDING')) ?></span></td>
                   <td>
                     <div class="action-btns">
-                      <!-- 1. JSON Sent Modal Button (for every data) -->
-                      <!-- Note: Change 'json_sent' to your actual column name if different (e.g., 'payload', 'request_json') -->
+                      <!-- 1. JSON Sent Modal Button -->
                       <button class="action-btn" title="View JSON Sent" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_jsonsend'] ?? '{}'), ENT_QUOTES) ?>, 'JSON Sent to LHDN')">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M10 12l-2 2 2 2"></path><path d="M14 12l2 2-2 2"></path></svg>
                       </button>
 
-                      
-                      <!-- 2. JSON Response Modal Button (for every data) -->
+                      <!-- 2. JSON Response Modal Button -->
                       <button class="action-btn" title="View JSON Response" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response'] ?? '{}'), ENT_QUOTES) ?>, 'JSON Response from LHDN')">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M8 10h8"></path><path d="M8 14h4"></path></svg>
                       </button>
@@ -377,9 +417,10 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                         <button class="action-btn" title="View LHDN E-Invoice" onclick="openInvoiceModal(<?= htmlspecialchars(json_encode($row), ENT_QUOTES) ?>)">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                         </button>
-                      <?php elseif ($hasResponse): ?>
-                        <button class="action-btn danger" title="View Error Details" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response']), ENT_QUOTES) ?>, 'LHDN Error Details')">
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+                      <?php elseif ($isInvalid): ?>
+                        <!-- FIX #3: Delete button for Invalid/Error records -->
+                        <button class="action-btn danger" title="Delete Record (Re-upload Required)" onclick="deleteRecord('<?= htmlspecialchars($row['id']) ?>')">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
                         </button>
                       <?php endif; ?>
                     </div>
@@ -442,6 +483,7 @@ function openJsonModal(jsonString, modalTitle = 'LHDN API Response (JSON)'){
   document.body.style.overflow='hidden';
 }
 function copyJson(){const text = document.getElementById('jsonModalContent').textContent;navigator.clipboard.writeText(text).then(() => alert('JSON copied to clipboard!')).catch(() => alert('Failed to copy.'));}
+
 function resubmitRecord(recordId){
   if(!confirm('Check LHDN status for this record? This will refresh the token if expired and query the LHDN API.')) return;
   document.getElementById('loadingOverlay').classList.add('active');
@@ -453,6 +495,37 @@ function resubmitRecord(recordId){
     else{alert('Error: ' + (data.message || 'Failed to update status.'));}
   }).catch(error => {document.getElementById('loadingOverlay').classList.remove('active');console.error('Error:', error);alert('A network error occurred.');});
 }
+
+// FIX #3: Delete Record Function
+function deleteRecord(recordId) {
+  if (!confirm('Are you sure you want to delete this invalid/error record? You will need to correct and re-upload the data.')) return;
+  
+  document.getElementById('loadingOverlay').classList.add('active');
+  const formData = new FormData();
+  formData.append('action', 'delete_record');
+  formData.append('id', recordId);
+  
+  fetch(window.location.href, {
+    method: 'POST',
+    body: formData
+  })
+  .then(response => response.json())
+  .then(data => {
+    document.getElementById('loadingOverlay').classList.remove('active');
+    if (data.success) {
+      alert(data.message || 'Record deleted successfully!');
+      window.location.reload();
+    } else {
+      alert('Error: ' + (data.message || 'Failed to delete record.'));
+    }
+  })
+  .catch(error => {
+    document.getElementById('loadingOverlay').classList.remove('active');
+    console.error('Error:', error);
+    alert('A network error occurred.');
+  });
+}
+
 document.addEventListener('keydown', function(e){if(e.key === 'Escape'){closeModal('invoiceModal');closeModal('jsonModal');}});
 </script>
 </body>
