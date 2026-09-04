@@ -54,6 +54,8 @@ function validateTINWithLHDN($tin, $icno, $apiBaseUrl, $token) {
 
 function findErrorInArray($arr) {
     if (!is_array($arr)) return null;
+    
+    // 1. Check direct error keys first
     foreach (['error', 'message', 'errorMessages', 'validationErrors', 'curl_error', 'description', 'errors'] as $k) {
         if (isset($arr[$k]) && $arr[$k]) {
             $err = is_string($arr[$k]) ? $arr[$k] : json_encode($arr[$k]);
@@ -66,10 +68,21 @@ function findErrorInArray($arr) {
             return $err;
         }
     }
-    foreach (['submission', 'details', 'raw'] as $k) {
+    
+    // 2. Recursively check nested arrays (including rejectedDocuments)
+    foreach (['submission', 'details', 'raw', 'rejectedDocuments'] as $k) {
         if (isset($arr[$k]) && is_array($arr[$k])) {
-            $found = findErrorInArray($arr[$k]);
-            if ($found) return $found;
+            if ($k === 'rejectedDocuments') {
+                foreach ($arr[$k] as $item) {
+                    if (is_array($item)) {
+                        $found = findErrorInArray($item);
+                        if ($found) return $found;
+                    }
+                }
+            } else {
+                $found = findErrorInArray($arr[$k]);
+                if ($found) return $found;
+            }
         }
     }
     return null;
@@ -111,13 +124,15 @@ function buildLHDNPayloads($record, $company, $jsonSendTemplate, $jsonConvertTem
         '*|ei_suppliertin|*'         => $company['taxpayer_tin'] ?? '',
         '*|ei_suppliername|*'        => $company['name'] ?? '',
         '*|ei_supplieradd1|*'        => $company['address'] ?? '',
+        '*|ei_supplieradd2|*'        => $company['address'] ?? '',        
         '*|ei_supplierpostcode|*'    => $company['postcode'] ?? '',
         '*|ei_suppliertown|*'        => $company['town'] ?? '',
         '*|ei_supplierphone|*'       => $company['phone'] ?? '',
         '*|ei_supplieremail|*'       => $company['email'] ?? '',
         '*|ei_customertin|*'         => $record['customer_tin'] ?? 'EI00000000010',
         '*|ei_customername|*'        => $record['customer_name'] ?? 'Consolidated Sales',
-        '*|ei_customeradd1|*'        => $record['customer_address'] ?? 'Multiple Customers',
+        '*|ei_customeradd1|*'        => $record['customer_address'] ?? 'Buyer Address 1',
+        '*|ei_customeradd2|*'        => $record['customer_address'] ?? 'Buyer Address 2',
         '*|ei_customerpostcode|*'    => $record['customer_postcode'] ?? '00000',
         '*|ei_customertown|*'        => $record['customer_town'] ?? 'N/A',
         '*|ei_customerphone|*'       => $record['customer_phone'] ?? '0000000000',
@@ -359,10 +374,20 @@ if (isset($_GET['ajax_action'])) {
                 $submitResponse = json_decode($submitResult['response'], true);
                 $submissionUid = $submitResponse['submissionUid'] ?? null;
                 $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
-                $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300) ? 'Submitted' : 'Error';
+                
+                // ✅ Check for immediate rejection (e.g., validation errors before acceptance)
+                $isRejected = empty($submissionUid) && !empty($submitResponse['rejectedDocuments']);
+                $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300 && !$isRejected) ? 'Submitted' : 'Error';
 
-                $docStatus = $lhdnStatus; $longId = null;
-                $combined = $submitResponse;
+                $docStatus = $lhdnStatus; 
+                $longId = null;
+                
+                if ($lhdnStatus === 'Error' && !empty($submitResult['curl_error'])) {
+                    $combined = ['curl_error' => $submitResult['curl_error'], 'raw' => $submitResult['response']];
+                } else {
+                    $combined = $submitResponse;
+                }
+                
                 if ($lhdnStatus === 'Submitted' && $uuid) {
                     sleep(2);
                     $statusResult = getStatusFromLHDN($apiBaseUrl . "/api/v1.0/documents/{$uuid}/details", $tokenValue);
@@ -371,9 +396,7 @@ if (isset($_GET['ajax_action'])) {
                     $longId = $detailsResponse['longId'] ?? null;
                     $combined = ['submission' => $submitResponse, 'details' => $detailsResponse];
                 }
-                if ($lhdnStatus === 'Error' && !empty($submitResult['curl_error'])) {
-                    $combined = ['curl_error' => $submitResult['curl_error'], 'raw' => $submitResult['response']];
-                }
+                
                 $errMsg = findErrorInArray($combined);
 
                 $pdo->prepare("UPDATE einvoice_records SET lhdn_jsonsend = ?, lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id = ?")
@@ -408,7 +431,7 @@ if (isset($_GET['ajax_action'])) {
                     'customer_ic' => '000000000000', 
                     'total_amount' => $grandTotal,
                     'sale_datetime' => $saleDate . ' 23:59:59', 
-                    'document_type' => '15' // ✅ 15 = Consolidated e-Invoice
+                    'document_type' => '15' // ✅ CRITICAL: 15 = Consolidated e-Invoice (Fixes "Invalid document type/version" error)
                 ];
 
                 $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
@@ -444,10 +467,20 @@ if (isset($_GET['ajax_action'])) {
                 $submitResponse = json_decode($submitResult['response'], true);
                 $submissionUid = $submitResponse['submissionUid'] ?? null;
                 $uuid = $submitResponse['acceptedDocuments'][0]['uuid'] ?? null;
-                $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300) ? 'Submitted' : 'Error';
+                
+                // ✅ Check for immediate rejection
+                $isRejected = empty($submissionUid) && !empty($submitResponse['rejectedDocuments']);
+                $lhdnStatus = ($submitResult['code'] >= 200 && $submitResult['code'] < 300 && !$isRejected) ? 'Submitted' : 'Error';
 
-                $docStatus = $lhdnStatus; $longId = null;
-                $combined = $submitResponse;
+                $docStatus = $lhdnStatus; 
+                $longId = null;
+                
+                if ($lhdnStatus === 'Error' && !empty($submitResult['curl_error'])) {
+                    $combined = ['curl_error' => $submitResult['curl_error'], 'raw' => $submitResult['response']];
+                } else {
+                    $combined = $submitResponse;
+                }
+                
                 if ($lhdnStatus === 'Submitted' && $uuid) {
                     sleep(2);
                     $statusResult = getStatusFromLHDN($apiBaseUrl . "/api/v1.0/documents/{$uuid}/details", $tokenValue);
@@ -456,16 +489,14 @@ if (isset($_GET['ajax_action'])) {
                     $longId = $detailsResponse['longId'] ?? null;
                     $combined = ['submission' => $submitResponse, 'details' => $detailsResponse];
                 }
-                if ($lhdnStatus === 'Error' && !empty($submitResult['curl_error'])) {
-                    $combined = ['curl_error' => $submitResult['curl_error'], 'raw' => $submitResult['response']];
-                }
+                
                 $errMsg = findErrorInArray($combined);
 
                 // ✅ STEP 4: Update einvoice_records with LHDN results
                 $updateRecStmt = $pdo->prepare("UPDATE einvoice_records SET lhdn_jsonsend = ?, lhdn_status = ?, lhdn_uuid = ?, lhdn_submission_id = ?, lhdn_long_id = ?, lhdn_response = ? WHERE id IN ($placeholders)");
                 $updateRecStmt->execute(array_merge([$payloads['send'], $docStatus, $uuid, $submissionUid, $longId, json_encode($combined)], $recordIds));
 
-                // ✅ STEP 5: Update einvoice_consolidated with ALL LHDN results (Matching your schema exactly)
+                // ✅ STEP 5: Update einvoice_consolidated with ALL LHDN results
                 $updateConsolStmt = $pdo->prepare("
                     UPDATE einvoice_consolidated 
                     SET ei_submission_id = ?, 
@@ -479,15 +510,15 @@ if (isset($_GET['ajax_action'])) {
                     WHERE id = ?
                 ");
                 $updateConsolStmt->execute([
-                    $submissionUid,       // ei_submission_id
-                    $uuid,                // ei_uuid
-                    $docStatus,           // lhdn_status
-                    json_encode($combined), // lhdn_response
-                    $uuid,                // lhdn_uuid (same as ei_uuid)
-                    $longId,              // lhdn_long_id
-                    $payloads['send'],    // lhdn_jsonsend
-                    $docStatus,           // submission_status (mirrors lhdn_status)
-                    $consolidatedId       // WHERE id = ?
+                    $submissionUid,       
+                    $uuid,                
+                    $docStatus,           
+                    json_encode($combined), 
+                    $uuid,                
+                    $longId,              
+                    $payloads['send'],    
+                    $docStatus,           
+                    $consolidatedId       
                 ]);
 
                 echo json_encode(['done' => false, 'type' => 'consolidated', 'date' => $saleDate, 'ids' => $recordIds, 'status' => $docStatus, 'uuid' => $uuid, 'submission_id' => $submissionUid, 'long_id' => $longId, 'error_msg' => $errMsg]);
