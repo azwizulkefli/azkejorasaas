@@ -444,7 +444,7 @@ if (isset($_GET['ajax_action'])) {
                     'customer_ic' => '000000000000', 
                     'total_amount' => $grandTotal,
                     'sale_datetime' => $saleDate . ' 23:59:59', 
-                    'document_type' => '15' // ✅ 15 = Consolidated e-Invoice
+                    'document_type' => '01' // ✅ 15 = Consolidated e-Invoice
                 ];
 
                 $payloads = buildLHDNPayloads($consolidatedData, $company, $jsonSendTemplate, $jsonConvertTemplate);
