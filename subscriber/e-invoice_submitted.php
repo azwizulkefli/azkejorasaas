@@ -389,14 +389,8 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                 <tr>
                   <td style="color:var(--faint);font-weight:600"><?= $no ?></td>
                   
-                  <!-- FIX #2: Show consolidate_id under Sale No for consolidated records -->
                   <td>
                     <b><?= htmlspecialchars($row['sale_no'] ?? '—') ?></b>
-                    <?php if ($isConsolidated && !empty($row['consolidated_id'])): ?>
-                      <div style="font-size:10px;color:var(--faint);font-family:ui-monospace,monospace;margin-top:4px;word-break:break-all" title="Consolidated ID">
-                        📦 <?= htmlspecialchars($row['consolidated_id']) ?>
-                      </div>
-                    <?php endif; ?>
                   </td>
                   
                   <td><?= htmlspecialchars($saleDate) ?></td>
