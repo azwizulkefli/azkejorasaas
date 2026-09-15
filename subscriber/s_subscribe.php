@@ -65,7 +65,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['plan_price'] = $selectedPlan['price'];
         
         // Redirect to payment page
-        header("Location: s_payment.php?plan=" . urlencode($planKey));
+        header("Location: s_subscribepayment.php?plan=" . urlencode($planKey));
         exit;
     }
 }
