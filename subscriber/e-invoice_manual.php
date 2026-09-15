@@ -179,7 +179,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 
     $submission_type = 'individual';
-    $customer_tin = $customer_ic; // Tentative, will be searched during submission
+    $customer_tin = $customer_ic; // Tentative, will be searched/validated during submission
 
     // 1. Insert Record
     $stmt = $pdo->prepare("INSERT INTO einvoice_records (
@@ -264,12 +264,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         'submission_type' => 'individual'
     ];
 
-    // 5. Search TIN if needed
+    // 5. ✅ NEW LOGIC: Search TIN using IC No. If not found, replace with General TIN
     $cleanIc = str_replace("-", "", str_replace(" ", "", $customer_ic));
-    if ((empty($customer_tin) || $customer_tin === 'EI00000000010' || preg_match('/^\d{12}$/', $customer_tin)) && strlen($cleanIc) === 12) {
+    $foundTin = null;
+
+    if (strlen($cleanIc) === 12) {
         $url = $apiBaseUrl . '/api/v1.0/taxpayer/search/tin?' . http_build_query(['idType' => 'NRIC', 'idValue' => $cleanIc]);
         $ch = curl_init($url);
-        curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 15, CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $tokenValue, 'Accept: application/json']]);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true, 
+            CURLOPT_TIMEOUT => 15, 
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $tokenValue, 'Accept: application/json']
+        ]);
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
@@ -277,16 +283,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         if ($httpCode === 200) {
             $data = json_decode($response, true);
             if (is_array($data)) {
-                if (isset($data[0]['tin'])) $indRec['customer_tin'] = $data[0]['tin'];
-                elseif (isset($data['tin'])) $indRec['customer_tin'] = $data['tin'];
-                elseif (isset($data['taxPayerTin'])) $indRec['customer_tin'] = $data['taxPayerTin'];
+                if (isset($data[0]['tin'])) $foundTin = $data[0]['tin'];
+                elseif (isset($data['tin'])) $foundTin = $data['tin'];
+                elseif (isset($data['taxPayerTin'])) $foundTin = $data['taxPayerTin'];
             } elseif (is_string($data)) {
-                $indRec['customer_tin'] = $data;
+                $foundTin = $data;
             }
         }
-        if (!empty($indRec['customer_tin']) && $indRec['customer_tin'] !== $customer_tin) {
-            $pdo->prepare("UPDATE einvoice_records SET customer_tin = ? WHERE id = ?")->execute([$indRec['customer_tin'], $record_id]);
-        }
+    }
+
+    // Apply found TIN or fallback to General TIN
+    $finalTin = !empty($foundTin) ? $foundTin : 'EI00000000010';
+    $indRec['customer_tin'] = $finalTin;
+    
+    // Update the database record with the resolved TIN
+    if ($finalTin !== $customer_tin) {
+        $pdo->prepare("UPDATE einvoice_records SET customer_tin = ? WHERE id = ?")->execute([$finalTin, $record_id]);
     }
 
     // 6. Build & Submit Payload
@@ -486,7 +498,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
           <label>Customer Name *</label>
           <input type="text" name="customer_name" required placeholder="e.g. Ahmad bin Abdullah">
         </div>
-。
         <div class="field">
           <label>Customer IC / Passport No *</label>
           <input type="text" name="customer_ic" required placeholder="e.g. 900101-10-5369">
