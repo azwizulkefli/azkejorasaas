@@ -7,7 +7,7 @@
     <h2>Enter Payment Details</h2>
     
     <!-- The form sends data to process.php when submitted -->
-    <form action="process.php" method="POST">
+    <form action="1pg_process.php" method="POST">
         <label>Name:</label><br>
         <input type="text" name="name" required><br><br>
 
