@@ -107,10 +107,6 @@ $einGross = $pdo->prepare("SELECT COALESCE(SUM(total_amount),0) FROM einvoice_re
 $einGross->execute([$uid]);
 $einGrossV = $einGross->fetchColumn();
 
-// Booking counts
-$bkCount = $pdo->prepare("SELECT COUNT(*) FROM bookings WHERE user_id = ?");
-$bkCount->execute([$uid]);
-$bkCountV = $bkCount->fetchColumn();
 
 // E-Invoice by time periods (week, month, year)
 $einWeek = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '7 days'");
@@ -148,16 +144,6 @@ while ($row = $einRecent->fetch()) {
     ];
 }
 
-// Recent bookings
-$bkRecent = $pdo->prepare("SELECT 'booking' as type, status, created_at FROM bookings WHERE user_id = ? ORDER BY created_at DESC LIMIT 3");
-$bkRecent->execute([$uid]);
-while ($row = $bkRecent->fetch()) {
-    $activities[] = [
-        'type' => '📅 Booking',
-        'desc' => 'Booking ' . $row['status'],
-        'time' => $row['created_at']
-    ];
-}
 
 // Sort by time and take top 10
 usort($activities, fn($a, $b) => strtotime($b['time']) - strtotime($a['time']));
