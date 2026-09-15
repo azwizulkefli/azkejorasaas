@@ -20,7 +20,8 @@ $stmt = $pdo->prepare("
         MAX(lhdn_submission_id) as ei_submission_id,
         MAX(created_at) as created_at
     FROM einvoice_records 
-    WHERE user_id = ? AND consolidated_id IS NOT NULL
+    //WHERE user_id = ? AND consolidated_id IS NOT NULL
+    WHERE user_id = ?
     GROUP BY consolidated_id
     ORDER BY MAX(created_at) DESC 
     LIMIT 20
