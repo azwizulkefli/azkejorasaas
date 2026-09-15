@@ -392,12 +392,11 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
     <?php if ($s && $s['status'] === 'active_trial'): ?>
     <div class="trial-banner">
       <span class="glow"></span>
-      <p>Active trial · no card required</p>
       <h2><?= $fmtLeft($trialLeft, 'hours') ?></h2>
       <p class="sub">Trial ends <?= $fmtDate($s['trial_ends_at']) ?> — subscribe to keep your data & tools.</p>
       <div class="bar"><i style="width:<?= $trialPct ?>%"></i></div>
       <div class="cta-row">
-        <a href="#plans" class="btn white">Choose a 3-month plan</a>
+        <a href="s_subscribe.php" class="btn white">Make Subscription / Renewal</a>
         <a href="#billing" class="btn ghost">View billing portal</a>
       </div>
     </div>
