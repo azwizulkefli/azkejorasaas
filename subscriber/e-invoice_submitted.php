@@ -12,6 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     header('Content-Type: application/json');
     $consId = $_POST['consolidated_id'] ?? '';
     
+    // ✅ REINFORCED: Explicitly check both consolidated_id AND user_id
     $stmt = $pdo->prepare("SELECT id, sale_no, customer_name, total_amount, lhdn_status, created_at FROM einvoice_records WHERE consolidated_id = ? AND user_id = ? ORDER BY created_at DESC");
     $stmt->execute([$consId, $uid]);
     $details = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -25,6 +26,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     header('Content-Type: application/json');
     $recordId = $_POST['id'] ?? '';
     
+    // ✅ REINFORCED: Explicitly check user_id on delete
     $stmt = $pdo->prepare("DELETE FROM einvoice_records WHERE id = ? AND user_id = ?");
     $stmt->execute([$recordId, $uid]);
     
@@ -37,6 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     header('Content-Type: application/json');
     $recordId = $_POST['id'] ?? '';
     
+    // ✅ REINFORCED: Explicitly check user_id on fetch
     $chk = $pdo->prepare("SELECT * FROM einvoice_records WHERE id = ? AND user_id = ?");
     $chk->execute([$recordId, $uid]);
     $record = $chk->fetch(PDO::FETCH_ASSOC);
@@ -83,6 +86,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
     $isConsolidated = strtolower($record['submission_type'] ?? 'individual') === 'consolidated';
     if ($isConsolidated && !empty($record['consolidated_id'])) {
+        // ✅ REINFORCED: Explicitly check user_id on consolidated fetch
         $consStmt = $pdo->prepare("SELECT ei_uuid, lhdn_status FROM einvoice_consolidated WHERE id = ? AND user_id = ?");
         $consStmt->execute([$record['consolidated_id'], $uid]);
         $consRecord = $consStmt->fetch(PDO::FETCH_ASSOC);
@@ -139,10 +143,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 
     if ($isConsolidated && !empty($record['consolidated_id'])) {
+        // ✅ REINFORCED: Explicitly check user_id on update
         $updateStmt = $pdo->prepare("UPDATE einvoice_consolidated SET lhdn_status = ?, lhdn_response = ?, ei_uuid = COALESCE(NULLIF(?, ''), ei_uuid), ei_submission_id = COALESCE(NULLIF(?, ''), ei_submission_id), lhdn_uuid = COALESCE(NULLIF(?, ''), lhdn_uuid), lhdn_long_id = COALESCE(NULLIF(?, ''), lhdn_long_id) WHERE id = ? AND user_id = ?");
         $updateStmt->execute([$newStatus, json_encode($responseData), $lhdnUuid, $lhdnSubmissionId, $lhdnUuid, $lhdnLongId, $record['consolidated_id'], $uid]);
         $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ? WHERE consolidated_id = ? AND user_id = ?")->execute([$newStatus, $record['consolidated_id'], $uid]);
     } else {
+        // ✅ REINFORCED: Explicitly check user_id on update
         $updateStmt = $pdo->prepare("UPDATE einvoice_records SET lhdn_status = ?, lhdn_response = ?, lhdn_uuid = COALESCE(NULLIF(?, ''), lhdn_uuid), lhdn_submission_id = COALESCE(NULLIF(?, ''), lhdn_submission_id), lhdn_long_id = COALESCE(NULLIF(?, ''), lhdn_long_id), validation_errors = COALESCE(NULLIF(?, ''), validation_errors) WHERE id = ? AND user_id = ?");
         $updateStmt->execute([$newStatus, json_encode($responseData), $lhdnUuid, $lhdnSubmissionId, $lhdnLongId, $validationErrors, $recordId, $uid]);
     }
@@ -172,8 +178,9 @@ if ($dateFrom !== '') { $whereInd[] = "r.created_at >= ?"; $pInd[] = $dateFrom .
 if ($dateTo !== '') { $whereInd[] = "r.created_at <= ?"; $pInd[] = $dateTo . ' 23:59:59'; }
 if ($statusFilter !== '') { $whereInd[] = "r.lhdn_status ILIKE ?"; $pInd[] = "%$statusFilter%"; }
 
-$whereCon = ["c.user_id = ?"];
-$pCon = [$uid];
+// ✅ REINFORCED: Added r.user_id = ? to the consolidated join to prevent ANY cross-user leakage
+$whereCon = ["c.user_id = ?", "r.user_id = ?"];
+$pCon = [$uid, $uid];
 if ($search !== '') { $whereCon[] = "(c.id::text ILIKE ? OR c.total_records::text ILIKE ?)"; $pCon[] = "%$search%"; $pCon[] = "%$search%"; }
 if ($dateFrom !== '') { $whereCon[] = "c.created_at >= ?"; $pCon[] = $dateFrom . ' 00:00:00'; }
 if ($dateTo !== '') { $whereCon[] = "c.created_at <= ?"; $pCon[] = $dateTo . ' 23:59:59'; }
@@ -184,7 +191,7 @@ $countIndStmt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records r WHERE " .
 $countIndStmt->execute($pInd);
 $countInd = (int)$countIndStmt->fetchColumn();
 
-// ✅ UPDATED: Join with einvoice_records to ensure accurate linking and use DISTINCT to count batches, not individual rows
+// ✅ REINFORCED: Count distinct batches strictly belonging to this user
 $countConStmt = $pdo->prepare("SELECT COUNT(DISTINCT c.id) FROM einvoice_consolidated c INNER JOIN einvoice_records r ON c.id = r.consolidated_id WHERE " . implode(' AND ', $whereCon));
 $countConStmt->execute($pCon);
 $countCon = (int)$countConStmt->fetchColumn();
@@ -195,7 +202,7 @@ $totalPages = ceil($totalRecords / $perPage);
 // UNION Query
 $sqlInd = "SELECT 'individual' AS record_type, r.id, r.sale_no, r.sale_datetime AS sale_date, r.customer_name, r.document_type, r.total_amount, r.created_at, r.lhdn_status, COALESCE(r.submission_type, 'individual') AS submission_type, NULL::uuid AS consolidated_id, NULL::int AS total_records, r.lhdn_uuid, r.lhdn_submission_id, r.lhdn_long_id, r.lhdn_response, r.lhdn_jsonsend FROM einvoice_records r WHERE " . implode(' AND ', $whereInd);
 
-// ✅ UPDATED: Explicitly JOIN einvoice_consolidated with einvoice_records to fetch uuid, longid, and JSON payloads correctly
+// ✅ REINFORCED: Explicitly JOIN and filter by user_id on BOTH tables
 $sqlCon = "SELECT DISTINCT 'consolidated' AS record_type, c.id, 'Consolidated Batch' AS sale_no, c.sale_date::timestamp with time zone AS sale_date, c.total_records || ' Invoices' AS customer_name, 'Consolidated' AS document_type, c.grand_total AS total_amount, c.created_at, c.lhdn_status, 'consolidated' AS submission_type, c.id AS consolidated_id, c.total_records, c.ei_uuid AS lhdn_uuid, c.ei_submission_id AS lhdn_submission_id, c.lhdn_long_id, c.lhdn_response::text AS lhdn_response, c.ei_json AS lhdn_jsonsend FROM einvoice_consolidated c INNER JOIN einvoice_records r ON c.id = r.consolidated_id WHERE " . implode(' AND ', $whereCon);
 
 $unionSql = "($sqlInd) UNION ALL ($sqlCon) ORDER BY created_at DESC LIMIT ? OFFSET ?";
