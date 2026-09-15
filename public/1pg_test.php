@@ -1,44 +1,32 @@
-<?php
-// Check if the form was actually submitted
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Basic FPX Checkout</title>
+</head>
+<body>
+    <h2>Enter Payment Details</h2>
     
-    // 1. Capture the data from index.php
-    $name   = $_POST['name'];
-    $phone  = $_POST['phone'];
-    $email  = $_POST['email'];
-    $saleno = $_POST['saleno'];
-    $date   = $_POST['date'];
-    $amount = $_POST['amount'];
+    <!-- The form sends data to process.php when submitted -->
+    <form action="process.php" method="POST">
+        <label>Name:</label><br>
+        <input type="text" name="name" required><br><br>
 
-    // 2. Gateway Settings (Replace these with your actual gateway details)
-    $gateway_url = "https://example-fpx-gateway.com/pay"; 
-    $merchant_id = "YOUR_MERCHANT_ID";
-    $secret_key  = "YOUR_SECRET_KEY";
+        <label>Phone:</label><br>
+        <input type="text" name="phone" required><br><br>
 
-    // 3. Security Signature (Most gateways require a hashed string to prevent tampering)
-    // Example: $signature = hash('sha256', $merchant_id . $saleno . $amount . $secret_key);
-    
-    // 4. Create an invisible form with the data and auto-submit it to the Gateway
-    echo "Processing your payment, please wait...";
-    ?>
-    
-    <form id="fpxForm" action="<?php echo $gateway_url; ?>" method="POST" style="display:none;">
-        <input type="hidden" name="merchant_id" value="<?php echo $merchant_id; ?>">
-        <input type="hidden" name="order_id"    value="<?php echo $saleno; ?>">
-        <input type="hidden" name="amount"      value="<?php echo $amount; ?>">
-        <input type="hidden" name="name"        value="<?php echo $name; ?>">
-        <input type="hidden" name="email"       value="<?php echo $email; ?>">
-        <input type="hidden" name="phone"       value="<?php echo $phone; ?>">
-        <!-- <input type="hidden" name="signature" value="<?php echo $signature; ?>"> -->
+        <label>Email:</label><br>
+        <input type="email" name="email" required><br><br>
+
+        <label>Sale No (Order ID):</label><br>
+        <input type="text" name="saleno" required><br><br>
+
+        <label>Date:</label><br>
+        <input type="date" name="date" required><br><br>
+
+        <label>Amount (RM):</label><br>
+        <input type="number" step="0.01" name="amount" required><br><br>
+
+        <button type="submit">Pay with FPX</button>
     </form>
-
-    <!-- JavaScript to automatically click submit on the hidden form -->
-    <script>
-        document.getElementById("fpxForm").submit();
-    </script>
-    
-    <?php
-} else {
-    echo "Invalid request. Please go back to the form.";
-}
-?>
+</body>
+</html>
