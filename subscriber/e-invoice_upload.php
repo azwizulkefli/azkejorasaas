@@ -30,7 +30,7 @@ function logInternal($pdo, $submissionId, $step, $status, $message, $payload = n
     $stmt->execute([$submissionId, $step, $status, $message, $payload ? (is_array($payload) ? json_encode($payload) : $payload) : null]);
 }
 
-// ✅ NEW: Search for the actual TIN using IC / NRIC (Based on your sample code)
+// ✅ NEW: Search for the actual TIN using IC / NRIC
 function searchTINWithLHDN($icno, $apiBaseUrl, $token) {
     $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
     if (strlen($cleanIc) !== 12) return ['found' => false, 'tin' => null];
@@ -56,7 +56,6 @@ function searchTINWithLHDN($icno, $apiBaseUrl, $token) {
     
     if ($httpCode === 200) {
         $data = json_decode($response, true);
-        // Extract TIN from various possible LHDN response formats
         if (is_array($data)) {
             if (isset($data[0]['tin'])) return ['found' => true, 'tin' => $data[0]['tin']];
             if (isset($data['tin'])) return ['found' => true, 'tin' => $data['tin']];
@@ -113,7 +112,7 @@ function extractLhdnError($rec) {
     return null;
 }
 
-// NEW: Builds multiple detailed line items for Consolidated invoices
+// ✅ NEW: Builds multiple detailed line items for Consolidated invoices
 function buildConsolidatedLineItems($records) {
     $items = [];
     foreach ($records as $index => $rec) {
@@ -160,10 +159,14 @@ function buildLHDNPayloads($primaryRecord, $allRecords, $company, $jsonSendTempl
     $lineItemsJson = $isConsolidated ? buildConsolidatedLineItems($allRecords) : buildLineItems($primaryRecord);
     $finalTotal = $grandTotal ?? $primaryRecord['total_amount'];
 
+    // ✅ CRITICAL FIX: LHDN rejects "15" for Consolidated e-Invoices. It MUST be "01".
+    // This regex safeguards against any hardcoded "15" in the database template.
+    $jsonSendTemplate = preg_replace('/("InvoiceTypeCode"\s*:\s*\[\s*\{\s*"_"\s*:\s*)"15"/i', '$1"01"', $jsonSendTemplate);
+
     $map = [
         '*|ei_invoiceno|*'           => $primaryRecord['sale_no'] ?? '',
         '*|ei_invoicedate|*'         => date('Y-m-d', strtotime($primaryRecord['sale_datetime'])),
-        '*|ei_invoicetype|*'         => $isConsolidated ? '15' : ($primaryRecord['document_type'] ?? '01'), // ✅ 15 for Consolidated
+        '*|ei_invoicetype|*'         => '01', // ✅ MUST be '01' for Consolidated e-Invoice (LHDN does not accept '15')
         '*|ei_invoicecurrency|*'     => 'MYR',
         '*|ei_msiccode|*'            => $company['msic_code'] ?? '',
         '*|ei_msicname|*'            => $company['business_type'] ?? '',
@@ -187,7 +190,7 @@ function buildLHDNPayloads($primaryRecord, $allRecords, $company, $jsonSendTempl
         '*|ei_invoicetotalamount|*'  => number_format((float)$finalTotal, 2, '.', ''),
         '*|ei_cninvoice_referenceno|*' => $primaryRecord['reference_no'] ?? 'NA',
         '*|ei_cninvoice_uuid|*'      => $primaryRecord['reference_uuid'] ?? 'NA',
-        '*|ei_invoicelineitem|*'     => $lineItemsJson, // ✅ Injects multiple items for consolidated
+        '*|ei_invoicelineitem|*'     => $lineItemsJson, // ✅ CRITICAL: Injects multiple items for consolidated
         '*|ei_shippingrecipienttin|*'=> $primaryRecord['customer_tin'] ?? 'EI00000000010',
         '*|ei_shippingrecipientname|*'=> $primaryRecord['customer_name'] ?? 'General Buyer'
     ];
@@ -373,22 +376,17 @@ if (isset($_GET['ajax_action'])) {
                 $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
                 $useGeneralTin = false;
 
-                // ✅ NEW LOGIC: If TIN is missing, general, or incorrectly set to the IC number itself, SEARCH for the real TIN
                 if ((empty($tin) || $tin === 'EI00000000010' || preg_match('/^\d{12}$/', $tin)) && strlen($cleanIc) === 12) {
-                    
                     $searchResult = searchTINWithLHDN($cleanIc, $apiBaseUrl, $tokenValue);
                     
                     if ($searchResult['found'] && !empty($searchResult['tin'])) {
-                        $tin = $searchResult['tin']; // e.g., C1234567890
-                        // Save the real TIN to the database
+                        $tin = $searchResult['tin'];
                         $pdo->prepare("UPDATE einvoice_records SET customer_tin = ? WHERE id = ?")->execute([$tin, $indRec['id']]);
                         $indRec['customer_tin'] = $tin;
                     } else {
-                        // LHDN doesn't have a TIN for this IC. Fallback to General TIN (Consolidated).
                         $useGeneralTin = true;
                     }
                 } elseif (empty($tin) || $tin === 'EI00000000010') {
-                    // No IC provided to search with, must fallback
                     $useGeneralTin = true;
                 }
 
@@ -407,7 +405,7 @@ if (isset($_GET['ajax_action'])) {
                     exit;
                 }
 
-				$payloads = buildLHDNPayloads($indRec, [$indRec], $company, $jsonSendTemplate, $jsonConvertTemplate);
+                $payloads = buildLHDNPayloads($indRec, [$indRec], $company, $jsonSendTemplate, $jsonConvertTemplate);
 
                 $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
                 
@@ -472,7 +470,7 @@ if (isset($_GET['ajax_action'])) {
                 $primaryMock = [
                     'sale_no' => $consolSaleNo,
                     'sale_datetime' => $saleDate . ' 23:59:59',
-                    'document_type' => '15', // ✅ CRITICAL: 15 for Consolidated e-Invoice
+                    'document_type' => '01', // ✅ FIXED: LHDN requires '01' for Consolidated e-Invoice, '15' is invalid
                     'customer_tin' => 'EI00000000010',
                     'customer_name' => 'General Buyer',
                     'customer_address' => 'Multiple Customers',
