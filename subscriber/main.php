@@ -424,11 +424,6 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
         <b><?= $einCount ?></b>
         <small>RM <?= number_format((float)$einGrossV, 0) ?> gross value</small>
       </div>
-      <div class="stat">
-        <p>My bookings</p>
-        <b><?= $bkCountV ?></b>
-        <small>upcoming & past</small>
-      </div>
     </div>
 
     <!-- ========== E-INVOICE SUMMARIES ========== -->
@@ -496,6 +491,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
     </div>
 
     <!-- ========== SERVICE CARDS ========== -->
+<!--
     <div class="cards2">
       <div class="svc">
         <span class="blob" style="background:#fef3c7"></span>
@@ -515,6 +511,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
         </div>
       </div>
     </div>
+-->
 
   </main>
 
