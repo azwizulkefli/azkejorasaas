@@ -111,7 +111,7 @@ function extractLhdnError($rec) {
     return null;
 }
 
-// ✅ FIXED: Corrected TaxScheme ID array structure
+// ✅ FIXED: Added AllowanceCharge and ItemPriceExtension to match LHDN Success Payload
 function buildConsolidatedLineItems($records) {
     $items = [];
     foreach ($records as $index => $rec) {
@@ -127,16 +127,19 @@ function buildConsolidatedLineItems($records) {
             '"ID": [{"_": "' . ($index + 1) . '"}],' .
             '"InvoicedQuantity": [{"_": 1, "unitCode": "C62"}],' .
             '"LineExtensionAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}],' .
-            // ✅ FIX: Combined properties into ONE object instead of three separate objects
-            '"TaxTotal": [{"TaxAmount": [{"_": 0, "currencyID": "MYR"}], "TaxSubtotal": [{"TaxableAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}], "TaxAmount": [{"_": 0, "currencyID": "MYR"}], "Percent": [{"_": 0}], "TaxCategory": [{"ID": [{"_": "E"}], "TaxExemptionReason": [{"_": "Exempt"}], "TaxScheme": [{"ID": [{"_": "OTH", "schemeID": "UN/ECE 5153", "schemeAgencyID": "6"}]}]}]}]}],' .
+            // ✅ NEW: AllowanceCharge (Required by LHDN schema)
+            '"AllowanceCharge": [{"ChargeIndicator": [{"_": false}], "AllowanceChargeReason": [{"_": "Sample Description"}], "MultiplierFactorNumeric": [{"_": 0.15}], "Amount": [{"_": 0, "currencyID": "MYR"}]}],' .
+            '"TaxTotal": [{"TaxAmount": [{"_": 0, "currencyID": "MYR"}], "TaxSubtotal": [{"TaxableAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}], "TaxAmount": [{"_": 0, "currencyID": "MYR"}], "Percent": [{"_": 6}], "TaxCategory": [{"ID": [{"_": "E"}], "TaxExemptionReason": [{"_": "Exempt New Means of Transport"}], "TaxScheme": [{"ID": [{"_": "OTH", "schemeID": "UN/ECE 5153", "schemeAgencyID": "6"}]}]}]}]}],' .
             '"Item": [{"CommodityClassification": [{"ItemClassificationCode": [{"_": "9800.00.0010", "listID": "PTC"}]}, {"ItemClassificationCode": [{"_": "004", "listID": "CLASS"}]}], "Description": [{"_": "' . $desc . '"}], "OriginCountry": [{"IdentificationCode": [{"_": "MYS"}]}]}],' .
-            '"Price": [{"PriceAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}]' .
+            '"Price": [{"PriceAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}],' .
+            // ✅ NEW: ItemPriceExtension (Fixes CF411 Error)
+            '"ItemPriceExtension": [{"Amount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}]' .
         '}';
     }
     return implode(',', $items);
 }
 
-// ✅ FIXED: Corrected TaxScheme ID array structure
+// ✅ FIXED: Added AllowanceCharge and ItemPriceExtension to match LHDN Success Payload
 function buildLineItems($record) {
     $amount = number_format((float)$record['total_amount'], 2, '.', '');
     $desc = ($record['submission_type'] ?? '') === 'consolidated' ? 'Consolidated daily sales' : ($record['sale_title'] ?? 'Sale Transaction');
@@ -146,10 +149,13 @@ function buildLineItems($record) {
         '"ID": [{"_": "1"}],' .
         '"InvoicedQuantity": [{"_": 1, "unitCode": "C62"}],' .
         '"LineExtensionAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}],' .
-        // ✅ FIX: Combined properties into ONE object instead of three separate objects
-        '"TaxTotal": [{"TaxAmount": [{"_": 0, "currencyID": "MYR"}], "TaxSubtotal": [{"TaxableAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}], "TaxAmount": [{"_": 0, "currencyID": "MYR"}], "Percent": [{"_": 0}], "TaxCategory": [{"ID": [{"_": "E"}], "TaxExemptionReason": [{"_": "Exempt"}], "TaxScheme": [{"ID": [{"_": "OTH", "schemeID": "UN/ECE 5153", "schemeAgencyID": "6"}]}]}]}]}],' .
+        // ✅ NEW: AllowanceCharge (Required by LHDN schema)
+        '"AllowanceCharge": [{"ChargeIndicator": [{"_": false}], "AllowanceChargeReason": [{"_": "Sample Description"}], "MultiplierFactorNumeric": [{"_": 0.15}], "Amount": [{"_": 0, "currencyID": "MYR"}]}],' .
+        '"TaxTotal": [{"TaxAmount": [{"_": 0, "currencyID": "MYR"}], "TaxSubtotal": [{"TaxableAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}], "TaxAmount": [{"_": 0, "currencyID": "MYR"}], "Percent": [{"_": 6}], "TaxCategory": [{"ID": [{"_": "E"}], "TaxExemptionReason": [{"_": "Exempt New Means of Transport"}], "TaxScheme": [{"ID": [{"_": "OTH", "schemeID": "UN/ECE 5153", "schemeAgencyID": "6"}]}]}]}]}],' .
         '"Item": [{"CommodityClassification": [{"ItemClassificationCode": [{"_": "9800.00.0010", "listID": "PTC"}]}, {"ItemClassificationCode": [{"_": "004", "listID": "CLASS"}]}], "Description": [{"_": "' . $desc . '"}], "OriginCountry": [{"IdentificationCode": [{"_": "MYS"}]}]}],' .
-        '"Price": [{"PriceAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}]' .
+        '"Price": [{"PriceAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}],' .
+        // ✅ NEW: ItemPriceExtension (Fixes CF411 Error)
+        '"ItemPriceExtension": [{"Amount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}]' .
     '}';
 }
 
@@ -165,12 +171,12 @@ function buildLHDNPayloads($primaryRecord, $allRecords, $company, $jsonSendTempl
     $map = [
         '*|ei_invoiceno|*'           => $primaryRecord['sale_no'] ?? '',
         '*|ei_invoicedate|*'         => date('Y-m-d', strtotime($primaryRecord['sale_datetime'])),
-        '*|ei_invoicetype|*'         => '01', // ✅ MUST be '01' for both Individual & Consolidated
+        '*|ei_invoicetype|*'         => '01', 
         '*|ei_invoicecurrency|*'     => 'MYR',
         '*|ei_msiccode|*'            => $company['msic_code'] ?? '',
         '*|ei_msicname|*'            => $company['business_type'] ?? '',
         '*|ei_suppliertin|*'         => $company['taxpayer_tin'] ?? '',
-        '*|ei_supplierbrn|*'         => $company['brn'] ?? 'NA', // ✅ Maps to template
+        '*|ei_supplierbrn|*'         => $company['brn'] ?? 'NA', 
         '*|ei_suppliername|*'        => $company['name'] ?? '',
         '*|ei_supplieradd1|*'        => $company['address'] ?? '',
         '*|ei_supplieradd2|*'        => $company['address'] ?? '',        
@@ -190,7 +196,7 @@ function buildLHDNPayloads($primaryRecord, $allRecords, $company, $jsonSendTempl
         '*|ei_invoicetotalamount|*'  => number_format((float)$finalTotal, 2, '.', ''),
         '*|ei_cninvoice_referenceno|*' => $primaryRecord['reference_no'] ?? 'NA',
         '*|ei_cninvoice_uuid|*'      => $primaryRecord['reference_uuid'] ?? 'NA',
-        '*|ei_invoicelineitem|*'     => $lineItemsJson, // ✅ Injects items dynamically
+        '*|ei_invoicelineitem|*'     => $lineItemsJson, 
         '*|ei_shippingrecipienttin|*'=> $primaryRecord['customer_tin'] ?? 'EI00000000010',
         '*|ei_shippingrecipientname|*'=> $primaryRecord['customer_name'] ?? 'General Buyer'
     ];
@@ -405,7 +411,6 @@ if (isset($_GET['ajax_action'])) {
                     exit;
                 }
 
-                // ✅ Process Individual Submission using the exact same Template
                 $payloads = buildLHDNPayloads($indRec, [$indRec], $company, $jsonSendTemplate, $jsonConvertTemplate);
 
                 $submitResult = submitCustomPayloadToLHDN($apiBaseUrl . '/api/v1.0/documentsubmissions', $payloads['convert'], $tokenValue);
