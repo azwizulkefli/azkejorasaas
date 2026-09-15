@@ -111,7 +111,7 @@ function extractLhdnError($rec) {
     return null;
 }
 
-// ✅ FIXED: Added AllowanceCharge and ItemPriceExtension to match LHDN Success Payload
+// ✅ Consolidated always uses '004'
 function buildConsolidatedLineItems($records) {
     $items = [];
     foreach ($records as $index => $rec) {
@@ -127,20 +127,18 @@ function buildConsolidatedLineItems($records) {
             '"ID": [{"_": "' . ($index + 1) . '"}],' .
             '"InvoicedQuantity": [{"_": 1, "unitCode": "C62"}],' .
             '"LineExtensionAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}],' .
-            // ✅ NEW: AllowanceCharge (Required by LHDN schema)
             '"AllowanceCharge": [{"ChargeIndicator": [{"_": false}], "AllowanceChargeReason": [{"_": "Sample Description"}], "MultiplierFactorNumeric": [{"_": 0.15}], "Amount": [{"_": 0, "currencyID": "MYR"}]}],' .
             '"TaxTotal": [{"TaxAmount": [{"_": 0, "currencyID": "MYR"}], "TaxSubtotal": [{"TaxableAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}], "TaxAmount": [{"_": 0, "currencyID": "MYR"}], "Percent": [{"_": 6}], "TaxCategory": [{"ID": [{"_": "E"}], "TaxExemptionReason": [{"_": "Exempt New Means of Transport"}], "TaxScheme": [{"ID": [{"_": "OTH", "schemeID": "UN/ECE 5153", "schemeAgencyID": "6"}]}]}]}]}],' .
             '"Item": [{"CommodityClassification": [{"ItemClassificationCode": [{"_": "9800.00.0010", "listID": "PTC"}]}, {"ItemClassificationCode": [{"_": "004", "listID": "CLASS"}]}], "Description": [{"_": "' . $desc . '"}], "OriginCountry": [{"IdentificationCode": [{"_": "MYS"}]}]}],' .
             '"Price": [{"PriceAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}],' .
-            // ✅ NEW: ItemPriceExtension (Fixes CF411 Error)
             '"ItemPriceExtension": [{"Amount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}]' .
         '}';
     }
     return implode(',', $items);
 }
 
-// ✅ FIXED: Added AllowanceCharge and ItemPriceExtension to match LHDN Success Payload
-function buildLineItems($record) {
+// ✅ Individual uses '022', Consolidated uses '004' (Passed via $classCode)
+function buildLineItems($record, $classCode = '022') {
     $amount = number_format((float)$record['total_amount'], 2, '.', '');
     $desc = ($record['submission_type'] ?? '') === 'consolidated' ? 'Consolidated daily sales' : ($record['sale_title'] ?? 'Sale Transaction');
     $desc = str_replace(['"', "\n", "\r"], ['\\"', ' ', ' '], $desc);
@@ -149,12 +147,10 @@ function buildLineItems($record) {
         '"ID": [{"_": "1"}],' .
         '"InvoicedQuantity": [{"_": 1, "unitCode": "C62"}],' .
         '"LineExtensionAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}],' .
-        // ✅ NEW: AllowanceCharge (Required by LHDN schema)
         '"AllowanceCharge": [{"ChargeIndicator": [{"_": false}], "AllowanceChargeReason": [{"_": "Sample Description"}], "MultiplierFactorNumeric": [{"_": 0.15}], "Amount": [{"_": 0, "currencyID": "MYR"}]}],' .
         '"TaxTotal": [{"TaxAmount": [{"_": 0, "currencyID": "MYR"}], "TaxSubtotal": [{"TaxableAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}], "TaxAmount": [{"_": 0, "currencyID": "MYR"}], "Percent": [{"_": 6}], "TaxCategory": [{"ID": [{"_": "E"}], "TaxExemptionReason": [{"_": "Exempt New Means of Transport"}], "TaxScheme": [{"ID": [{"_": "OTH", "schemeID": "UN/ECE 5153", "schemeAgencyID": "6"}]}]}]}]}],' .
-        '"Item": [{"CommodityClassification": [{"ItemClassificationCode": [{"_": "9800.00.0010", "listID": "PTC"}]}, {"ItemClassificationCode": [{"_": "004", "listID": "CLASS"}]}], "Description": [{"_": "' . $desc . '"}], "OriginCountry": [{"IdentificationCode": [{"_": "MYS"}]}]}],' .
+        '"Item": [{"CommodityClassification": [{"ItemClassificationCode": [{"_": "9800.00.0010", "listID": "PTC"}]}, {"ItemClassificationCode": [{"_": "' . $classCode . '", "listID": "CLASS"}]}], "Description": [{"_": "' . $desc . '"}], "OriginCountry": [{"IdentificationCode": [{"_": "MYS"}]}]}],' .
         '"Price": [{"PriceAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}],' .
-        // ✅ NEW: ItemPriceExtension (Fixes CF411 Error)
         '"ItemPriceExtension": [{"Amount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}]' .
     '}';
 }
@@ -162,10 +158,11 @@ function buildLineItems($record) {
 function buildLHDNPayloads($primaryRecord, $allRecords, $company, $jsonSendTemplate, $jsonConvertTemplate, $grandTotal = null) {
     $isConsolidated = is_array($allRecords) && count($allRecords) > 1;
     
-    $lineItemsJson = $isConsolidated ? buildConsolidatedLineItems($allRecords) : buildLineItems($primaryRecord);
+    // ✅ Determine Class Code based on submission type
+    $classCode = ($primaryRecord['submission_type'] ?? 'individual') === 'consolidated' ? '004' : '022';
+    $lineItemsJson = $isConsolidated ? buildConsolidatedLineItems($allRecords) : buildLineItems($primaryRecord, $classCode);
     $finalTotal = $grandTotal ?? $primaryRecord['total_amount'];
 
-    // ✅ CRITICAL FIX: LHDN rejects "15" for Consolidated e-Invoices. It MUST be "01".
     $jsonSendTemplate = preg_replace('/("InvoiceTypeCode"\s*:\s*\[\s*\{\s*"_"\s*:\s*)"15"/i', '$1"01"', $jsonSendTemplate);
 
     $map = [
@@ -476,6 +473,7 @@ if (isset($_GET['ajax_action'])) {
                     'sale_no' => $consolSaleNo,
                     'sale_datetime' => $saleDate . ' 23:59:59',
                     'document_type' => '01',
+                    'submission_type' => 'consolidated', // ✅ Added to ensure correct Class Code mapping
                     'customer_tin' => 'EI00000000010',
                     'customer_name' => 'General Buyer',
                     'customer_address' => 'Multiple Customers',
