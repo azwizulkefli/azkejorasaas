@@ -778,7 +778,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
   <nav class="sidebar-nav">
     <a href="main.php" class="menu-item">🏠 Home</a>
     <a href="e-invoice.php" class="menu-item">🧾 E-Invoice</a>
-    <a href="e-invoice_upload.php" class="menu-item" active>🧾 Upload Individual</a>
+    <a href="e-invoice_upload.php" class="menu-item active">🧾 Upload Individual</a>
     <a href="e-invoice_consolidate.php" class="menu-item">🧾 Upload Consolidated</a>
     <a href="e-invoice_manual.php" class="menu-item">🧾 Manual Entry</a>
     <a href="e-invoice_submitted.php" class="menu-item">📋 View Submitted</a>
