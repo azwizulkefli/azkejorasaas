@@ -344,7 +344,8 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
         <p>This Year</p>
       </div>
     </div>
-
+    
+    <!--
     <h3 style="font-size:16px;font-weight:600;margin-bottom:12px;color:var(--muted)">By Status</h3>
     <div class="status-grid">
       <div class="status-card"><b class="status-new"><?= $statusMap['new'] ?? 0 ?></b><p>New</p></div>
@@ -354,6 +355,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
       <div class="status-card"><b class="status-progress"><?= $statusMap['in_progress'] ?? $statusMap['pending'] ?? 0 ?></b><p>In Progress</p></div>
       <div class="status-card"><b class="status-fail"><?= $statusMap['fail'] ?? $statusMap['failed'] ?? 0 ?></b><p>Failed</p></div>
     </div>
+    -->
   </main>
 
   <footer class="footer">© 2026 AZ Kejora SaaS · Supabase PostgreSQL · <?= htmlspecialchars($me['email']) ?></footer>
