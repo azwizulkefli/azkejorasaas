@@ -124,7 +124,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'proce
         unset($_SESSION['plan_price']);
         
         // Redirect to success page
-        header("Location: s_payment_success.php?receipt=" . urlencode($receiptNo));
+        header("Location: s_subscribepayment_success.php?receipt=" . urlencode($receiptNo));
         exit;
         
     } catch (Exception $e) {
