@@ -3,67 +3,148 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/settings.php';
 requireCustomer();
 ensure_settings_table($pdo);
+
 $uid = currentUserId();
 $me  = currentUser();
 
 // ============================================================
-// 1. FETCH ALL PAYMENT RECORDS (each subscription row = a payment)
+// 1. DATE FILTERING
 // ============================================================
-$stmt = $pdo->prepare("
-    SELECT *
-    FROM subscriptions
-    WHERE user_id = ?
-      AND payment_date IS NOT NULL
-    ORDER BY payment_date DESC
-");
-$stmt->execute([$uid]);
-$payments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$dateFilter = $_GET['date_range'] ?? 'last_6_months';
+$dateCondition = '';
+$dateParams = [];
 
-// ============================================================
-// 2. SUMMARY STATS
-// ============================================================
-$totalPaid     = 0.0;
-$countPaid     = count($payments);
-$lastPaymentAt = $payments[0]['payment_date'] ?? null;
-
-foreach ($payments as $p) {
-    $totalPaid += (float)($p['amount'] ?? 0);
+switch ($dateFilter) {
+    case 'last_30_days':
+        $dateCondition = "AND sale_datetime >= NOW() - INTERVAL '30 days'";
+        break;
+    case 'last_3_months':
+        $dateCondition = "AND sale_datetime >= NOW() - INTERVAL '3 months'";
+        break;
+    case 'last_6_months':
+    default:
+        $dateCondition = "AND sale_datetime >= NOW() - INTERVAL '6 months'";
+        break;
+    case 'this_year':
+        $dateCondition = "AND EXTRACT(YEAR FROM sale_datetime) = EXTRACT(YEAR FROM CURRENT_DATE)";
+        break;
 }
 
-// Next billing date from the *current* (most recent) active subscription
-$active = $pdo->prepare("
-    SELECT period_ends_at, status, plan, price
-    FROM subscriptions
-    WHERE user_id = ?
-    ORDER BY created_at DESC
-    LIMIT 1
+// ============================================================
+// 2. FETCH SUMMARY STATISTICS
+// ============================================================
+$stmtStats = $pdo->prepare("
+    SELECT 
+        COUNT(*) as total_records,
+        COALESCE(SUM(total_amount), 0) as total_amount,
+        SUM(CASE WHEN lhdn_status = 'Valid' THEN 1 ELSE 0 END) as valid_count,
+        SUM(CASE WHEN lhdn_status = 'Invalid' THEN 1 ELSE 0 END) as invalid_count,
+        SUM(CASE WHEN lhdn_status IN ('Pending', 'In Progress') OR lhdn_status IS NULL THEN 1 ELSE 0 END) as pending_count
+    FROM einvoice_records
+    WHERE user_id = ? $dateCondition
 ");
-$active->execute([$uid]);
-$current = $active->fetch();
+$stmtStats->execute([$uid]);
+$stats = $stmtStats->fetch(PDO::FETCH_ASSOC);
 
 // ============================================================
-// 3. FORMATTERS
+// 3. FETCH CHART DATA (Monthly Trend)
+// ============================================================
+$stmtTrend = $pdo->prepare("
+    SELECT 
+        TO_CHAR(sale_datetime, 'Mon YY') as month_label,
+        TO_CHAR(sale_datetime, 'YYYY-MM') as month_sort,
+        COUNT(*) as count,
+        COALESCE(SUM(total_amount), 0) as amount
+    FROM einvoice_records
+    WHERE user_id = ? $dateCondition
+    GROUP BY TO_CHAR(sale_datetime, 'YYYY-MM'), TO_CHAR(sale_datetime, 'Mon YY')
+    ORDER BY month_sort ASC
+");
+$stmtTrend->execute([$uid]);
+$trendData = $stmtTrend->fetchAll(PDO::FETCH_ASSOC);
+
+// ============================================================
+// 4. FETCH LHDN STATUS BREAKDOWN
+// ============================================================
+$stmtStatus = $pdo->prepare("
+    SELECT 
+        COALESCE(lhdn_status, 'Pending') as status,
+        COUNT(*) as count
+    FROM einvoice_records
+    WHERE user_id = ? $dateCondition
+    GROUP BY COALESCE(lhdn_status, 'Pending')
+    ORDER BY count DESC
+");
+$stmtStatus->execute([$uid]);
+$statusData = $stmtStatus->fetchAll(PDO::FETCH_ASSOC);
+
+// ============================================================
+// 5. FETCH SUBMISSION TYPE BREAKDOWN
+// ============================================================
+$stmtType = $pdo->prepare("
+    SELECT 
+        submission_type,
+        COUNT(*) as count
+    FROM einvoice_records
+    WHERE user_id = ? $dateCondition
+    GROUP BY submission_type
+");
+$stmtType->execute([$uid]);
+$typeData = $stmtType->fetchAll(PDO::FETCH_ASSOC);
+
+// ============================================================
+// 6. FETCH RECENT RECORDS FOR TABLE
+// ============================================================
+$stmtRecent = $pdo->prepare("
+    SELECT 
+        id, sale_no, customer_name, customer_type, total_amount, 
+        sale_datetime, lhdn_status, validation_status, submission_type
+    FROM einvoice_records
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+    LIMIT 100
+");
+$stmtRecent->execute([$uid]);
+$recentRecords = $stmtRecent->fetchAll(PDO::FETCH_ASSOC);
+
+// ============================================================
+// 7. SMART INSIGHTS GENERATION (AI-like Logic)
+// ============================================================
+$insights = [];
+$total = $stats['total_records'];
+if ($total > 0) {
+    $validRate = round(($stats['valid_count'] / $total) * 100, 1);
+    $invalidRate = round(($stats['invalid_count'] / $total) * 100, 1);
+    
+    $insights[] = "📊 <strong>Validation Success Rate:</strong> Your e-Invoices have a <strong>{$validRate}%</strong> valid submission rate.";
+    
+    if ($invalidRate > 5) {
+        $insights[] = "⚠️ <strong>Attention Needed:</strong> {$invalidRate}% of submissions are invalid. Review the 'Invalid' records in the table below to fix validation errors.";
+    } else {
+        $insights[] = "✅ <strong>Healthy Profile:</strong> Your invalid submission rate is low ({$invalidRate}%). Keep up the good data entry practices!";
+    }
+
+    if ($stats['pending_count'] > ($total * 0.2)) {
+        $insights[] = "⏳ <strong>Processing Delay:</strong> Over 20% of your invoices are still pending LHDN validation. This is normal during peak hours, but monitor if it exceeds 24 hours.";
+    }
+} else {
+    $insights[] = "💡 <strong>Getting Started:</strong> No e-Invoice records found for this period. Start by uploading or generating your first e-Invoice.";
+}
+
+// ============================================================
+// 8. FORMATTERS
 // ============================================================
 $fmtDate = fn($v) => $v ? (new DateTime($v))->format('d M Y') : '—';
 $fmtDateTime = fn($v) => $v ? (new DateTime($v))->format('d M Y, h:i A') : '—';
 $fmtMoney = fn($v) => 'RM ' . number_format((float)$v, 2);
 
-$payTypeLabel = function($t) {
-    return [
-        'stripe'    => '💳 Card (Stripe)',
-        'fpx'       => '🏦 FPX Online Banking',
-        'toyyibpay' => '📱 ToyyibPay DuitNow',
-        'manual'    => '💵 Manual Transfer',
-    ][$t] ?? ucfirst((string)$t);
+$statusBadge = fn($st) => match(strtolower($st)) {
+    'valid'     => ['bg:#d1fae5', 'color:#059669', 'Valid'],
+    'invalid'   => ['bg:#ffe4e6', 'color:#e11d48', 'Invalid'],
+    'pending'   => ['bg:#fef3c7', 'color:#d97706', 'Pending'],
+    'in progress' => ['bg:#e0e5ff', 'color:#4644cf', 'In Progress'],
+    default     => ['bg:#f1f5f9', 'color:#94a3b8', ucfirst($st ?: 'Unknown')]
 };
-
-$statusBadge = fn($st) => [
-    'active'       => ['bg:#d1fae5','color:#059669','Active'],
-    'active_trial' => ['bg:#e0e5ff','color:#4644cf','Trial'],
-    'past_due'     => ['bg:#fef3c7','color:#d97706','Past Due'],
-    'canceled'     => ['bg:#f1f5f9','color:#64748b','Canceled'],
-    'suspended'    => ['bg:#ffe4e6','color:#e11d48','Suspended'],
-][$st] ?? ['bg:#f1f5f9','color:#94a3b8','—'];
 
 $avatarSrc = $me['avatar_path'] ? '/' . $me['avatar_path'] : null;
 ?>
@@ -72,7 +153,8 @@ $avatarSrc = $me['avatar_path'] ? '/' . $me['avatar_path'] : null;
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Payment History — AZ Kejora SaaS</title>
+<title>E-Invoice Reports — AZ Kejora SaaS</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 :root{--ink:#131327;--bg:#F6F7FB;--brand:#5457e5;--violet:#8b5cf6;--muted:#64748b;--faint:#94a3b8;--line:#e2e8f0;--grad:linear-gradient(90deg,var(--brand),var(--violet));--card:0 1px 2px rgba(19,19,39,.06),0 12px 32px -16px rgba(19,19,39,.12)}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -112,9 +194,6 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 .main{max-width:1200px;margin:0 auto;padding:32px 24px;width:100%}
 h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .sub{color:var(--muted);font-size:14px;margin-top:4px}
-.banner{margin:16px 0 0;border-radius:12px;padding:12px 18px;font-size:13px;font-weight:600}
-.banner.success{background:#d1fae5;color:#059669}
-.banner.error{background:#ffe4e6;color:#e11d48}
 
 /* ---------- STATS ---------- */
 .stats4{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;margin:28px 0}
@@ -123,84 +202,56 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .stat b{display:block;margin-top:8px;font-size:24px;font-weight:800}
 .stat small{display:block;margin-top:4px;font-size:12px;color:var(--muted)}
 .stat .grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-.stat .emerald{color:#059669}.stat .rose{color:#e11d48}
+
+/* ---------- SMART INSIGHTS ---------- */
+.insights-box{background:linear-gradient(135deg, #f0f4ff 0%, #fdf4ff 100%);border:1px solid #e0e5ff;border-radius:16px;padding:20px 24px;margin-bottom:28px}
+.insights-box h3{font-size:14px;font-weight:800;color:var(--brand);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.insights-box ul{list-style:none;display:flex;flex-direction:column;gap:10px}
+.insights-box li{font-size:13px;color:var(--ink);line-height:1.5;padding-left:4px}
 
 /* ---------- FILTER BAR ---------- */
 .filter-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:20px}
 .filter-bar input,.filter-bar select{border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:13px;background:#fff;outline:none;font-family:inherit}
 .filter-bar input:focus,.filter-bar select:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.1)}
 
-/* ---------- PAYMENTS TABLE ---------- */
+/* ---------- CHARTS GRID ---------- */
+.charts-grid{display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-bottom:28px}
+.chart-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:var(--card)}
+.chart-card h3{font-size:15px;font-weight:700;margin-bottom:16px;color:var(--ink)}
+.chart-container{position:relative;height:300px;width:100%}
+
+/* ---------- TABLE ---------- */
 .table-wrap{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--card);overflow:hidden}
-.pay-table{width:100%;border-collapse:collapse;font-size:13px}
-.pay-table thead{background:#f8fafc}
-.pay-table th{padding:14px 16px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);border-bottom:1px solid var(--line)}
-.pay-table td{padding:16px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
-.pay-table tbody tr:last-child td{border-bottom:none}
-.pay-table tbody tr:hover{background:#fafbff}
-.pay-table .mono{font-family:'JetBrains Mono','Courier New',monospace;font-size:12px;color:var(--muted)}
-.pay-table .amount{font-weight:800;font-size:15px;color:var(--ink)}
-.pay-table .amount.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.data-table{width:100%;border-collapse:collapse;font-size:13px}
+.data-table thead{background:#f8fafc}
+.data-table th{padding:14px 16px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);border-bottom:1px solid var(--line)}
+.data-table td{padding:16px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
+.data-table tbody tr:last-child td{border-bottom:none}
+.data-table tbody tr:hover{background:#fafbff}
+.data-table .mono{font-family:'JetBrains Mono','Courier New',monospace;font-size:12px;color:var(--muted)}
+.data-table .amount{font-weight:800;font-size:14px;color:var(--ink)}
 
 .pill{display:inline-block;padding:4px 10px;border-radius:999px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
-.badge-pay{background:#e0e5ff;color:#4644cf}
-.badge-sub{background:#d1fae5;color:#059669}
 
-.btn-view{display:inline-flex;align-items:center;gap:6px;background:#eef1ff;color:var(--brand-dark);border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700;transition:.15s}
-.btn-view:hover{background:#c6ceff;color:#fff}
-.btn-primary{background:var(--grad);color:#fff;border-radius:12px;padding:11px 18px;font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:8px}
-.btn-primary:hover{transform:translateY(-1px);box-shadow:0 10px 20px -8px rgba(84,87,229,.4)}
-.btn-ghost{background:#fff;border:1px solid var(--line);color:var(--text);border-radius:12px;padding:11px 18px;font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:8px}
+.btn-ghost{background:#fff;border:1px solid var(--line);color:var(--ink);border-radius:12px;padding:11px 18px;font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:8px;transition:.15s}
+.btn-ghost:hover{background:#f8fafc;border-color:var(--brand)}
 
 .empty-state{text-align:center;padding:60px 20px;color:var(--muted)}
 .empty-state .ic{font-size:48px;margin-bottom:12px;opacity:.4}
 .empty-state h3{font-size:16px;font-weight:700;color:var(--ink);margin-bottom:4px}
 .empty-state p{font-size:13px;max-width:400px;margin:0 auto}
 
-/* ---------- RECEIPT MODAL ---------- */
-.modal{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);padding:16px}
-.modal.open{display:grid}
-.modal-card{width:100%;max-width:760px;background:#fff;border-radius:20px;box-shadow:0 30px 80px -20px rgba(19,19,39,.4);max-height:90vh;display:flex;flex-direction:column}
-.modal-head{padding:20px 24px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-.modal-head h3{font-size:18px;font-weight:800}
-.modal-head .actions{display:flex;gap:8px}
-.modal-body{overflow:auto;padding:0}
-.modal-foot{padding:16px 24px;border-top:1px solid var(--line);background:#f8fafc;font-size:12px;color:var(--faint);text-align:center}
-
-/* ---------- RECEIPT CONTENT (screen view) ---------- */
-.receipt{background:#fff;padding:40px 48px;font-size:14px;color:var(--ink)}
-.receipt-head{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:24px;border-bottom:2px solid var(--line);margin-bottom:24px}
-.receipt-head .company h2{font-size:22px;font-weight:800;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-.receipt-head .company p{font-size:12px;color:var(--muted);line-height:1.6;margin-top:4px}
-.receipt-head .tag{text-align:right}
-.receipt-head .tag .stamp{display:inline-block;background:var(--grad);color:#fff;padding:6px 14px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
-.receipt-head .tag b{display:block;font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace}
-.receipt-head .tag small{font-size:11px;color:var(--muted)}
-
-.receipt-section{margin-bottom:24px}
-.receipt-section h4{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-bottom:10px}
-.receipt-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
-.receipt-grid .col p{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
-.receipt-grid .col b{display:block;font-size:13px;font-weight:700}
-
-.pay-breakdown{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-top:8px}
-.pay-breakdown .row{display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #f1f5f9;font-size:13px}
-.pay-breakdown .row:last-child{border-bottom:none;background:#f8fafc;font-weight:800;font-size:15px;padding:16px}
-.pay-breakdown .row span:first-child{color:var(--muted)}
-.pay-breakdown .row span:last-child{font-weight:700}
-.pay-breakdown .row.total span:last-child{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;font-size:18px}
-
-.receipt-footer{margin-top:28px;padding-top:20px;border-top:1px dashed var(--line);text-align:center;font-size:11px;color:var(--faint);line-height:1.7}
-.receipt-footer strong{color:var(--ink);font-weight:700}
-
 /* ---------- RESPONSIVE ---------- */
+@media(max-width:1024px){
+  .charts-grid{grid-template-columns:1fr}
+  .stats4{grid-template-columns:repeat(2,1fr)}
+}
 @media(max-width:900px){
   .sidebar{transform:translateX(-100%)}
   .sidebar.open{transform:translateX(0)}
   .sidebar-overlay.open{display:block}
   .main-wrapper{margin-left:0}
   .menu-toggle{display:block}
-  .stats4{grid-template-columns:repeat(2,1fr)}
 }
 @media(max-width:760px){
   .main{padding:20px 12px}
@@ -209,29 +260,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   .top-right{gap:8px;font-size:12px}
   .stats4{grid-template-columns:1fr}
   .table-wrap{overflow-x:auto}
-  .pay-table{min-width:820px}
-  .receipt{padding:24px}
-  .receipt-head{flex-direction:column}
-  .receipt-head .tag{text-align:left}
-  .receipt-grid{grid-template-columns:1fr}
-}
-
-/* ---------- PRINT STYLES (receipt PDF) ---------- */
-@media print {
-  @page { size: A4; margin: 15mm; }
-  body * { visibility: hidden !important; }
-  body { background: #fff !important; }
-  #printArea, #printArea * { visibility: visible !important; }
-  #printArea {
-    position: absolute !important;
-    left: 0; top: 0; width: 100%;
-    padding: 0 !important; margin: 0 !important;
-    background: #fff !important;
-  }
-  .modal-card { box-shadow: none !important; border-radius: 0 !important; max-height: none !important; }
-  .receipt { padding: 0 !important; }
-  .modal-head, .modal-foot { display: none !important; }
-  a { color: inherit !important; }
+  .data-table{min-width:820px}
 }
 </style>
 </head>
@@ -240,7 +269,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 <div class="loading-overlay" id="loadingOverlay">
   <div class="spinner-wrap">
     <div class="spinner"></div>
-    <p class="spinner-text">Processing…</p>
+    <p class="spinner-text">Loading Reports…</p>
   </div>
 </div>
 
@@ -253,8 +282,8 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
     <a href="main.php" class="menu-item">🏠 Home</a>
     <a href="e-invoice.php" class="menu-item">🧾 E-Invoice</a>
     <div class="menu-section">Subscription</div>
-    <a href="s_payment.php" class="menu-item active">🧾 Payment</a>
-    <a href="s_report.php" class="menu-item">🧾 Report</a>
+    <a href="s_payment.php" class="menu-item">💳 Payment</a>
+    <a href="s_report.php" class="menu-item active">📊 Report</a>
     <div class="menu-section">Setup</div>
     <a href="company.php" class="menu-item">🏢 Company</a>
     <a href="users.php" class="menu-item">👥 Users</a>
@@ -284,123 +313,126 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   </nav>
 
   <main class="main">
-
-    <?php if (isset($_GET['ok']) && $_GET['ok'] === 'paid'): ?>
-      <div class="banner success">✓ Payment successful — your subscription has been extended.</div>
-    <?php endif; ?>
-
     <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px">
       <div>
-        <h1>Payment History</h1>
-        <p class="sub">View all your subscription payments and download receipts.</p>
+        <h1>E-Invoice Analytics</h1>
+        <p class="sub">Comprehensive insights into your LHDN submission performance and validation metrics.</p>
       </div>
-      <a href="main.php" class="btn-ghost">← Back to Dashboard</a>
+      
+      <!-- Date Filter -->
+      <form method="GET" style="display:flex;gap:8px">
+        <select name="date_range" onchange="this.form.submit()" style="border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:13px;background:#fff;outline:none;font-family:inherit;cursor:pointer">
+          <option value="last_30_days" <?= $dateFilter === 'last_30_days' ? 'selected' : '' ?>>Last 30 Days</option>
+          <option value="last_3_months" <?= $dateFilter === 'last_3_months' ? 'selected' : '' ?>>Last 3 Months</option>
+          <option value="last_6_months" <?= $dateFilter === 'last_6_months' ? 'selected' : '' ?>>Last 6 Months</option>
+          <option value="this_year" <?= $dateFilter === 'this_year' ? 'selected' : '' ?>>This Year</option>
+        </select>
+      </form>
+    </div>
+
+    <!-- SMART INSIGHTS -->
+    <div class="insights-box">
+      <h3>🤖 Smart Insights</h3>
+      <ul>
+        <?php foreach ($insights as $insight): ?>
+          <li><?= $insight ?></li>
+        <?php endforeach; ?>
+      </ul>
     </div>
 
     <!-- STATS CARDS -->
     <div class="stats4">
       <div class="stat">
-        <p>Total Paid</p>
-        <b class="grad"><?= $fmtMoney($totalPaid) ?></b>
-        <small>lifetime subscription value</small>
+        <p>Total Invoices</p>
+        <b class="grad"><?= number_format($stats['total_records']) ?></b>
+        <small>records in selected period</small>
       </div>
       <div class="stat">
-        <p>Transactions</p>
-        <b><?= $countPaid ?></b>
-        <small>successful payments</small>
+        <p>Total Value</p>
+        <b class="grad"><?= $fmtMoney($stats['total_amount']) ?></b>
+        <small>cumulative invoice amount</small>
       </div>
       <div class="stat">
-        <p>Last Payment</p>
-        <b style="font-size:17px"><?= $lastPaymentAt ? $fmtDate($lastPaymentAt) : '—' ?></b>
-        <small><?= $countPaid > 0 ? 'Most recent charge' : 'No payments yet' ?></small>
+        <p>Valid Submissions</p>
+        <b style="color:#059669"><?= number_format($stats['valid_count']) ?></b>
+        <small>successfully validated by LHDN</small>
       </div>
       <div class="stat">
-        <p>Next Billing</p>
-        <b style="font-size:17px"><?= ($current && $current['period_ends_at']) ? $fmtDate($current['period_ends_at']) : '—' ?></b>
-        <small><?= $current ? htmlspecialchars($current['plan'] ?? 'No active plan') : 'No active plan' ?></small>
+        <p>Pending / Invalid</p>
+        <b style="color:#d97706"><?= number_format($stats['pending_count'] + $stats['invalid_count']) ?></b>
+        <small>requires attention or processing</small>
       </div>
     </div>
 
-    <!-- FILTER BAR -->
+    <!-- CHARTS -->
+    <div class="charts-grid">
+      <div class="chart-card">
+        <h3>📈 Submission & Revenue Trend</h3>
+        <div class="chart-container">
+          <canvas id="trendChart"></canvas>
+        </div>
+      </div>
+      <div class="chart-card">
+        <h3>🎯 LHDN Validation Status</h3>
+        <div class="chart-container">
+          <canvas id="statusChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- FILTER BAR FOR TABLE -->
     <div class="filter-bar">
-      <input type="text" id="searchInput" placeholder="🔍 Search receipt no, reference, bank…">
-      <select id="methodFilter">
-        <option value="">All payment methods</option>
-        <option value="stripe">Card (Stripe)</option>
-        <option value="fpx">FPX Online Banking</option>
-        <option value="toyyibpay">ToyyibPay DuitNow</option>
-        <option value="manual">Manual Transfer</option>
-      </select>
-      <select id="yearFilter">
-        <option value="">All years</option>
-        <?php
-        $years = [];
-        foreach ($payments as $p) {
-            if ($p['payment_date']) {
-                $y = (new DateTime($p['payment_date']))->format('Y');
-                $years[$y] = true;
-            }
-        }
-        krsort($years);
-        foreach (array_keys($years) as $y): ?>
-          <option value="<?= $y ?>"><?= $y ?></option>
-        <?php endforeach; ?>
+      <input type="text" id="searchInput" placeholder="🔍 Search customer, sale no, or status…">
+      <select id="statusFilter">
+        <option value="">All LHDN Statuses</option>
+        <option value="Valid">Valid</option>
+        <option value="Invalid">Invalid</option>
+        <option value="Pending">Pending</option>
+        <option value="In Progress">In Progress</option>
       </select>
     </div>
 
-    <!-- PAYMENTS TABLE -->
+    <!-- RECENT RECORDS TABLE -->
     <div class="table-wrap">
-      <?php if (empty($payments)): ?>
+      <?php if (empty($recentRecords)): ?>
         <div class="empty-state">
-          <div class="ic">💳</div>
-          <h3>No payment history yet</h3>
-          <p>Your payments from Stripe, FPX, and ToyyibPay will appear here after your first successful charge.</p>
+          <div class="ic">📂</div>
+          <h3>No e-Invoice records found</h3>
+          <p>Your submitted e-Invoices and their LHDN validation statuses will appear here.</p>
         </div>
       <?php else: ?>
-        <table class="pay-table">
+        <table class="data-table">
           <thead>
             <tr>
-              <th>Receipt</th>
-              <th>Date</th>
-              <th>Plan</th>
-              <th>Method</th>
-              <th>Reference</th>
+              <th>Sale No</th>
+              <th>Customer</th>
+              <th>Type</th>
               <th>Amount</th>
-              <th>Status</th>
-              <th style="text-align:right">Action</th>
+              <th>Date</th>
+              <th>Validation</th>
+              <th>LHDN Status</th>
             </tr>
           </thead>
-          <tbody id="paymentsBody">
-            <?php foreach ($payments as $p):
-              $sb = $statusBadge($p['status'] ?? 'none');
+          <tbody id="recordsBody">
+            <?php foreach ($recentRecords as $r):
+              $sb = $statusBadge($r['lhdn_status']);
             ?>
-            <tr data-search="<?= strtolower(
-                ($p['receipt_no'] ?? '') . ' ' .
-                ($p['ref_no'] ?? '') . ' ' .
-                ($p['bank'] ?? '') . ' ' .
-                ($p['payment_type'] ?? '')
-            ) ?>"
-            data-method="<?= htmlspecialchars($p['payment_type'] ?? '') ?>"
-            data-year="<?= $p['payment_date'] ? (new DateTime($p['payment_date']))->format('Y') : '' ?>">
-              <td><span class="mono"><?= htmlspecialchars($p['receipt_no'] ?: '—') ?></span></td>
-              <td><?= $fmtDate($p['payment_date']) ?></td>
+            <tr data-search="<?= strtolower(($r['sale_no'] ?? '') . ' ' . ($r['customer_name'] ?? '') . ' ' . ($r['lhdn_status'] ?? '')) ?>"
+                data-status="<?= htmlspecialchars($r['lhdn_status'] ?? '') ?>">
+              <td><span class="mono"><?= htmlspecialchars($r['sale_no'] ?: '—') ?></span></td>
               <td>
-                <strong><?= htmlspecialchars($p['plan'] ?: '—') ?></strong>
+                <strong><?= htmlspecialchars($r['customer_name'] ?: 'General Buyer') ?></strong>
+                <div style="font-size:11px;color:var(--faint)"><?= htmlspecialchars($r['customer_type'] ?? 'general') ?></div>
               </td>
-              <td><?= $payTypeLabel($p['payment_type']) ?></td>
+              <td><span class="pill" style="background:#f1f5f9;color:#475569"><?= ucfirst($r['submission_type'] ?? 'standard') ?></span></td>
+              <td><span class="amount"><?= $fmtMoney($r['total_amount']) ?></span></td>
+              <td><?= $fmtDate($r['sale_datetime']) ?></td>
               <td>
-                <span class="mono"><?= htmlspecialchars($p['ref_no'] ?: '—') ?></span>
-                <?php if (!empty($p['bank'])): ?>
-                  <div style="font-size:11px;color:var(--faint);margin-top:2px"><?= htmlspecialchars($p['bank']) ?></div>
-                <?php endif; ?>
+                <span class="pill" style="background:<?= $r['validation_status'] === 'valid' ? '#d1fae5' : '#fef3c7' ?>;color:<?= $r['validation_status'] === 'valid' ? '#059669' : '#d97706' ?>">
+                  <?= ucfirst($r['validation_status'] ?? 'Pending') ?>
+                </span>
               </td>
-              <td><span class="amount grad"><?= $fmtMoney($p['amount'] ?? 0) ?></span></td>
               <td><span class="pill" style="background:<?= $sb[0] ?>;color:<?= $sb[1] ?>"><?= $sb[2] ?></span></td>
-              <td style="text-align:right">
-                <button class="btn-view" onclick='openReceipt(<?= htmlspecialchars(json_encode($p), ENT_QUOTES) ?>)'>
-                  📄 View Receipt
-                </button>
-              </td>
             </tr>
             <?php endforeach; ?>
           </tbody>
@@ -411,208 +443,115 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   </main>
 </div>
 
-<!-- ============ RECEIPT MODAL ============ -->
-<div class="modal" id="receiptModal" onclick="if(event.target===this)closeReceipt()">
-  <div class="modal-card">
-    <div class="modal-head">
-      <h3>📄 Payment Receipt</h3>
-      <div class="actions">
-        <button class="btn-ghost" onclick="printReceipt()" style="padding:8px 14px">
-          🖨 Print / Save PDF
-        </button>
-        <button class="btn-ghost" onclick="closeReceipt()" style="padding:8px 14px">✕</button>
-      </div>
-    </div>
-    <div class="modal-body">
-      <div id="printArea" class="receipt">
-        <!-- Header -->
-        <div class="receipt-head">
-          <div class="company">
-            <h2>⚡ AZ Kejora SaaS</h2>
-            <p>
-              E-Invoice & Facility Booking Platform<br>
-              Kuala Lumpur, Malaysia<br>
-              support@azkejora.io · +60 3-0000 0000
-            </p>
-          </div>
-          <div class="tag">
-            <span class="stamp">Official Receipt</span>
-            <b id="r-receipt-no">—</b>
-            <small id="r-issue-date">—</small>
-          </div>
-        </div>
-
-        <!-- Bill To + Payment Info -->
-        <div class="receipt-section">
-          <div class="receipt-grid">
-            <div class="col">
-              <h4>Billed To</h4>
-              <p>Customer Name</p>
-              <b id="r-customer"><?= htmlspecialchars($me['name']) ?></b>
-              <p style="margin-top:8px">Email</p>
-              <b id="r-email"><?= htmlspecialchars($me['email']) ?></b>
-              <p style="margin-top:8px">Phone</p>
-              <b id="r-phone"><?= htmlspecialchars($me['phone'] ?? '—') ?></b>
-            </div>
-            <div class="col">
-              <h4>Payment Details</h4>
-              <p>Payment Date</p>
-              <b id="r-pay-date">—</b>
-              <p style="margin-top:8px">Payment Method</p>
-              <b id="r-method">—</b>
-              <p style="margin-top:8px">Bank / Provider</p>
-              <b id="r-bank">—</b>
-              <p style="margin-top:8px">Reference No.</p>
-              <b id="r-ref" style="font-family:'JetBrains Mono',monospace">—</b>
-            </div>
-          </div>
-        </div>
-
-        <!-- Breakdown -->
-        <div class="receipt-section">
-          <h4>Payment Breakdown</h4>
-          <div class="pay-breakdown">
-            <div class="row">
-              <span>Subscription Plan</span>
-              <b id="r-plan">—</b>
-            </div>
-            <div class="row">
-              <span>Billing Cycle</span>
-              <b>90 days (3 months)</b>
-            </div>
-            <div class="row">
-              <span>Period Start</span>
-              <b id="r-period-start">—</b>
-            </div>
-            <div class="row">
-              <span>Period End</span>
-              <b id="r-period-end">—</b>
-            </div>
-            <div class="row">
-              <span>Subtotal</span>
-              <span id="r-subtotal">RM 0.00</span>
-            </div>
-            <div class="row">
-              <span>SST (8%)</span>
-              <span id="r-sst">RM 0.00</span>
-            </div>
-            <div class="row total">
-              <span>TOTAL PAID</span>
-              <span id="r-total">RM 0.00</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Footer -->
-        <div class="receipt-footer">
-          <p>
-            <strong>Thank you for your payment.</strong><br>
-            This receipt was generated automatically by the AZ Kejora SaaS payment gateway.<br>
-            For queries, contact <strong>support@azkejora.io</strong>.
-          </p>
-          <p style="margin-top:8px;font-size:10px">
-            Printed on <?= date('d M Y, h:i A') ?> · Receipt generated for <?= htmlspecialchars($me['email']) ?>
-          </p>
-        </div>
-      </div>
-    </div>
-    <div class="modal-foot">
-      💡 Tip: Click "Print / Save PDF" → choose "Save as PDF" as the destination to download this receipt.
-    </div>
-  </div>
-</div>
-
 <script>
 function toggleSidebar(){
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('sidebarOverlay').classList.toggle('open');
 }
 
-// ===================== RECEIPT MODAL =====================
-const receiptModal = document.getElementById('receiptModal');
+// ===================== CHARTS INITIALIZATION =====================
+const trendLabels = <?= json_encode(array_column($trendData, 'month_label')) ?>;
+const trendCounts = <?= json_encode(array_column($trendData, 'count')) ?>;
+const trendAmounts = <?= json_encode(array_column($trendData, 'amount')) ?>;
 
-function openReceipt(p) {
-  // Compute period start (90 days before period_ends_at)
-  let periodStart = '—', periodEnd = '—';
-  if (p.period_ends_at) {
-    const end = new Date(p.period_ends_at);
-    const start = new Date(end);
-    start.setDate(start.getDate() - 90);
-    periodStart = start.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'});
-    periodEnd = end.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'});
-  } else if (p.payment_date) {
-    const start = new Date(p.payment_date);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 90);
-    periodStart = start.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'});
-    periodEnd = end.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'});
+const ctxTrend = document.getElementById('trendChart').getContext('2d');
+new Chart(ctxTrend, {
+  type: 'bar',
+  data: {
+    labels: trendLabels,
+    datasets: [
+      {
+        label: 'Submission Count',
+        data: trendCounts,
+        backgroundColor: 'rgba(84, 87, 229, 0.2)',
+        borderColor: 'rgba(84, 87, 229, 1)',
+        borderWidth: 2,
+        borderRadius: 6,
+        yAxisID: 'y'
+      },
+      {
+        label: 'Total Amount (RM)',
+        data: trendAmounts,
+        type: 'line',
+        borderColor: 'rgba(139, 92, 246, 1)',
+        backgroundColor: 'rgba(139, 92, 246, 0.1)',
+        borderWidth: 3,
+        tension: 0.4,
+        fill: true,
+        yAxisID: 'y1'
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 8 } }
+    },
+    scales: {
+      y: { beginAtZero: true, grid: { color: '#f1f5f9' }, title: { display: true, text: 'Count' } },
+      y1: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: 'Amount (RM)' } }
+    }
   }
+});
 
-  const amount = parseFloat(p.amount || 0);
-  const sstRate = 0.08;
-  // Amount is assumed to be the total paid (gross). Back-calculate subtotal + SST.
-  const subtotal = amount / (1 + sstRate);
-  const sst = amount - subtotal;
+const statusLabels = <?= json_encode(array_column($statusData, 'status')) ?>;
+const statusCounts = <?= json_encode(array_column($statusData, 'count')) ?>;
+const statusColors = statusLabels.map(s => {
+  const lower = s.toLowerCase();
+  if (lower === 'valid') return '#059669';
+  if (lower === 'invalid') return '#e11d48';
+  if (lower === 'pending') return '#d97706';
+  if (lower === 'in progress') return '#4644cf';
+  return '#94a3b8';
+});
 
-  const methodLabels = {
-    'stripe':    '💳 Credit/Debit Card (Stripe)',
-    'fpx':       '🏦 FPX Online Banking',
-    'toyyibpay': '📱 ToyyibPay DuitNow QR',
-    'manual':    '💵 Manual Bank Transfer'
-  };
-  const fmtDate = v => v ? new Date(v).toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'}) : '—';
-  const fmtMoney = v => 'RM ' + Number(v).toFixed(2);
+const ctxStatus = document.getElementById('statusChart').getContext('2d');
+new Chart(ctxStatus, {
+  type: 'doughnut',
+  data: {
+    labels: statusLabels,
+    datasets: [{
+      data: statusCounts,
+      backgroundColor: statusColors,
+      borderWidth: 0,
+      hoverOffset: 8
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8, padding: 15 } }
+    },
+    cutout: '65%'
+  }
+});
 
-  document.getElementById('r-receipt-no').textContent = p.receipt_no || 'N/A';
-  document.getElementById('r-issue-date').textContent = fmtDate(p.payment_date);
-  document.getElementById('r-pay-date').textContent = fmtDate(p.payment_date);
-  document.getElementById('r-method').textContent = methodLabels[p.payment_type] || p.payment_type || '—';
-  document.getElementById('r-bank').textContent = p.bank || (p.payment_type === 'stripe' ? 'Stripe' : p.payment_type === 'toyyibpay' ? 'ToyyibPay' : '—');
-  document.getElementById('r-ref').textContent = p.ref_no || '—';
-  document.getElementById('r-plan').textContent = p.plan || '—';
-  document.getElementById('r-period-start').textContent = periodStart;
-  document.getElementById('r-period-end').textContent = periodEnd;
-  document.getElementById('r-subtotal').textContent = fmtMoney(subtotal);
-  document.getElementById('r-sst').textContent = fmtMoney(sst);
-  document.getElementById('r-total').textContent = fmtMoney(amount);
-
-  receiptModal.classList.add('open');
-}
-
-function closeReceipt() {
-  receiptModal.classList.remove('open');
-}
-
-function printReceipt() {
-  window.print();
-}
-
-// ===================== FILTERS =====================
+// ===================== TABLE FILTERS =====================
 const searchInput = document.getElementById('searchInput');
-const methodFilter = document.getElementById('methodFilter');
-const yearFilter = document.getElementById('yearFilter');
-const rows = document.querySelectorAll('#paymentsBody tr');
+const statusFilter = document.getElementById('statusFilter');
+const rows = document.querySelectorAll('#recordsBody tr');
 
 function applyFilters() {
   const q = searchInput.value.toLowerCase().trim();
-  const m = methodFilter.value;
-  const y = yearFilter.value;
+  const s = statusFilter.value;
   rows.forEach(tr => {
     const searchMatch = !q || tr.dataset.search.includes(q);
-    const methodMatch = !m || tr.dataset.method === m;
-    const yearMatch = !y || tr.dataset.year === y;
-    tr.style.display = (searchMatch && methodMatch && yearMatch) ? '' : 'none';
+    const statusMatch = !s || tr.dataset.status === s;
+    tr.style.display = (searchMatch && statusMatch) ? '' : 'none';
+    tr.style.display = (searchMatch && statusMatch) ? 'table-row' : 'none';
   });
 }
 searchInput.addEventListener('input', applyFilters);
-methodFilter.addEventListener('change', applyFilters);
-yearFilter.addEventListener('change', applyFilters);
+statusFilter.addEventListener('change', applyFilters);
 
 // ===================== LOADING OVERLAY =====================
 const overlay = document.getElementById('loadingOverlay');
 document.querySelectorAll('a[href]').forEach(link => {
   link.addEventListener('click', function() {
-    if (!this.href.includes('#') && !this.target && !this.classList.contains('btn-view')) {
+    if (!this.href.includes('#') && !this.target) {
       overlay.classList.add('active');
     }
   });
