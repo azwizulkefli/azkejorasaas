@@ -407,3 +407,58 @@ ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS prod_token text;
 ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS prod_token_expiry timestamp with time zone;
 ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS phone character varying(50);
 ALTER TABLE public.companies ADD COLUMN IF NOT EXISTS email character varying(100);
+
+CREATE TABLE public.subscriptions_billing (
+  id UUID NOT NULL DEFAULT gen_random_uuid(),
+  subscription_id UUID NULL,
+  user_id UUID NULL,
+  billing_type VARCHAR(50) NULL DEFAULT 'subscription'::VARCHAR,
+  plan VARCHAR(100) NULL,
+  amount NUMERIC(10, 2) NULL DEFAULT 0.00,
+  currency VARCHAR(10) NULL DEFAULT 'MYR'::VARCHAR,
+  payment_status VARCHAR(50) NULL DEFAULT 'pending'::VARCHAR,
+  payment_method VARCHAR(50) NULL,
+  payment_gateway VARCHAR(100) NULL,
+  transaction_id VARCHAR(200) NULL,
+  receipt_no VARCHAR(100) NULL,
+  invoice_no VARCHAR(100) NULL,
+  billing_period_start TIMESTAMP WITH TIME ZONE NULL,
+  billing_period_end TIMESTAMP WITH TIME ZONE NULL,
+  payment_date TIMESTAMP WITH TIME ZONE NULL,
+  due_date TIMESTAMP WITH TIME ZONE NULL,
+  paid_date TIMESTAMP WITH TIME ZONE NULL,
+  refund_status VARCHAR(50) NULL,
+  refund_amount NUMERIC(10, 2) NULL DEFAULT 0.00,
+  refund_date TIMESTAMP WITH TIME ZONE NULL,
+  refund_reason TEXT NULL,
+  notes TEXT NULL,
+  metadata JSONB NULL,
+  created_at TIMESTAMP WITH TIME ZONE NULL DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE NULL DEFAULT NOW(),
+  CONSTRAINT subscriptions_billing_pkey PRIMARY KEY (id),
+  CONSTRAINT subscriptions_billing_subscription_id_fkey 
+    FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE,
+  CONSTRAINT subscriptions_billing_user_id_fkey 
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Indexes for performance
+CREATE INDEX idx_billing_subscription_id ON subscriptions_billing(subscription_id);
+CREATE INDEX idx_billing_user_id ON subscriptions_billing(user_id);
+CREATE INDEX idx_billing_payment_status ON subscriptions_billing(payment_status);
+CREATE INDEX idx_billing_payment_date ON subscriptions_billing(payment_date);
+CREATE INDEX idx_billing_created_at ON subscriptions_billing(created_at);
+
+-- Trigger to update updated_at
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_billing_updated_at
+  BEFORE UPDATE ON subscriptions_billing
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
