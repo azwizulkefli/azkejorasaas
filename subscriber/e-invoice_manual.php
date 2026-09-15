@@ -30,13 +30,16 @@ function buildLineItems($record) {
     $desc = ($record['submission_type'] ?? '') === 'consolidated' ? 'Consolidated daily sales' : ($record['sale_title'] ?? 'Sale Transaction');
     $desc = str_replace(['"', "\n", "\r"], ['\\"', ' ', ' '], $desc);
     
+    // ✅ NEW LOGIC: If General TIN is used, Classification Code is 004, otherwise 022
+    $classCode = ($record['customer_tin'] === 'EI00000000010') ? '004' : '022';
+    
     return '{' .
         '"ID": [{"_": "1"}],' .
         '"InvoicedQuantity": [{"_": 1, "unitCode": "C62"}],' .
         '"LineExtensionAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}],' .
         '"AllowanceCharge": [{"ChargeIndicator": [{"_": false}], "AllowanceChargeReason": [{"_": "Sample Description"}], "MultiplierFactorNumeric": [{"_": 0.15}], "Amount": [{"_": 0, "currencyID": "MYR"}]}],' .
         '"TaxTotal": [{"TaxAmount": [{"_": 0, "currencyID": "MYR"}], "TaxSubtotal": [{"TaxableAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}], "TaxAmount": [{"_": 0, "currencyID": "MYR"}], "Percent": [{"_": 6}], "TaxCategory": [{"ID": [{"_": "E"}], "TaxExemptionReason": [{"_": "Exempt New Means of Transport"}], "TaxScheme": [{"ID": [{"_": "OTH", "schemeID": "UN/ECE 5153", "schemeAgencyID": "6"}]}]}]}]}],' .
-        '"Item": [{"CommodityClassification": [{"ItemClassificationCode": [{"_": "9800.00.0010", "listID": "PTC"}]}, {"ItemClassificationCode": [{"_": "022", "listID": "CLASS"}]}], "Description": [{"_": "' . $desc . '"}], "OriginCountry": [{"IdentificationCode": [{"_": "MYS"}]}]}],' .
+        '"Item": [{"CommodityClassification": [{"ItemClassificationCode": [{"_": "9800.00.0010", "listID": "PTC"}]}, {"ItemClassificationCode": [{"_": "' . $classCode . '", "listID": "CLASS"}]}], "Description": [{"_": "' . $desc . '"}], "OriginCountry": [{"IdentificationCode": [{"_": "MYS"}]}]}],' .
         '"Price": [{"PriceAmount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}],' .
         '"ItemPriceExtension": [{"Amount": [{"_": ' . $amount . ', "currencyID": "MYR"}]}]' .
     '}';
