@@ -1176,11 +1176,11 @@ function startProcessing() {
                 }
 
                 if (data.done) {
-                    logMsg('✅ All jobs processed. Redirecting to summary…', 'ok');
+                    logMsg('✅ All jobs processed. Redirecting to submission record…', 'ok');
                     stop('✅ All Processed');
                     updateStats();
                     if (queueOpen) loadQueue(queuePage);
-                    setTimeout(function(){ window.location.href = 'e-invoice_summary.php'; }, 2000);
+                    setTimeout(function(){ window.location.href = 'e-invoice_submitted.php'; }, 2000);
                     return;
                 }
 
