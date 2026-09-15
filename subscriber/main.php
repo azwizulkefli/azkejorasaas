@@ -344,6 +344,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   <nav class="sidebar-nav">
     <a href="main.php" class="menu-item active">🏠 Home</a>
     <a href="e-invoice.php" class="menu-item">🧾 E-Invoice</a>
+    <a href="e-invoice_submitted.php" class="menu-item">🧾 View Submitted</a>
     <div class="menu-section">Subscription</div>
     <a href="s_payment.php" class="menu-item">🧾 Payment</a>
     <a href="s_report.php" class="menu-item">🧾 Report</a>
