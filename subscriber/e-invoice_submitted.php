@@ -287,6 +287,9 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
   <nav class="sidebar-nav">
     <a href="main.php" class="menu-item">🏠 Home</a>
     <a href="e-invoice.php" class="menu-item">🧾 E-Invoice</a>
+    <a href="e-invoice_upload.php" class="menu-item">🧾 Upload Individual</a>
+    <a href="e-invoice_consolidate.php" class="menu-item">🧾 Upload Consolidated</a>
+    <a href="e-invoice_manual.php" class="menu-item">🧾 Manual Entry</a>
     <a href="e-invoice_submitted.php" class="menu-item active">📋 View Submitted</a>
     <div class="menu-section">Subscription</div>
     <a href="s_payment.php" class="menu-item">💳 Payment</a>
