@@ -30,7 +30,6 @@ function logInternal($pdo, $submissionId, $step, $status, $message, $payload = n
     $stmt->execute([$submissionId, $step, $status, $message, $payload ? (is_array($payload) ? json_encode($payload) : $payload) : null]);
 }
 
-// ✅ NEW: Search for the actual TIN using IC / NRIC
 function searchTINWithLHDN($icno, $apiBaseUrl, $token) {
     $cleanIc = str_replace("-", "", str_replace(" ", "", $icno));
     if (strlen($cleanIc) !== 12) return ['found' => false, 'tin' => null];
@@ -112,7 +111,6 @@ function extractLhdnError($rec) {
     return null;
 }
 
-// ✅ NEW: Builds multiple detailed line items for Consolidated invoices
 function buildConsolidatedLineItems($records) {
     $items = [];
     foreach ($records as $index => $rec) {
@@ -152,25 +150,23 @@ function buildLineItems($record) {
 }
 
 function buildLHDNPayloads($primaryRecord, $allRecords, $company, $jsonSendTemplate, $jsonConvertTemplate, $grandTotal = null) {
-    // If $allRecords has more than 1 item, it's a consolidated submission
     $isConsolidated = is_array($allRecords) && count($allRecords) > 1;
     
-    // ✅ Use the new multi-item builder for consolidated, or the single-item builder for individual
     $lineItemsJson = $isConsolidated ? buildConsolidatedLineItems($allRecords) : buildLineItems($primaryRecord);
     $finalTotal = $grandTotal ?? $primaryRecord['total_amount'];
 
     // ✅ CRITICAL FIX: LHDN rejects "15" for Consolidated e-Invoices. It MUST be "01".
-    // This regex safeguards against any hardcoded "15" in the database template.
     $jsonSendTemplate = preg_replace('/("InvoiceTypeCode"\s*:\s*\[\s*\{\s*"_"\s*:\s*)"15"/i', '$1"01"', $jsonSendTemplate);
 
     $map = [
         '*|ei_invoiceno|*'           => $primaryRecord['sale_no'] ?? '',
         '*|ei_invoicedate|*'         => date('Y-m-d', strtotime($primaryRecord['sale_datetime'])),
-        '*|ei_invoicetype|*'         => '01', // ✅ MUST be '01' for Consolidated e-Invoice (LHDN does not accept '15')
+        '*|ei_invoicetype|*'         => '01', // ✅ MUST be '01' for Consolidated e-Invoice
         '*|ei_invoicecurrency|*'     => 'MYR',
         '*|ei_msiccode|*'            => $company['msic_code'] ?? '',
         '*|ei_msicname|*'            => $company['business_type'] ?? '',
         '*|ei_suppliertin|*'         => $company['taxpayer_tin'] ?? '',
+        '*|ei_supplierbrn|*'         => $company['brn'] ?? 'NA', // ✅ ADDED: Fixes missing BRN mapping
         '*|ei_suppliername|*'        => $company['name'] ?? '',
         '*|ei_supplieradd1|*'        => $company['address'] ?? '',
         '*|ei_supplieradd2|*'        => $company['address'] ?? '',        
@@ -190,7 +186,7 @@ function buildLHDNPayloads($primaryRecord, $allRecords, $company, $jsonSendTempl
         '*|ei_invoicetotalamount|*'  => number_format((float)$finalTotal, 2, '.', ''),
         '*|ei_cninvoice_referenceno|*' => $primaryRecord['reference_no'] ?? 'NA',
         '*|ei_cninvoice_uuid|*'      => $primaryRecord['reference_uuid'] ?? 'NA',
-        '*|ei_invoicelineitem|*'     => $lineItemsJson, // ✅ CRITICAL: Injects multiple items for consolidated
+        '*|ei_invoicelineitem|*'     => $lineItemsJson, // ✅ Injects multiple items for consolidated
         '*|ei_shippingrecipienttin|*'=> $primaryRecord['customer_tin'] ?? 'EI00000000010',
         '*|ei_shippingrecipientname|*'=> $primaryRecord['customer_name'] ?? 'General Buyer'
     ];
@@ -466,11 +462,10 @@ if (isset($_GET['ajax_action'])) {
                 
                 $consolSaleNo = 'CONSOL-' . str_replace('-', '', $saleDate) . '-' . substr(md5($uid), 0, 8);
 
-                // ✅ Create a mock primary record for header mapping
                 $primaryMock = [
                     'sale_no' => $consolSaleNo,
                     'sale_datetime' => $saleDate . ' 23:59:59',
-                    'document_type' => '01', // ✅ FIXED: LHDN requires '01' for Consolidated e-Invoice, '15' is invalid
+                    'document_type' => '01', // ✅ FIXED: LHDN requires '01' for Consolidated e-Invoice
                     'customer_tin' => 'EI00000000010',
                     'customer_name' => 'General Buyer',
                     'customer_address' => 'Multiple Customers',
@@ -484,7 +479,6 @@ if (isset($_GET['ajax_action'])) {
                     'reference_uuid' => 'NA'
                 ];
 
-                // ✅ Pass BOTH the mock primary (for header) and the full $records array (for detailed line items)
                 $payloads = buildLHDNPayloads($primaryMock, $records, $company, $jsonSendTemplate, $jsonConvertTemplate, $grandTotal);
 
                 $consolStmt = $pdo->prepare("
@@ -627,7 +621,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['invoice_file'])) {
 
                             if ($email !== '' && preg_match('/^\d{12}$/', $cleanIC)) {
                                 $submissionType = 'individual';
-                                $customerTin = $cleanIC; // Tentative, will be searched/replaced during submission
+                                $customerTin = $cleanIC;
                             } else {
                                 $submissionType = 'consolidated';
                                 $customerTin = 'EI00000000010';
