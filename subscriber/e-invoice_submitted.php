@@ -184,16 +184,19 @@ $countIndStmt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records r WHERE " .
 $countIndStmt->execute($pInd);
 $countInd = (int)$countIndStmt->fetchColumn();
 
-$countConStmt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_consolidated c WHERE " . implode(' AND ', $whereCon));
+// ✅ UPDATED: Join with einvoice_records to ensure accurate linking and use DISTINCT to count batches, not individual rows
+$countConStmt = $pdo->prepare("SELECT COUNT(DISTINCT c.id) FROM einvoice_consolidated c INNER JOIN einvoice_records r ON c.id = r.consolidated_id WHERE " . implode(' AND ', $whereCon));
 $countConStmt->execute($pCon);
 $countCon = (int)$countConStmt->fetchColumn();
 
 $totalRecords = $countInd + $countCon;
 $totalPages = ceil($totalRecords / $perPage);
 
-// UNION Query (FIX: Cast c.lhdn_response to text to match r.lhdn_response)
+// UNION Query
 $sqlInd = "SELECT 'individual' AS record_type, r.id, r.sale_no, r.sale_datetime AS sale_date, r.customer_name, r.document_type, r.total_amount, r.created_at, r.lhdn_status, COALESCE(r.submission_type, 'individual') AS submission_type, NULL::uuid AS consolidated_id, NULL::int AS total_records, r.lhdn_uuid, r.lhdn_submission_id, r.lhdn_long_id, r.lhdn_response, r.lhdn_jsonsend FROM einvoice_records r WHERE " . implode(' AND ', $whereInd);
-$sqlCon = "SELECT 'consolidated' AS record_type, c.id, 'Consolidated Batch' AS sale_no, c.sale_date::timestamp with time zone AS sale_date, c.total_records || ' Invoices' AS customer_name, 'Consolidated' AS document_type, c.grand_total AS total_amount, c.created_at, c.lhdn_status, 'consolidated' AS submission_type, c.id AS consolidated_id, c.total_records, c.ei_uuid AS lhdn_uuid, c.ei_submission_id AS lhdn_submission_id, c.lhdn_long_id, c.lhdn_response::text AS lhdn_response, c.ei_json AS lhdn_jsonsend FROM einvoice_consolidated c WHERE " . implode(' AND ', $whereCon);
+
+// ✅ UPDATED: Explicitly JOIN einvoice_consolidated with einvoice_records to fetch uuid, longid, and JSON payloads correctly
+$sqlCon = "SELECT DISTINCT 'consolidated' AS record_type, c.id, 'Consolidated Batch' AS sale_no, c.sale_date::timestamp with time zone AS sale_date, c.total_records || ' Invoices' AS customer_name, 'Consolidated' AS document_type, c.grand_total AS total_amount, c.created_at, c.lhdn_status, 'consolidated' AS submission_type, c.id AS consolidated_id, c.total_records, c.ei_uuid AS lhdn_uuid, c.ei_submission_id AS lhdn_submission_id, c.lhdn_long_id, c.lhdn_response::text AS lhdn_response, c.ei_json AS lhdn_jsonsend FROM einvoice_consolidated c INNER JOIN einvoice_records r ON c.id = r.consolidated_id WHERE " . implode(' AND ', $whereCon);
 
 $unionSql = "($sqlInd) UNION ALL ($sqlCon) ORDER BY created_at DESC LIMIT ? OFFSET ?";
 $params = array_merge($pInd, $pCon, [$perPage, $offset]);
@@ -388,7 +391,7 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                         <?php if (!empty($row['customer_phone'])): ?><div>📞 <?= htmlspecialchars($row['customer_phone']) ?></div><?php endif; ?>
                         <?php if (!empty($row['customer_tin'])): ?><div>🆔 TIN: <?= htmlspecialchars($row['customer_tin']) ?></div><?php endif; ?>
                         <?php if (empty($row['customer_email']) && empty($row['customer_phone']) && empty($row['customer_tin'])): ?><div style="color:var(--faint);font-style:italic">No additional details</div><?php endif; ?>
-                      </div>
+                  </div>
                     <?php endif; ?>
                   </td>
                   <td><div style="font-weight:600;color:var(--ink);font-size:13px"><?= getCategory($row['document_type']) ?></div></td>
@@ -407,6 +410,19 @@ td{padding:14px 16px;border-bottom:1px solid #f1f5f9;color:var(--ink);vertical-a
                         <button class="action-btn" title="View Batch Details" onclick="openConsolidatedModal('<?= htmlspecialchars($row['consolidated_id']) ?>')">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                         </button>
+                        <?php if ($isValid): ?>
+                          <button class="action-btn" title="View JSON Sent" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_jsonsend'] ?? '{}'), ENT_QUOTES) ?>, 'JSON Sent to LHDN')">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M10 12l-2 2 2 2"></path><path d="M14 12l2 2-2 2"></path></svg>
+                          </button>
+                          <button class="action-btn" title="View JSON Response" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_response'] ?? '{}'), ENT_QUOTES) ?>, 'JSON Response from LHDN')">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path><path d="M8 10h8"></path><path d="M8 14h4"></path></svg>
+                          </button>
+                          <?php if (!empty($shareUrl)): ?>
+                            <a href="<?= htmlspecialchars($shareUrl) ?>" target="_blank" class="action-btn" title="View LHDN E-Invoice (New Tab)">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                            </a>
+                          <?php endif; ?>
+                        <?php endif; ?>
                       <?php else: ?>
                         <button class="action-btn" title="View JSON Sent" onclick="openJsonModal(<?= htmlspecialchars(json_encode($row['lhdn_jsonsend'] ?? '{}'), ENT_QUOTES) ?>, 'JSON Sent to LHDN')">
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M10 12l-2 2 2 2"></path><path d="M14 12l2 2-2 2"></path></svg>
