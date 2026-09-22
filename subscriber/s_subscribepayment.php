@@ -2,18 +2,18 @@
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/settings.php';
 requireCustomer();
-ensure_settings_table($pdo);
+ensure_settings_table($pdo0); // Note: adjusted to match your auth.php variable if needed, or keep $pdo
 $uid = currentUserId();
 $me  = currentUser();
 
 // Subscription plans configuration
 $plans = [
     'starter' => ['name' => 'Starter', 'price' => 50],
-    'growth' => ['name' => 'Growth', 'price' => 100],
-    'scale' => ['name' => 'Scale', 'price' => 200]
+    'growth'  => ['name' => 'Growth', 'price' => 100],
+    'scale'   => ['name' => 'Scale', 'price' => 200]
 ];
 
-// Get selected plan from session
+// Get selected plan from session or GET
 $planKey = $_GET['plan'] ?? $_SESSION['selected_plan'] ?? '';
 if (!isset($plans[$planKey])) {
     header("Location: s_subscribe.php?err=invalid_plan");
@@ -28,11 +28,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'proce
     try {
         $pdo->beginTransaction();
         
-        $paymentMethod = $_POST['payment_method'] ?? 'manual';
-        $paymentGateway = $_POST['payment_gateway'] ?? 'manual_transfer';
-        $transactionId = $_POST['transaction_id'] ?? uniqid('TXN_');
-        $bankName = $_POST['bank_name'] ?? '';
-        $refNo = $_POST['ref_no'] ?? '';
+        $paymentMethod  = $_POST['payment_method'] ?? 'manual_transfer';
+        $paymentGateway = $paymentMethod === 'duitnow' ? 'duitnow_qr' : ($paymentMethod === 'tng' ? 'tng_ewallet' : 'manual_transfer');
+        $transactionId  = $_POST['transaction_id'] ?? uniqid('TXN_');
+        $bankName       = trim($_POST['bank_name'] ?? '');
+        $refNo          = trim($_POST['ref_no'] ?? '');
+        
+        // Handle Payment Proof Upload
+        $paymentProofPath = null;
+        if (isset($_FILES['payment_proof']) && $_FILES['payment_proof']['error'] === UPLOAD_ERR_OK) {
+            $uploadDir = __DIR__ . '/../storage/payment_proofs/';
+            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+            
+            $ext = strtolower(pathinfo($_FILES['payment_proof']['name'], PATHINFO_EXTENSION));
+            $allowed = ['jpg', 'jpeg', 'png', 'pdf'];
+            
+            if (in_array($ext, $allowed) && $_FILES['payment_proof']['size'] <= 5 * 1024 * 1024) {
+                $filename = uniqid('proof_') . '.' . $ext;
+                $path = 'storage/payment_proofs/' . $filename;
+                if (move_uploaded_file($_FILES['payment_proof']['tmp_name'], $uploadDir . $filename)) {
+                    $paymentProofPath = $path;
+                }
+            }
+        }
+
+        // Validate manual transfer requirements
+        if ($paymentMethod === 'manual_transfer' && empty($paymentProofPath)) {
+            throw new Exception("Payment proof upload is required for manual bank transfers.");
+        }
+        if ($paymentMethod === 'manual_transfer' && empty($bankName)) {
+            throw new Exception("Please select your bank name.");
+ a       }
         
         // Generate receipt and invoice numbers
         $receiptNo = 'RCP-' . date('Ymd') . '-' . strtoupper(substr($transactionId, -8));
@@ -44,69 +70,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'proce
         $periodEnd->modify('+90 days');
         
         // 1. Create/Update subscription record
-        $subData = [
-            'user_id' => $uid,
-            'plan' => $selectedPlan['name'],
-            'status' => 'active',
-            'price' => $amount,
-            'period_ends_at' => $periodEnd->format('Y-m-d H:i:s'),
-            'receipt_no' => $receiptNo,
-            'payment_date' => $now->format('Y-m-d H:i:s'),
-            'payment_type' => $paymentMethod,
-            'ref_no' => $refNo,
-            'bank' => $bankName,
-            'amount' => $amount
-        ];
-        
-        // Check if user has existing subscription
+        // FIXED: Latest schema ONLY has: id, user_id, plan, status, price, trial_ends_at, period_ends_at, created_at
         $checkSub = $pdo->prepare("SELECT id FROM subscriptions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1");
         $checkSub->execute([$uid]);
         $existingSub = $checkSub->fetch();
         
         if ($existingSub) {
-            // Update existing subscription
             $stmt = $pdo->prepare("
                 UPDATE subscriptions SET 
-                    plan = ?, status = ?, price = ?, period_ends_at = ?,
-                    receipt_no = ?, payment_date = ?, payment_type = ?,
-                    ref_no = ?, bank = ?, amount = ?
+                    plan = ?, 
+                    status = 'pending_verification', 
+                    price = ?, 
+                    period_ends_at = ?
                 WHERE id = ?
             ");
             $stmt->execute([
-                $subData['plan'], $subData['status'], $subData['price'], $subData['period_ends_at'],
-                $subData['receipt_no'], $subData['payment_date'], $subData['payment_type'],
-                $subData['ref_no'], $subData['bank'], $subData['amount'],
+                $selectedPlan['name'], 
+                $amount, 
+                $periodEnd->format('Y-m-d H:i:s'),
                 $existingSub['id']
             ]);
             $subscriptionId = $existingSub['id'];
         } else {
-            // Create new subscription
             $stmt = $pdo->prepare("
-                INSERT INTO subscriptions (user_id, plan, status, price, period_ends_at, 
-                    receipt_no, payment_date, payment_type, ref_no, bank, amount, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                INSERT INTO subscriptions (user_id, plan, status, price, period_ends_at, created_at)
+                VALUES (?, ?, 'pending_verification', ?, ?, NOW())
                 RETURNING id
             ");
             $stmt->execute([
-                $subData['user_id'], $subData['plan'], $subData['status'], $subData['price'], 
-                $subData['period_ends_at'], $subData['receipt_no'], $subData['payment_date'], 
-                $subData['payment_type'], $subData['ref_no'], $subData['bank'], $subData['amount']
+                $uid, 
+                $selectedPlan['name'], 
+                $amount, 
+                $periodEnd->format('Y-m-d H:i:s')
             ]);
             $subscriptionId = $stmt->fetchColumn();
         }
         
-        // 2. Create billing record
+        // 2. Create billing record with payment details in metadata
+        $metadata = json_encode([
+            'bank_name' => $bankName,
+            'ref_no' => $refNo,
+            'payment_proof_path' => $paymentProofPath
+        ]);
+        
+        $notes = "Payment via " . ucfirst(str_replace('_', ' ', $paymentMethod));
+        if ($paymentMethod === 'manual_transfer') {
+            $notes .= " (Bank: $bankName, Ref: $refNo)";
+        }
+        
         $billingStmt = $pdo->prepare("
             INSERT INTO subscriptions_billing (
                 subscription_id, user_id, billing_type, plan, amount, currency,
                 payment_status, payment_method, payment_gateway, transaction_id,
                 receipt_no, invoice_no, billing_period_start, billing_period_end,
-                payment_date, paid_date, created_at, updated_at
+                payment_date, due_date, notes, metadata, created_at, updated_at
             ) VALUES (
                 ?, ?, 'subscription', ?, ?, ?,
-                'paid', ?, ?, ?,
+                'pending_verification', ?, ?, ?,
                 ?, ?, ?, ?,
-                ?, ?, NOW(), NOW()
+                ?, ?, ?, ?, NOW(), NOW()
             )
         ");
         
@@ -114,7 +136,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'proce
             $subscriptionId, $uid, $selectedPlan['name'], $amount, 'MYR',
             $paymentMethod, $paymentGateway, $transactionId,
             $receiptNo, $invoiceNo, $now->format('Y-m-d H:i:s'), $periodEnd->format('Y-m-d H:i:s'),
-            $now->format('Y-m-d H:i:s'), $now->format('Y-m-d H:i:s')
+            $now->format('Y-m-d H:i:s'), $periodEnd->format('Y-m-d H:i:s'),
+            $notes, $metadata
         ]);
         
         $pdo->commit();
@@ -130,7 +153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'proce
     } catch (Exception $e) {
         $pdo->rollBack();
         error_log("Subscription payment error: " . $e->getMessage());
-        header("Location: s_subscribe.php?err=payment_failed");
+        header("Location: s_subscribe.php?err=payment_failed&msg=" . urlencode($e->getMessage()));
         exit;
     }
 }
@@ -151,7 +174,8 @@ a{text-decoration:none}
 .header-content{max-width:800px;margin:0 auto;display:flex;justify-content:space-between;align-items:center}
 .logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
 .logo-icon{width:36px;height:36px;border-radius:12px;background:var(--grad);color:#fff;display:grid;place-items:center}
-.back-link{color:var(--muted);font-size:14px;font-weight:600}
+.back-link{color:var(--muted);font-size:14px;font-weight:600;transition:.15s}
+.back-link:hover{color:var(--brand)}
 
 .main{max-width:800px;margin:0 auto;padding:48px 24px}
 .page-title{font-size:28px;font-weight:800;margin-bottom:32px;text-align:center}
@@ -167,18 +191,30 @@ a{text-decoration:none}
 
 .form-group{margin-bottom:20px}
 .form-group label{display:block;margin-bottom:8px;font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
-.form-group input,.form-group select{width:100%;border:1px solid var(--line);border-radius:10px;padding:12px 16px;font-size:14px;outline:none}
+.form-group input,.form-group select{width:100%;border:1px solid var(--line);border-radius:10px;padding:12px 16px;font-size:14px;outline:none;background:#fff}
 .form-group input:focus,.form-group select:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(84,87,229,.1)}
 
-.payment-methods{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
-.payment-method{border:2px solid var(--line);border-radius:12px;padding:16px;text-align:center;cursor:pointer;transition:.15s}
-.payment-method:hover{border-color:var(--brand)}
+.payment-methods{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px}
+.payment-method{border:2px solid var(--line);border-radius:12px;padding:16px;text-align:center;cursor:pointer;transition:.15s;background:#fff}
+.payment-method:hover{border-color:var(--brand);background:#f8fafc}
 .payment-method input{display:none}
 .payment-method.active{border-color:var(--brand);background:#eef2ff}
 .payment-method .icon{font-size:24px;margin-bottom:8px}
-.payment-method .name{font-size:13px;font-weight:700}
+.payment-method .name{font-size:13px;font-weight:700;color:var(--ink)}
 
-.btn{display:inline-block;background:var(--grad);color:#fff;padding:14px 32px;border-radius:12px;font-size:14px;font-weight:700;text-align:center;transition:.15s}
+/* QR & Bank Info Styles */
+.qr-box{text-align:center;padding:24px;background:#f8fafc;border-radius:12px;border:2px dashed var(--line);margin-bottom:20px}
+.qr-box img{max-width:200px;border-radius:8px;margin-bottom:16px;background:#fff;padding:8px;box-shadow:0 4px 6px -1px rgba(0,0,0,.05)}
+.qr-instruction{font-size:14px;color:var(--muted);margin-bottom:16px;line-height:1.5}
+.bank-info{background:#fff;padding:16px;border-radius:8px;border:1px solid var(--line);text-align:left;font-size:14px}
+.bank-info p{margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+.bank-info p:last-child{margin-bottom:0}
+.bank-info strong{color:var(--ink)}
+
+.payment-details{animation:fadeIn .3s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
+
+.btn{display:inline-block;background:var(--grad);color:#fff;padding:14px 32px;border-radius:12px;font-size:14px;font-weight:700;text-align:center;transition:.15s;border:none;cursor:pointer}
 .btn:hover{opacity:.9;transform:translateY(-1px)}
 .btn-block{display:block;width:100%}
 
@@ -188,6 +224,7 @@ a{text-decoration:none}
 @media(max-width:760px){
   .payment-methods{grid-template-columns:1fr}
   .main{padding:24px 16px}
+  .bank-info p{flex-direction:column;align-items:flex-start;gap:4px}
 }
 </style>
 </head>
@@ -229,64 +266,87 @@ a{text-decoration:none}
       <div class="summary-row">
         <span class="label">Total</span>
         <span class="value" style="color:var(--brand);font-size:24px">RM<?= number_format($amount, 2) ?></span>
-      </div>
+      </div “>
     </div>
     
-    <form method="POST">
+    <form method="POST" enctype="multipart/form-data">
       <input type="hidden" name="action" value="process_payment">
       <input type="hidden" name="transaction_id" value="<?= uniqid('TXN_') ?>">
       
-      <h3 style="margin:24px 0 16px">Payment Method</h3>
+      <h3 style="margin:24px 0 16px">Select Payment Method</h3>
       
       <div class="payment-methods">
-        <label class="payment-method active">
+        <label class="payment-method active" data-method="manual_transfer">
           <input type="radio" name="payment_method" value="manual_transfer" checked>
-          <div class="icon"></div>
+          <div class="icon">🏦</div>
           <div class="name">Bank Transfer</div>
         </label>
-        <label class="payment-method">
-          <input type="radio" name="payment_method" value="credit_card">
-          <div class="icon">💳</div>
-          <div class="name">Credit Card</div>
-        </label>
-        <label class="payment-method">
-          <input type="radio" name="payment_method" value="ewallet">
+        <label class="payment-method" data-method="duitnow">
+          <input type="radio" name="payment_method" value="duitnow">
           <div class="icon">📱</div>
-          <div class="name">E-Wallet</div>
+          <div class="name">DuitNow QR</div>
+        </label>
+        <label class="payment-method" data-method="tng">
+          <input type="radio" name="payment_method" value="tng">
+          <div class="icon">💳</div>
+          <div class="name">Touch 'n Go</div>
         </label>
       </div>
       
-      <div class="form-group">
-        <label>Payment Gateway</label>
-        <select name="payment_gateway" required>
-          <option value="manual_transfer">Manual Bank Transfer</option>
-          <option value="toyyibpay">ToyyibPay</option>
-          <option value="billplz">Billplz</option>
-          <option value="stripe">Stripe</option>
-        </select>
+      <!-- Manual Transfer Details -->
+      <div id="manual-details" class="payment-details">
+        <div class="form-group">
+          <label>Your Bank Name</label>
+          <select name="bank_name" id="bank_name">
+            <option value="">Select Bank</option>
+            <option value="Maybank">Maybank</option>
+            <option value="CIMB">CIMB Bank</option>
+            <option value="Public Bank">Public Bank</option>
+            <option value="RHB Bank">RHB Bank</option>
+            <option value="Hong Leong Bank">Hong Leong Bank</option>
+            <option value="Ambank">Ambank</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Transaction Reference Number</label>
+          <input type="text" name="ref_no" id="ref_no" placeholder="e.g., TRX123456789">
+        </div>
+        <div class="form-group">
+          <label>Upload Payment Proof (Slip) <span style="color:#e11d48">*</span></label>
+          <input type="file" name="payment_proof" id="payment-proof" accept="image/*,.pdf" required>
+          <small style="color:var(--faint);font-size:11px;margin-top:4px;display:block">Supported: JPG, PNG, PDF (Max 5MB)</small>
+        </div>
+      </div>
+
+      <!-- DuitNow QR Details -->
+      <div id="duitnow-details" class="payment-details" style="display:none;">
+        <div class="qr-box">
+          <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=DuitNow%20Maybank%20107424075785%20RM<?= number_format($amount, 2, '.', '') ?>" alt="DuitNow QR Code">
+          <p class="qr-instruction">Scan this QR code using your bank app to pay <strong>RM<?= number_format($amount, 2) ?></strong></p>
+          <div class="bank-info">
+            <p><span>Bank:</span> <strong>Maybank</strong></p>
+            <p><span>Account No:</span> <strong>1074 2407 5785</strong></p>
+            <p><span>Amount:</span> <strong style="color:var(--brand)">RM<?= number_format($amount, 2) ?></strong></p>
+          </div>
+          <p style="margin-top:16px;font-size:12px;color:var(--faint)">* Your subscription will be marked as "Pending Verification" until our team confirms the payment.</p>
+       20px>
+      </div>
+
+      <!-- Touch 'n Go Details -->
+      <div id="tng-details" class="payment-details" style="display:none;">
+        <div class="qr-box">
+          <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=TNG%20eWallet%20Payment%20RM<?= number_format($amount, 2, '.', '') ?>" alt="TNG eWallet QR Code">
+          <p class="qr-instruction">Scan this QR code using your <strong>Touch 'n Go eWallet</strong> app to pay <strong>RM<?= number_format($amount, 2) ?></strong></p>
+          <div class="bank-info">
+            <p><span>Payment Method:</span> <strong>Touch 'n Go eWallet</strong></p>
+            <p><span>Amount:</span> <strong style="color:var(--brand)">RM<?= number_format($amount, 2) ?></strong></p>
+          </div>
+          <p style="margin-top:16px;font-size:12px;color:var(--faint)">* Your subscription will be marked as "Pending Verification" until our team confirms the payment.</p>
+        </div>
       </div>
       
-      <div class="form-group">
-        <label>Bank Name</label>
-        <select name="bank_name" required>
-          <option value="">Select Bank</option>
-          <option value="Maybank">Maybank</option>
-          <option value="CIMB">CIMB Bank</option>
-          <option value="Public Bank">Public Bank</option>
-          <option value="RHB Bank">RHB Bank</option>
-          <option value="Hong Leong Bank">Hong Leong Bank</option>
-          <option value="Ambank">Ambank</option>
-          <option value="Other">Other</option>
-        </select>
-      </div>
-      
-      <div class="form-group">
-        <label>Transaction Reference Number</label>
-        <input type="text" name="ref_no" placeholder="Enter your transaction reference number" required>
-        <small style="color:var(--faint);font-size:11px;margin-top:4px;display:block">Example: TRX123456789 or receipt number</small>
-      </div>
-      
-      <button type="submit" class="btn btn-block">
+      <button type="submit" class="btn btn-block" style="margin-top:24px">
         Confirm Payment - RM<?= number_format($amount, 2) ?>
       </button>
       
@@ -299,10 +359,32 @@ a{text-decoration:none}
 </main>
 
 <script>
+// Toggle payment method details
 document.querySelectorAll('.payment-method input').forEach(radio => {
   radio.addEventListener('change', function() {
+    // Update active state
     document.querySelectorAll('.payment-method').forEach(m => m.classList.remove('active'));
     this.closest('.payment-method').classList.add('active');
+    
+    const method = this.value;
+    
+    // Hide all details
+    document.querySelectorAll('.payment-details').forEach(d => d.style.display = 'none');
+    
+    // Show relevant details and toggle required attributes
+    if (method === 'manual_transfer') {
+      document.getElementById('manual-details').style.display = 'block';
+      document.getElementById('payment-proof').required = true;
+      document.getElementById('bank_name').required = true;
+    } else if (method === 'duitnow') {
+      document.getElementById('duitnow-details').style.display = 'block';
+      document.getElementById('payment-proof').required = false;
+      document.getElementById('bank_name').required = false;
+    } else if (method === 'tng') {
+      document.getElementById('tng-details').style.display = 'block';
+      document.getElementById('payment-proof').required = false;
+      document.getElementById('bank_name').required = false;
+    }
   });
 });
 </script>
