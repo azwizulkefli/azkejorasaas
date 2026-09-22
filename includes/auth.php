@@ -37,7 +37,7 @@ function login(string $email, string $password): bool {
         }
     } catch (Throwable $e) { /* admin_users missing → fall back */ }
 
-    /* 2) Fallback: users table (customers + legacy admin) */
+    /* 2) Fallback: users table (customers + team members + legacy admin) */
     $stmt = $pdo->prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?)");
     $stmt->execute([$email]);
     $user = $stmt->fetch();
@@ -47,10 +47,11 @@ function login(string $email, string $password): bool {
     $ok = password_verify($password, $user['password_hash'])
        || crypt($password, $user['password_hash']) === $user['password_hash'];
     if ($ok) {
-        $_SESSION['user_id']    = $user['id'];
-        $_SESSION['user_name']  = $user['name'];
-        $_SESSION['user_email'] = $user['email'];
-        $_SESSION['user_role']  = $user['role'];
+        $_SESSION['user_id']           = $user['id'];
+        $_SESSION['user_name']         = $user['name'];
+        $_SESSION['user_email']        = $user['email'];
+        $_SESSION['user_role']         = $user['role'];
+        $_SESSION['subscription_id']   = $user['subscription_id'] ?? null;
         return true;
     }
     return false;
@@ -88,11 +89,27 @@ function registerCustomer(array $data): array {
     $token = bin2hex(random_bytes(32));
     $hash  = password_hash($pass, PASSWORD_BCRYPT);
 
-    $pdo->prepare("INSERT INTO users (name, email, phone, password_hash, role, activation_token)
-                    VALUES (?, ?, ?, ?, 'customer', ?)")
-        ->execute([$name, $email, $phone, $hash, $token]);
+    try {
+        $pdo->beginTransaction();
 
-    return ['ok'=>true, 'error'=>null, 'token'=>$token, 'email'=>$email, 'name'=>$name];
+        /* 1) Insert into users table and get the new user ID */
+        $stmtUser = $pdo->prepare("INSERT INTO users (name, email, phone, password_hash, role, activation_token)
+                                   VALUES (?, ?, ?, ?, 'customer', ?) RETURNING id");
+        $stmtUser->execute([$name, $email, $phone, $hash, $token]);
+        $newUserId = $stmtUser->fetchColumn();
+
+        /* 2) Insert into subscriber_users table (The registering user is the first Admin/Owner of their workspace) */
+        $stmtSubUser = $pdo->prepare("INSERT INTO subscriber_users (owner_id, user_id, email, name, phone, role, status)
+                                      VALUES (?, ?, ?, ?, ?, 'admin', 'active')");
+        $stmtSubUser->execute([$newUserId, $newUserId, $email, $name, $phone]);
+
+        $pdo->commit();
+
+        return ['ok'=>true, 'error'=>null, 'token'=>$token, 'email'=>$email, 'name'=>$name];
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        return ['ok'=>false, 'error'=>'Registration failed. Please try again.'];
+    }
 }
 
 function activateByToken(string $token): array {
@@ -105,27 +122,49 @@ function activateByToken(string $token): array {
     $user = $u->fetch();
     if (!$user) return ['ok'=>false, 'error'=>'Invalid or expired activation link.'];
 
-    $pdo->prepare("UPDATE users SET activation_token = NULL, activated_at = NOW() WHERE id = ?")
-        ->execute([$user['id']]);
+    try {
+        $pdo->beginTransaction();
 
-    // Auto-provision free trial subscription
-    $pdo->prepare("INSERT INTO subscriptions (user_id, status, price, trial_ends_at)
-                    VALUES (?, 'active_trial', 0, NOW() + (? * INTERVAL '1 hour'))")
-        ->execute([$user['id'], $trialH]);
+        /* 1) Activate user account */
+        $pdo->prepare("UPDATE users SET activation_token = NULL, activated_at = NOW() WHERE id = ?")
+            ->execute([$user['id']]);
 
-    // Log the user in
+        /* 2) Auto-provision free trial subscription and fetch the new subscription_id */
+        $stmtSub = $pdo->prepare("INSERT INTO subscriptions (user_id, status, price, trial_ends_at)
+                                  VALUES (?, 'active_trial', 0, NOW() + (? * INTERVAL '1 hour')) RETURNING id");
+        $stmtSub->execute([$user['id'], $trialH]);
+        $newSubId = $stmtSub->fetchColumn();
+
+        /* 3) Save subscription_id to users table */
+        $pdo->prepare("UPDATE users SET subscription_id = ? WHERE id = ?")
+            ->execute([$newSubId, $user['id']]);
+
+        /* 4) Save subscription_id to subscriber_users table (for the owner/admin) */
+        $pdo->prepare("UPDATE subscriber_users SET subscription_id = ? WHERE user_id = ? AND owner_id = ?")
+            ->execute([$newSubId, $user['id'], $user['id']]);
+
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        return ['ok'=>false, 'error'=>'Activation failed. Please try again.'];
+    }
+
+    /* Log the user in */
     $full = $pdo->prepare("SELECT * FROM users WHERE id = ?");
     $full->execute([$user['id']]);
     $row = $full->fetch();
-    $_SESSION['user_id']    = $row['id'];
-    $_SESSION['user_name']  = $row['name'];
-    $_SESSION['user_email'] = $row['email'];
-    $_SESSION['user_role']  = $row['role'];
+    
+    $_SESSION['user_id']           = $row['id'];
+    $_SESSION['user_name']         = $row['name'];
+    $_SESSION['user_email']        = $row['email'];
+    $_SESSION['user_role']         = $row['role'];
+    $_SESSION['subscription_id']   = $row['subscription_id'] ?? null;
 
     return ['ok'=>true, 'error'=>null, 'trial_hours'=>$trialH];
 }
 
 function currentUserId(): ?string { return $_SESSION['user_id'] ?? null; }
+
 function currentUser(): ?array {
     if (!currentUserId()) return null;
     global $pdo;
@@ -133,10 +172,16 @@ function currentUser(): ?array {
     $st->execute([currentUserId()]);
     return $st->fetch() ?: null;
 }
+
 function requireCustomer() {
     if (!currentUserId() || ($_SESSION['user_role'] ?? '') !== 'customer') {
         header('Location: /public/index.php?err=auth'); exit;
     }
 }
 
-function logout() { session_unset(); session_destroy(); header('Location: /public/index.php'); exit; }
+function logout() { 
+    session_unset(); 
+    session_destroy(); 
+    header('Location: /public/index.php'); 
+    exit; 
+}
