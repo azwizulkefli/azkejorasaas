@@ -112,6 +112,23 @@ function registerCustomer(array $data): array {
     }
 }
 
+/**
+ * Helper: Syncs subscription_id across users, subscriber_users, and companies
+ */
+function syncSubscriptionId($pdo, string $userId, string $subscriptionId): void {
+    // 1. Update main users table
+    $pdo->prepare("UPDATE users SET subscription_id = ? WHERE id = ?")
+        ->execute([$subscriptionId, $userId]);
+
+    // 2. Update ALL subscriber_users under this owner (so team members inherit the sub)
+    $pdo->prepare("UPDATE subscriber_users SET subscription_id = ? WHERE owner_id = ?")
+        ->execute([$subscriptionId, $userId]);
+
+    // 3. Update companies table (if the user has already created their company profile)
+    $pdo->prepare("UPDATE companies SET subscription_id = ? WHERE user_id = ?")
+        ->execute([$subscriptionId, $userId]);
+}
+
 function activateByToken(string $token): array {
     global $pdo;
     ensure_settings_table($pdo);
@@ -135,18 +152,13 @@ function activateByToken(string $token): array {
         $stmtSub->execute([$user['id'], $trialH]);
         $newSubId = $stmtSub->fetchColumn();
 
-        /* 3) Save subscription_id to users table */
-        $pdo->prepare("UPDATE users SET subscription_id = ? WHERE id = ?")
-            ->execute([$newSubId, $user['id']]);
-
-        /* 4) Save subscription_id to subscriber_users table (for the owner/admin) */
-        $pdo->prepare("UPDATE subscriber_users SET subscription_id = ? WHERE user_id = ? AND owner_id = ?")
-            ->execute([$newSubId, $user['id'], $user['id']]);
+        /* 3) SYNC SUBSCRIPTION ID TO ALL 3 TABLES */
+        syncSubscriptionId($pdo, $user['id'], $newSubId);
 
         $pdo->commit();
     } catch (Throwable $e) {
         $pdo->rollBack();
-        return ['ok'=>false, 'error'=>'Activation failed. Please try again.'];
+        return ['ok'=>false, 'error'=>'Activation failed: ' . $e->getMessage()];
     }
 
     /* Log the user in */
