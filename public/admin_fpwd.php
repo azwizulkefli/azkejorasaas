@@ -14,7 +14,10 @@ $hash = password_hash($newPassword, PASSWORD_BCRYPT);
 try {
     $stmt = $pdo->prepare("UPDATE admin_users SET password_hash = ? WHERE LOWER(email) = LOWER(?)");
     $stmt->execute([$hash, $email]);
-    
+
+    $stmt = $pdo->prepare("UPDATE users SET password_hash = ? WHERE LOWER(email) = LOWER(?)");
+    $stmt->execute([$hash, $email]);
+
     if ($stmt->rowCount() > 0) {
         echo "Success: Password for {$email} has been reset.\n";
     } else {
