@@ -1,3 +1,3 @@
-<script>
-self.location="/public/index.php";
-</script>
+<?php
+// Direct server-side execution of your public index file
+require __DIR__ . '/../public/index.php';
