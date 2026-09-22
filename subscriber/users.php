@@ -6,11 +6,14 @@ ensure_settings_table($pdo);
 $uid = currentUserId();
 $me  = currentUser();
 
-/* Auto-create table if missing */
+/* ============================================================
+   AUTO-CREATE / MIGRATE TABLES
+   ============================================================ */
 try {
     $pdo->exec("CREATE TABLE IF NOT EXISTS subscriber_users (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         owner_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE SET NULL,
         email VARCHAR(255) NOT NULL,
         name VARCHAR(255) NOT NULL,
         phone VARCHAR(50),
@@ -22,11 +25,26 @@ try {
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         UNIQUE(owner_id, email))");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sub_users_owner ON subscriber_users(owner_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sub_users_user_id ON subscriber_users(user_id)");
 } catch (Throwable $e) { /* already exists */ }
 
-/* ---------------- POST ACTIONS ---------------- */
+/* Migration: add user_id column if missing (for existing installs) */
+try {
+    $colExists = $pdo->query("SELECT column_name FROM information_schema.columns
+                        WHERE table_name = 'subscriber_users' AND column_name = 'user_id'")
+              ->fetchColumn();
+    if (!$colExists) {
+        $pdo->exec("ALTER TABLE subscriber_users ADD COLUMN user_id UUID REFERENCES users(id) ON DELETE SET NULL");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sub_users_user_id ON subscriber_users(user_id)");
+    }
+} catch (Throwable $e) { /* already migrated */ }
+
+/* ============================================================
+   POST ACTIONS
+   ============================================================ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
+    /* ---------- ADD USER ---------- */
     if ($_POST['action'] === 'add_user') {
         $name  = trim($_POST['name'] ?? '');
         $email = trim(strtolower($_POST['email'] ?? ''));
@@ -38,23 +56,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         if ($name === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             header("Location: users.php?err=invalid"); exit;
         }
+        if (strlen($pass) < 6) {
+            header("Location: users.php?err=weak_pass"); exit;
+        }
 
-        /* duplicate email check for this owner */
-        $dup = $pdo->prepare("SELECT 1 FROM subscriber_users WHERE owner_id = ? AND LOWER(email) = LOWER(?)");
-        $dup->execute([$uid, $email]);
-        if ($dup->fetchColumn()) {
+        /* Duplicate check: subscriber_users (same owner) */
+        $dupSub = $pdo->prepare("SELECT 1 FROM subscriber_users WHERE owner_id = ? AND LOWER(email) = LOWER(?)");
+        $dupSub->execute([$uid, $email]);
+        if ($dupSub->fetchColumn()) {
             header("Location: users.php?err=duplicate"); exit;
         }
 
-        $hash = $pass !== '' ? password_hash($pass, PASSWORD_BCRYPT) : null;
+        /* Duplicate check: users table (global unique email) */
+        $dupUser = $pdo->prepare("SELECT 1 FROM users WHERE LOWER(email) = LOWER(?)");
+        $dupUser->execute([$email]);
+        if ($dupUser->fetchColumn()) {
+            header("Location: users.php?err=email_exists"); exit;
+        }
 
-        $pdo->prepare("INSERT INTO subscriber_users (owner_id, name, email, phone, role, position, password_hash, status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 'active')")
-            ->execute([$uid, $name, $email, $phone, $role, $pos, $hash]);
+        $hash = password_hash($pass, PASSWORD_BCRYPT);
 
-        header("Location: users.php?saved=added"); exit;
+        try {
+            $pdo->beginTransaction();
+
+            /* 1) Insert into users table — subscriber gets their own login */
+            $stmtUser = $pdo->prepare("INSERT INTO users (name, email, password_hash, role, phone, reg_type, created_at)
+                                       VALUES (?, ?, ?, 'customer', ?, 'manual', NOW())
+                                       RETURNING id");
+            $stmtUser->execute([$name, $email, $hash, $phone]);
+            $newUserId = $stmtUser->fetchColumn();
+
+            /* 2) Insert into subscriber_users — links owner → subscriber */
+            $pdo->prepare("INSERT INTO subscriber_users (owner_id, user_id, name, email, phone, role, position, password_hash, status)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')")
+                ->execute([$uid, $newUserId, $name, $email, $phone, $role, $pos, $hash]);
+
+            $pdo->commit();
+            header("Location: users.php?saved=added"); exit;
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            header("Location: users.php?err=server"); exit;
+        }
     }
 
+    /* ---------- UPDATE USER ---------- */
     if ($_POST['action'] === 'update_user') {
         $id    = $_POST['user_id'] ?? '';
         $name  = trim($_POST['name'] ?? '');
@@ -67,64 +112,169 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         if ($name === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             header("Location: users.php?err=invalid"); exit;
         }
+        if ($pass !== '' && strlen($pass) < 6) {
+            header("Location: users.php?err=weak_pass"); exit;
+        }
 
-        /* duplicate check (excluding self) */
-        $dup = $pdo->prepare("SELECT 1 FROM subscriber_users WHERE owner_id = ? AND LOWER(email) = LOWER(?) AND id <> ?");
-        $dup->execute([$uid, $email, $id]);
-        if ($dup->fetchColumn()) {
+        /* Duplicate check in subscriber_users (excluding self) */
+        $dupSub = $pdo->prepare("SELECT 1 FROM subscriber_users WHERE owner_id = ? AND LOWER(email) = LOWER(?) AND id <> ?");
+        $dupSub->execute([$uid, $email, $id]);
+        if ($dupSub->fetchColumn()) {
             header("Location: users.php?err=duplicate"); exit;
         }
 
-        if ($pass !== '') {
-            $hash = password_hash($pass, PASSWORD_BCRYPT);
-            $pdo->prepare("UPDATE subscriber_users SET name=?, email=?, phone=?, role=?, position=?, password_hash=?, updated_at=NOW()
-                           WHERE id = ? AND owner_id = ?")
-                ->execute([$name, $email, $phone, $role, $pos, $hash, $id, $uid]);
+        /* Get the linked user_id from subscriber_users */
+        $stmtLink = $pdo->prepare("SELECT user_id FROM subscriber_users WHERE id = ? AND owner_id = ?");
+        $stmtLink->execute([$id, $uid]);
+        $linkedUserId = $stmtLink->fetchColumn();
+
+        /* Email uniqueness in users table (excluding own linked record) */
+        if ($linkedUserId) {
+            $dupUser = $pdo->prepare("SELECT 1 FROM users WHERE LOWER(email) = LOWER(?) AND id <> ?");
+            $dupUser->execute([$email, $linkedUserId]);
         } else {
-            $pdo->prepare("UPDATE subscriber_users SET name=?, email=?, phone=?, role=?, position=?, updated_at=NOW()
-                           WHERE id = ? AND owner_id = ?")
-                ->execute([$name, $email, $phone, $role, $pos, $id, $uid]);
+            $dupUser = $pdo->prepare("SELECT 1 FROM users WHERE LOWER(email) = LOWER(?)");
+            $dupUser->execute([$email]);
         }
-        header("Location: users.php?saved=updated"); exit;
+        if ($dupUser->fetchColumn()) {
+            header("Location: users.php?err=email_exists"); exit;
+        }
+
+        try {
+            $pdo->beginTransaction();
+
+            /* 1) Update users table (if linked) */
+            if ($linkedUserId) {
+                if ($pass !== '') {
+                    $hashU = password_hash($pass, PASSWORD_BCRYPT);
+                    $pdo->prepare("UPDATE users SET name=?, email=?, phone=?, password_hash=? WHERE id=?")
+                        ->execute([$name, $email, $phone, $hashU, $linkedUserId]);
+                } else {
+                    $pdo->prepare("UPDATE users SET name=?, email=?, phone=? WHERE id=?")
+                        ->execute([$name, $email, $phone, $linkedUserId]);
+                }
+            }
+
+            /* 2) Update subscriber_users */
+            if ($pass !== '') {
+                $hashS = password_hash($pass, PASSWORD_BCRYPT);
+                $pdo->prepare("UPDATE subscriber_users SET name=?, email=?, phone=?, role=?, position=?, password_hash=?, updated_at=NOW()
+                               WHERE id = ? AND owner_id = ?")
+                    ->execute([$name, $email, $phone, $role, $pos, $hashS, $id, $uid]);
+            } else {
+                $pdo->prepare("UPDATE subscriber_users SET name=?, email=?, phone=?, role=?, position=?, updated_at=NOW()
+                               WHERE id = ? AND owner_id = ?")
+                    ->execute([$name, $email, $phone, $role, $pos, $id, $uid]);
+            }
+
+            $pdo->commit();
+            header("Location: users.php?saved=updated"); exit;
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            header("Location: users.php?err=server"); exit;
+        }
     }
 
+    /* ---------- TOGGLE STATUS ---------- */
     if ($_POST['action'] === 'toggle_user') {
         $id = $_POST['user_id'] ?? '';
-        $pdo->prepare("UPDATE subscriber_users SET status = CASE WHEN status='active' THEN 'suspended' ELSE 'active' END, updated_at=NOW()
+        $pdo->prepare("UPDATE subscriber_users
+                       SET status = CASE WHEN status='active' THEN 'suspended' ELSE 'active' END,
+                           updated_at = NOW()
                        WHERE id = ? AND owner_id = ?")
             ->execute([$id, $uid]);
         header("Location: users.php?saved=toggled"); exit;
     }
 
+    /* ---------- DELETE USER ---------- */
     if ($_POST['action'] === 'delete_user') {
         $id = $_POST['user_id'] ?? '';
-        $pdo->prepare("DELETE FROM subscriber_users WHERE id = ? AND owner_id = ?")->execute([$id, $uid]);
-        header("Location: users.php?saved=deleted"); exit;
+
+        try {
+            $pdo->beginTransaction();
+
+            /* Get linked user_id before deleting */
+            $stmtLink = $pdo->prepare("SELECT user_id FROM subscriber_users WHERE id = ? AND owner_id = ?");
+            $stmtLink->execute([$id, $uid]);
+            $linkedUserId = $stmtLink->fetchColumn();
+
+            /* 1) Delete from subscriber_users */
+            $pdo->prepare("DELETE FROM subscriber_users WHERE id = ? AND owner_id = ?")
+                ->execute([$id, $uid]);
+
+            /* 2) Cascade-delete the subscriber's own account + related data */
+            if ($linkedUserId) {
+                $pdo->prepare("DELETE FROM subscriptions_billing WHERE user_id = ?")->execute([$linkedUserId]);
+                $pdo->prepare("DELETE FROM subscriptions WHERE user_id = ?")->execute([$linkedUserId]);
+                $pdo->prepare("DELETE FROM transactions WHERE user_id = ?")->execute([$linkedUserId]);
+                $pdo->prepare("DELETE FROM companies WHERE user_id = ?")->execute([$linkedUserId]);
+                $pdo->prepare("DELETE FROM einvoice_records WHERE user_id = ?")->execute([$linkedUserId]);
+                $pdo->prepare("DELETE FROM einvoice_uploads WHERE user_id = ?")->execute([$linkedUserId]);
+                $pdo->prepare("DELETE FROM einvoice_consolidated WHERE user_id = ?")->execute([$linkedUserId]);
+                $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$linkedUserId]);
+            }
+
+            $pdo->commit();
+            header("Location: users.php?saved=deleted"); exit;
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            header("Location: users.php?err=server"); exit;
+        }
     }
 }
 
-/* ---------------- DATA ---------------- */
-$q = trim($_GET['q'] ?? '');
+/* ============================================================
+   DATA
+   ============================================================ */
+$q    = trim($_GET['q'] ?? '');
 $like = '%' . mb_strtolower($q) . '%';
-$usersQuery = $pdo->prepare("SELECT * FROM subscriber_users
-    WHERE owner_id = ? AND (LOWER(name) LIKE ? OR LOWER(email) LIKE ? OR LOWER(position) LIKE ?)
-    ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, created_at DESC");
+
+$usersQuery = $pdo->prepare("SELECT su.*, u.id AS linked_user_id, u.activated_at
+    FROM subscriber_users su
+    LEFT JOIN users u ON u.id = su.user_id
+    WHERE su.owner_id = ?
+      AND (LOWER(su.name) LIKE ? OR LOWER(su.email) LIKE ? OR LOWER(su.position) LIKE ?)
+    ORDER BY CASE su.role WHEN 'admin' THEN 0 ELSE 1 END, su.created_at DESC");
 $usersQuery->execute([$uid, $like, $like, $like]);
 $users = $usersQuery->fetchAll();
 
-$adminCount = count(array_filter($users, fn($u) => $u['role'] === 'admin'));
-$userCount  = count(array_filter($users, fn($u) => $u['role'] === 'user'));
+$adminCount  = count(array_filter($users, fn($u) => $u['role'] === 'admin'));
+$userCount   = count(array_filter($users, fn($u) => $u['role'] === 'user'));
 $activeCount = count(array_filter($users, fn($u) => $u['status'] === 'active'));
 
+/* ---------- DATA INTEGRITY CHECKS ---------- */
+$ownerStmt = $pdo->prepare("SELECT 1 FROM users WHERE id = ?");
+$ownerStmt->execute([$uid]);
+$ownerExists = (bool) $ownerStmt->fetchColumn();
+
+$subStmt = $pdo->prepare("SELECT 1 FROM subscriptions WHERE user_id = ? AND status IN ('active','active_trial') LIMIT 1");
+$subStmt->execute([$uid]);
+$hasSubscription = (bool) $subStmt->fetchColumn();
+
+$compStmt = $pdo->prepare("SELECT 1 FROM companies WHERE user_id = ? LIMIT 1");
+$compStmt->execute([$uid]);
+$hasCompany = (bool) $compStmt->fetchColumn();
+
+/* Orphan check: subscriber_users rows with user_id that no longer exists in users */
+$orphanStmt = $pdo->prepare("SELECT COUNT(*) FROM subscriber_users su
+    WHERE su.owner_id = ? AND su.user_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = su.user_id)");
+$orphanStmt->execute([$uid]);
+$orphanCount = (int) $orphanStmt->fetchColumn();
+
+/* ---------- MESSAGES ---------- */
 $errMap = [
-    'invalid'   => '✗ Please provide a valid name and email address.',
-    'duplicate' => '✗ A user with this email already exists in your team.',
+    'invalid'      => '✗ Please provide a valid name and email address.',
+    'duplicate'    => '✗ A user with this email already exists in your team.',
+    'email_exists' => '✗ This email is already registered in the system.',
+    'weak_pass'    => '✗ Password must be at least 6 characters.',
+    'server'       => '✗ A server error occurred. Please try again.',
 ];
 $savedMap = [
-    'added'    => '✔ New team member added.',
+    'added'    => '✔ New team member added — login account created.',
     'updated'  => '✔ User details updated.',
     'toggled'  => '✔ User status changed.',
-    'deleted'  => '✔ User removed from team.',
+    'deleted'  => '✔ User removed from team and account deleted.',
 ];
 ?>
 <!DOCTYPE html>
@@ -138,7 +288,6 @@ $savedMap = [
 body{font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink)}
 a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 
-/* ---------- LOADING OVERLAY ---------- */
 .loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.92);backdrop-filter:blur(4px);display:none;place-items:center;z-index:9999}
 .loading-overlay.active{display:grid}
 .spinner-wrap{text-align:center}
@@ -146,7 +295,6 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner-text{margin-top:16px;font-size:13px;font-weight:600;color:var(--muted)}
 
-/* ---------- SIDEBAR ---------- */
 .sidebar{position:fixed;top:0;left:0;bottom:0;width:260px;background:#fff;border-right:1px solid var(--line);padding:24px 16px;z-index:30;transition:transform .3s ease;display:flex;flex-direction:column}
 .sidebar-brand{padding:0 8px 24px;border-bottom:1px solid var(--line);margin-bottom:16px}
 .sidebar-nav{display:flex;flex-direction:column;gap:4px}
@@ -156,7 +304,6 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 .menu-item.active{background:var(--grad);color:#fff;box-shadow:0 4px 12px -4px rgba(84,87,229,.4)}
 .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);z-index:25}
 
-/* ---------- MAIN LAYOUT ---------- */
 .main-wrapper{margin-left:260px;min-height:100vh;display:flex;flex-direction:column}
 .topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10;gap:12px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
@@ -174,10 +321,10 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .banner{margin:16px 0 0;border-radius:12px;padding:12px 18px;font-size:13px;font-weight:600}
 .banner.success{background:#d1fae5;color:#059669}
 .banner.error{background:#ffe4e6;color:#e11d48}
+.banner.warning{background:#fef3c7;color:#b45309}
 
 .head-row{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:4px}
 
-/* ---------- STATS ---------- */
 .stats4{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;margin:28px 0}
 .stat{background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:var(--card)}
 .stat p{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
@@ -185,7 +332,15 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .stat small{display:block;margin-top:4px;font-size:12px;color:var(--muted)}
 .stat .emerald{color:#059669}.stat .rose{color:#e11d48}.stat .violet{color:var(--brand)}
 
-/* ---------- TABLE ---------- */
+.integrity-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:20px 24px;box-shadow:var(--card);margin-bottom:24px}
+.integrity-card h4{font-size:13px;font-weight:700;margin-bottom:12px;color:var(--ink)}
+.integrity-grid{display:flex;gap:16px;flex-wrap:wrap}
+.integrity-item{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--muted);background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:8px 14px}
+.integrity-item .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot.ok{background:#10b981}
+.dot.warn{background:#f59e0b}
+.dot.fail{background:#ef4444}
+
 .table-card{background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--card)}
 .toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 24px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap}
 .toolbar h3{font-weight:700}
@@ -217,7 +372,6 @@ tbody tr:hover{background:#f8fafc}
 .btn-add{background:var(--grad);color:#fff;border-radius:10px;padding:10px 18px;font-size:13px;font-weight:700;box-shadow:0 8px 20px -8px rgba(84,87,229,.5)}
 .btn-add:hover{opacity:.95}
 
-/* ---------- MODAL ---------- */
 .modal{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);padding:16px}
 .modal.open{display:grid}
 .modal-card{width:100%;max-width:520px;background:#fff;border-radius:20px;padding:28px;box-shadow:0 30px 80px -20px rgba(19,19,39,.4);max-height:90vh;overflow-y:auto}
@@ -234,7 +388,6 @@ tbody tr:hover{background:#f8fafc}
 .btn-save{background:var(--grad);color:#fff;border-radius:10px;padding:11px 18px;font-size:13px;font-weight:700}
 .btn-save:hover{opacity:.9}
 
-/* ---------- RESPONSIVE ---------- */
 @media(max-width:900px){
   .sidebar{transform:translateX(-100%)}
   .sidebar.open{transform:translateX(0)}
@@ -253,6 +406,7 @@ tbody tr:hover{background:#f8fafc}
   .toolbar{flex-direction:column;align-items:stretch}
   .search{width:100%}
   .search-in{flex:1;width:auto}
+  .integrity-grid{flex-direction:column}
 }
 </style>
 </head>
@@ -316,6 +470,32 @@ tbody tr:hover{background:#f8fafc}
     <?php if (isset($_GET['err']) && isset($errMap[$_GET['err']])): ?>
       <div class="banner error"><?= $errMap[$_GET['err']] ?></div>
     <?php endif; ?>
+    <?php if ($orphanCount > 0): ?>
+      <div class="banner warning">⚠ <?= $orphanCount ?> team member(s) have no linked login account. They may have been created before the system upgrade.</div>
+    <?php endif; ?>
+
+    <!-- DATA INTEGRITY STATUS -->
+    <div class="integrity-card">
+      <h4>🔗 Data Relation Status</h4>
+      <div class="integrity-grid">
+        <div class="integrity-item">
+          <span class="dot <?= $ownerExists ? 'ok' : 'fail' ?>"></span>
+          Owner Account: <?= $ownerExists ? 'Valid' : 'Missing' ?>
+        </div>
+        <div class="integrity-item">
+          <span class="dot <?= $hasSubscription ? 'ok' : 'warn' ?>"></span>
+          Subscription: <?= $hasSubscription ? 'Active' : 'None / Expired' ?>
+        </div>
+        <div class="integrity-item">
+          <span class="dot <?= $hasCompany ? 'ok' : 'warn' ?>"></span>
+          Company Profile: <?= $hasCompany ? 'Configured' : 'Not Set' ?>
+        </div>
+        <div class="integrity-item">
+          <span class="dot <?= $orphanCount === 0 ? 'ok' : 'warn' ?>"></span>
+          Team Members: <?= count($users) ?> total · <?= $orphanCount ?> orphan(s)
+        </div>
+      </div>
+    </div>
 
     <div class="stats4">
       <div class="stat"><p>Total users</p><b class="violet"><?= count($users) ?></b><small>in your workspace</small></div>
@@ -326,7 +506,7 @@ tbody tr:hover{background:#f8fafc}
 
     <div class="table-card">
       <form method="GET" class="toolbar">
-        <h3>All team members <span><?= count($users) ?> record(s)<?= $q ? ' · filtered by "'.htmlspecialchars($q).'"' : '' ?></span></h3>
+        <h3>All team members <span><?= count($users) ?> record(s)<?= $q ? ' · filtered by "' . htmlspecialchars($q) . '"' : '' ?></span></h3>
         <div class="search">
           <input class="search-in" type="text" name="q" placeholder="Search name, email or position…" value="<?= htmlspecialchars($q) ?>">
           <button class="search-btn">Search</button>
@@ -369,7 +549,8 @@ tbody tr:hover{background:#f8fafc}
                       <?= $u['status'] === 'active' ? 'Suspend' : 'Activate' ?>
                   </button>
                 </form>
-                <form method="POST" class="action-form" onsubmit="return confirm('Remove <?= htmlspecialchars(addslashes($u['name']), ENT_QUOTES) ?> from your team? This cannot be undone.')">
+                <form method="POST" class="action-form"
+                      data-confirm="Remove <?= htmlspecialchars(addslashes($u['name']), ENT_QUOTES) ?> from your team? Their login account will also be deleted. This cannot be undone.">
                   <input type="hidden" name="action" value="delete_user">
                   <input type="hidden" name="user_id" value="<?= $u['id'] ?>">
                   <button class="ibtn del" title="Delete user">🗑️</button>
@@ -392,7 +573,7 @@ tbody tr:hover{background:#f8fafc}
   <form method="POST" class="modal-card action-form">
     <input type="hidden" name="action" value="add_user">
     <h3>Add team member</h3>
-    <p class="msub">Invite someone to access your workspace.</p>
+    <p class="msub">A login account will be created automatically in the users table.</p>
 
     <div class="field"><label>Full name</label><input name="name" placeholder="Aina Rahman" required></div>
     <div class="field"><label>Email address</label><input type="email" name="email" placeholder="aina@company.com" required></div>
@@ -406,7 +587,7 @@ tbody tr:hover{background:#f8fafc}
         <option value="admin">Admin — full workspace access</option>
       </select>
     </div>
-    <div class="field"><label>Password (optional)</label><input type="password" name="password" minlength="6" placeholder="Leave blank to set later"></div>
+    <div class="field"><label>Password</label><input type="password" name="password" minlength="6" placeholder="Min. 6 characters" required></div>
 
     <div class="mrow">
       <button type="submit" class="btn-save">Add user</button>
@@ -421,7 +602,7 @@ tbody tr:hover{background:#f8fafc}
     <input type="hidden" name="action" value="update_user">
     <input type="hidden" name="user_id" id="edit_id">
     <h3>Edit team member</h3>
-    <p class="msub">Update contact, role or reset password.</p>
+    <p class="msub">Update contact, role or reset password. Changes sync to the users table.</p>
 
     <div class="field"><label>Full name</label><input name="name" id="edit_name" required></div>
     <div class="field"><label>Email address</label><input type="email" name="email" id="edit_email" required></div>
@@ -450,6 +631,7 @@ function toggleSidebar(){
   document.getElementById('sidebarOverlay').classList.toggle('open');
 }
 
+/* ---------- MODALS ---------- */
 const addM  = document.getElementById('addModal');
 const editM = document.getElementById('editModal');
 function openAdd()  { addM.classList.add('open'); }
@@ -458,6 +640,7 @@ function closeEdit(){ editM.classList.remove('open'); }
 addM.addEventListener('click', e => { if (e.target === addM) closeAdd(); });
 editM.addEventListener('click', e => { if (e.target === editM) closeEdit(); });
 
+/* ---------- EDIT BUTTON ---------- */
 document.querySelectorAll('button[data-edit]').forEach(b => b.addEventListener('click', () => {
   const tr = b.closest('tr');
   document.getElementById('edit_id').value       = tr.dataset.id;
@@ -469,18 +652,18 @@ document.querySelectorAll('button[data-edit]').forEach(b => b.addEventListener('
   editM.classList.add('open');
 }));
 
+/* ---------- FORM SUBMIT + CONFIRM + LOADING ---------- */
 const overlay = document.getElementById('loadingOverlay');
-document.querySelectorAll('form').forEach(form => {
+document.querySelectorAll('.action-form').forEach(form => {
   form.addEventListener('submit', function(e) {
-    if (this.onsubmit && !this.onsubmit(e)) return;
-    overlay.classList.add('active');
-  });
-});
-document.querySelectorAll('a[href]').forEach(link => {
-  link.addEventListener('click', function() {
-    if (!this.href.includes('#') && !this.target) {
-      overlay.classList.add('active');
+    /* If form has data-confirm, ask first */
+    const msg = this.dataset.confirm;
+    if (msg && !confirm(msg)) {
+      e.preventDefault();
+      return;
     }
+    /* Show loading overlay only if form will actually submit */
+    overlay.classList.add('active');
   });
 });
 </script>
