@@ -98,56 +98,67 @@ if ($s) {
     }
 }
 
-// ---------------- E-INVOICE COUNTS (Updated to einvoice_records) ----------------
-$einSt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ?");
-$einSt->execute([$uid]);
-$einCount = (int)$einSt->fetchColumn();
+// Check if expired
+$isExpired = ($s && $s['status'] === 'expired');
 
-$einGross = $pdo->prepare("SELECT COALESCE(SUM(total_amount),0) FROM einvoice_records WHERE user_id = ?");
-$einGross->execute([$uid]);
-$einGrossV = $einGross->fetchColumn();
-
-
-// E-Invoice by time periods (week, month, year)
-$einWeek = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '7 days'");
-$einWeek->execute([$uid]);
-$einWeekCount = (int)$einWeek->fetchColumn();
-
-$einMonth = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '30 days'");
-$einMonth->execute([$uid]);
-$einMonthCount = (int)$einMonth->fetchColumn();
-
-$einYear = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '1 year'");
-$einYear->execute([$uid]);
-$einYearCount = (int)$einYear->fetchColumn();
-
-// E-Invoice by status (using lhdn_status)
-$einByStatus = $pdo->prepare("SELECT lhdn_status, COUNT(*) as count FROM einvoice_records WHERE user_id = ? GROUP BY lhdn_status");
-$einByStatus->execute([$uid]);
-$statusMap = [];
-while ($row = $einByStatus->fetch()) {
-    $status = strtolower($row['lhdn_status'] ?? 'pending');
-    $statusMap[$status] = ($statusMap[$status] ?? 0) + (int)$row['count'];
+// Get stats for expired state
+$expiredStats = [];
+if ($isExpired) {
+    $einCountStmt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ?");
+    $einCountStmt->execute([$uid]);
+    $expiredStats['einCount'] = (int)$einCountStmt->fetchColumn();
 }
 
-// Activity log (last 10 activities from multiple sources)
+// ---------------- E-INVOICE COUNTS (only if not expired) ----------------
+$einCount = $einGrossV = $einWeekCount = $einMonthCount = $einYearCount = 0;
+$statusMap = [];
 $activities = [];
 
-// Recent einvoice items (using sale_no and customer_name)
-$einRecent = $pdo->prepare("SELECT sale_no, customer_name, created_at FROM einvoice_records WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
-$einRecent->execute([$uid]);
-while ($row = $einRecent->fetch()) {
-    $activities[] = [
-        'type' => '🧾 E-Invoice',
-        'desc' => 'Processed ' . ($row['sale_no'] ?: 'Invoice') . ' for ' . ($row['customer_name'] ?: 'Customer'),
-        'time' => $row['created_at']
-    ];
+if (!$isExpired) {
+    $einSt = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ?");
+    $einSt->execute([$uid]);
+    $einCount = (int)$einSt->fetchColumn();
+
+    $einGross = $pdo->prepare("SELECT COALESCE(SUM(total_amount),0) FROM einvoice_records WHERE user_id = ?");
+    $einGross->execute([$uid]);
+    $einGrossV = $einGross->fetchColumn();
+
+    // E-Invoice by time periods (week, month, year)
+    $einWeek = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '7 days'");
+    $einWeek->execute([$uid]);
+    $einWeekCount = (int)$einWeek->fetchColumn();
+
+    $einMonth = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '30 days'");
+    $einMonth->execute([$uid]);
+    $einMonthCount = (int)$einMonth->fetchColumn();
+
+    $einYear = $pdo->prepare("SELECT COUNT(*) FROM einvoice_records WHERE user_id = ? AND created_at >= NOW() - INTERVAL '1 year'");
+    $einYear->execute([$uid]);
+    $einYearCount = (int)$einYear->fetchColumn();
+
+    // E-Invoice by status (using lhdn_status)
+    $einByStatus = $pdo->prepare("SELECT lhdn_status, COUNT(*) as count FROM einvoice_records WHERE user_id = ? GROUP BY lhdn_status");
+    $einByStatus->execute([$uid]);
+    while ($row = $einByStatus->fetch()) {
+        $status = strtolower($row['lhdn_status'] ?? 'pending');
+        $statusMap[$status] = ($statusMap[$status] ?? 0) + (int)$row['count'];
+    }
+
+    // Activity log (last 10 activities from multiple sources)
+    $einRecent = $pdo->prepare("SELECT sale_no, customer_name, created_at FROM einvoice_records WHERE user_id = ? ORDER BY created_at DESC LIMIT 5");
+    $einRecent->execute([$uid]);
+    while ($row = $einRecent->fetch()) {
+        $activities[] = [
+            'type' => '🧾 E-Invoice',
+            'desc' => 'Processed ' . ($row['sale_no'] ?: 'Invoice') . ' for ' . ($row['customer_name'] ?: 'Customer'),
+            'time' => $row['created_at']
+        ];
+    }
+
+    // Sort by time and take top 10
+    usort($activities, fn($a, $b) => strtotime($b['time']) - strtotime($a['time']));
+    $activities = array_slice($activities, 0, 10);
 }
-
-
-// Sort by time and take top 10
-usort($activities, fn($a, $b) => strtotime($b['time']) - strtotime($a['time']));
-$activities = array_slice($activities, 0, 10);
 
 $fmtDate = fn($v) => $v ? (new DateTime($v))->format('M d, Y') : '—';
 $fmtLeft = function($sec, $unit) {
@@ -158,7 +169,7 @@ $fmtLeft = function($sec, $unit) {
 
 $statusBadge = fn($st) => [
     'active'=>'active','active_trial'=>'active_trial','past_due'=>'past_due',
-    'canceled'=>'canceled','suspended'=>'suspended'
+    'canceled'=>'canceled','suspended'=>'suspended','expired'=>'expired'
 ][$st] ?? 'none';
 
 $avatarSrc = $me['avatar_path'] ? '/' . $me['avatar_path'] : null;
@@ -194,6 +205,7 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 
 /* ---------- MAIN LAYOUT ---------- */
 .main-wrapper{margin-left:260px;min-height:100vh;display:flex;flex-direction:column}
+.main-wrapper.no-sidebar{margin-left:0}
 .topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10;gap:12px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
 .logo{width:36px;height:36px;border-radius:12px;background:var(--grad);color:#fff;display:grid;place-items:center}
@@ -212,6 +224,18 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .banner{margin:16px 0 0;border-radius:12px;padding:12px 18px;font-size:13px;font-weight:600}
 .banner.success{background:#d1fae5;color:#059669}
 .banner.error{background:#ffe4e6;color:#e11d48}
+
+/* ---------- EXPIRED STATE ---------- */
+.expired-container{max-width:720px;margin:60px auto;text-align:center}
+.expired-icon{width:80px;height:80px;margin:0 auto 24px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#ef4444);display:grid;place-items:center;font-size:36px;color:#fff;box-shadow:0 20px 40px -10px rgba(239,68,68,.3)}
+.expired-title{font-size:32px;font-weight:800;letter-spacing:-.02em;margin-bottom:12px}
+.expired-message{font-size:16px;line-height:1.6;color:var(--muted);margin-bottom:32px}
+.expired-stats{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:32px}
+.expired-stat{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;box-shadow:var(--card)}
+.expired-stat p{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+.expired-stat b{display:block;font-size:20px;font-weight:800;color:var(--ink)}
+.btn-subscribe{display:inline-flex;align-items:center;gap:8px;background:var(--grad);color:#fff;border-radius:12px;padding:14px 28px;font-size:15px;font-weight:700;box-shadow:0 10px 24px -8px rgba(84,87,229,.5);transition:.15s}
+.btn-subscribe:hover{opacity:.9;transform:translateY(-2px)}
 
 /* ---------- TRIAL BANNER ---------- */
 .trial-banner{margin:28px 0;position:relative;overflow:hidden;border-radius:20px;background:linear-gradient(135deg,var(--brand),#7c3aed);padding:28px;color:#fff;box-shadow:0 20px 40px -20px rgba(84,87,229,.5)}
@@ -238,7 +262,8 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .badge{display:inline-block;margin-top:6px;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
 .badge.active{background:#d1fae5;color:#059669}.badge.active_trial{background:#e0e5ff;color:#4644cf}
 .badge.past_due{background:#fef3c7;color:#d97706}.badge.canceled{background:#f1f5f9;color:#64748b}
-.badge.suspended{background:#ffe4e6;color:#e11d48}.badge.none{background:#f1f5f9;color:#94a3b8}
+.badge.suspended{background:#ffe4e6;color:#e11d48}.badge.expired{background:#ffe4e6;color:#e11d48}
+.badge.none{background:#f1f5f9;color:#94a3b8}
 
 /* ---------- E-INVOICE SUMMARIES ---------- */
 .summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px}
@@ -300,7 +325,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   .sidebar{transform:translateX(-100%)}
   .sidebar.open{transform:translateX(0)}
   .sidebar-overlay.open{display:block}
-  .main-wrapper{margin-left:0}
+  .main-wrapper:not(.no-sidebar){margin-left:0}
   .menu-toggle{display:block}
   .stats4{grid-template-columns:repeat(2,1fr)}
   .cards2{grid-template-columns:1fr}
@@ -311,6 +336,8 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   .topbar{padding:12px 14px}
   .top-right{gap:8px;font-size:12px}
   .summary-grid{grid-template-columns:1fr}
+  .expired-title{font-size:24px}
+  .expired-stats{grid-template-columns:1fr}
 }
 </style>
 </head>
@@ -322,7 +349,8 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   </div>
 </div>
 
-<!-- ============ SIDEBAR ============ -->
+<?php if (!$isExpired): ?>
+<!-- ============ SIDEBAR (only if not expired) ============ -->
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-brand">
     <span class="brand"><span class="logo">⚡</span>AZ Kejora <em>SaaS</em></span>
@@ -344,16 +372,20 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
   </nav>
 </aside>
 <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+<?php endif; ?>
 
 <!-- ============ MAIN WRAPPER ============ -->
-<div class="main-wrapper">
+<div class="main-wrapper <?= $isExpired ? 'no-sidebar' : '' ?>">
   <nav class="topbar">
     <div style="display:flex;align-items:center;gap:12px">
+      <?php if (!$isExpired): ?>
       <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+      <?php endif; ?>
       <span class="brand"><span class="logo">⚡</span>AZ Kejora <em>SaaS</em></span>
     </div>
     <div class="top-right">
       <span>Welcome, <b><?= htmlspecialchars(explode(' ', $me['name'])[0]) ?></b></span>
+      <?php if (!$isExpired): ?>
       <button class="avatar" onclick="openProfile()">
         <?php if ($avatarSrc): ?>
           <img src="<?= htmlspecialchars($avatarSrc) ?>" alt="Avatar">
@@ -361,12 +393,40 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
           <?= strtoupper(substr($me['name'],0,1)) ?>
         <?php endif; ?>
       </button>
+      <?php endif; ?>
       <a class="btn-out" href="/public/login.php?logout=1">Sign out</a>
     </div>
   </nav>
 
   <main class="main">
 
+    <?php if ($isExpired): ?>
+    <!-- ========== EXPIRED STATE ========== -->
+    <div class="expired-container">
+      <div class="expired-icon">⏰</div>
+      <h1 class="expired-title">Your Trial Period Has Ended</h1>
+      <p class="expired-message">
+        Your free trial has expired. To continue accessing your account and all premium features, 
+        please select a subscription plan. Your data has been preserved and will be available once you subscribe.
+      </p>
+      
+      <div class="expired-stats">
+        <div class="expired-stat">
+          <p>Member Since</p>
+          <b><?= date('M d, Y', strtotime($me['created_at'])) ?></b>
+        </div>
+        <div class="expired-stat">
+          <p>Invoices Processed</p>
+          <b><?= number_format($expiredStats['einCount']) ?></b>
+        </div>
+      </div>
+      
+      <a href="s_subscribe.php" class="btn-subscribe">
+        Subscribe Now →
+      </a>
+    </div>
+    <?php else: ?>
+    <!-- ========== NORMAL DASHBOARD ========== -->
     <?php if (isset($_GET['welcome'])): ?>
       <div class="banner success">🎉 Welcome back! Your dashboard is ready.</div>
     <?php endif; ?>
@@ -491,35 +551,14 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
         <?php endforeach; ?>
       <?php endif; ?>
     </div>
-
-    <!-- ========== SERVICE CARDS ========== -->
-<!--
-    <div class="cards2">
-      <div class="svc">
-        <span class="blob" style="background:#fef3c7"></span>
-        <span class="ic-tile" style="background:linear-gradient(135deg,#f59e0b,#f97316)">🧾</span>
-        <h3>E-Invoice for SME</h3>
-        <p>Upload CSV / PDF / JSON, auto-extract line items, compute SST and export compliance reports.</p>
-        <a href="e-invoice.php" class="btn primary">Open tool →</a>
-      </div>
-      <div class="svc">
-        <span class="blob" style="background:#fae8ff"></span>
-        <span class="ic-tile" style="background:linear-gradient(135deg,#d946ef,#ec4899)">📅</span>
-        <h3>Retail Facility Booking</h3>
-        <p>Manage your facilities & rates, or book courts, rooms and halls on the public portal.</p>
-        <div class="cta-row">
-          <a href="#" class="btn primary">Merchant console</a>
-          <a href="#" class="btn ghost" style="background:#f1f5f9;color:#475569;border-color:var(--line)">Public portal</a>
-        </div>
-      </div>
-    </div>
--->
+    <?php endif; ?>
 
   </main>
 
   <footer class="footer">© 2026 AZ Kejora SaaS · Supabase PostgreSQL · <?= htmlspecialchars($me['email']) ?></footer>
 </div>
 
+<?php if (!$isExpired): ?>
 <!-- Profile Modal -->
 <div class="modal" id="profileModal">
   <div class="modal-card">
@@ -575,6 +614,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
     </form>
   </div>
 </div>
+<?php endif; ?>
 
 <script>
 function toggleSidebar(){
@@ -582,6 +622,7 @@ function toggleSidebar(){
   document.getElementById('sidebarOverlay').classList.toggle('open');
 }
 
+<?php if (!$isExpired): ?>
 const modal = document.getElementById('profileModal');
 function openProfile(){ modal.classList.add('open'); }
 function closeProfile(){ modal.classList.remove('open'); }
@@ -608,6 +649,7 @@ document.getElementById('avatarInput').addEventListener('change', function(e) {
     reader.readAsDataURL(file);
   }
 });
+<?php endif; ?>
 
 const overlay = document.getElementById('loadingOverlay');
 document.querySelectorAll('form').forEach(form => {
@@ -633,8 +675,9 @@ if (!function_exists('needsPasswordSetup')) {
         return empty($me['password_hash']) || strpos($me['password_hash'], '$2y$10$GoogleOAuth') === 0;
     }
 }
-$showSetup = needsPasswordSetup() || (isset($_GET['setup_pwd']) && $_GET['setup_pwd'] == 1);
+$showSetup = !$isExpired && (needsPasswordSetup() || (isset($_GET['setup_pwd']) && $_GET['setup_pwd'] == 1));
 ?>
+<?php if (!$isExpired): ?>
 <div class="modal <?= $showSetup ? 'open' : '' ?>" id="setupPwdModal" style="z-index:80">
   <div class="modal-card">
     <form method="POST" class="action-form">
@@ -653,6 +696,7 @@ $showSetup = needsPasswordSetup() || (isset($_GET['setup_pwd']) && $_GET['setup_
     </form>
   </div>
 </div>
+<?php endif; ?>
     
 </body>
 </html>
