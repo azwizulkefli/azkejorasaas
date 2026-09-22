@@ -75,21 +75,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
 
         $hash = password_hash($pass, PASSWORD_BCRYPT);
+        
+        /* Fetch the owner's subscription_id to pass down to the new team member */
+        $ownerSubId = $me['subscription_id'] ?? null;
 
         try {
             $pdo->beginTransaction();
 
-            /* 1) Insert into users table — subscriber gets their own login */
-            $stmtUser = $pdo->prepare("INSERT INTO users (name, email, password_hash, role, phone, reg_type, created_at)
-                                       VALUES (?, ?, ?, 'customer', ?, 'manual', NOW())
+            /* 1) Insert into users table — subscriber gets their own login + subscription_id */
+            $stmtUser = $pdo->prepare("INSERT INTO users (name, email, password_hash, role, phone, reg_type, subscription_id, created_at)
+                                       VALUES (?, ?, ?, 'customer', ?, 'manual', ?, NOW())
                                        RETURNING id");
-            $stmtUser->execute([$name, $email, $hash, $phone]);
+            $stmtUser->execute([$name, $email, $hash, $phone, $ownerSubId]);
             $newUserId = $stmtUser->fetchColumn();
 
-            /* 2) Insert into subscriber_users — links owner → subscriber */
-            $pdo->prepare("INSERT INTO subscriber_users (owner_id, user_id, name, email, phone, role, position, password_hash, status)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')")
-                ->execute([$uid, $newUserId, $name, $email, $phone, $role, $pos, $hash]);
+            /* 2) Insert into subscriber_users — links owner → subscriber + subscription_id */
+            $pdo->prepare("INSERT INTO subscriber_users (owner_id, user_id, name, email, phone, role, position, password_hash, subscription_id, status)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')")
+                ->execute([$uid, $newUserId, $name, $email, $phone, $role, $pos, $hash, $ownerSubId]);
 
             $pdo->commit();
             header("Location: users.php?saved=added"); exit;
