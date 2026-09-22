@@ -1,0 +1,3 @@
+<script>
+self.location="/public/index.php";
+</script>
