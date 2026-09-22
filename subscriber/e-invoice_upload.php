@@ -781,13 +781,14 @@ table{width:100%;border-collapse:collapse;font-size:14px}th{padding:12px 16px;te
     <a href="e-invoice_upload.php" class="menu-item active">🧾 Upload Individual</a>
     <a href="e-invoice_consolidate.php" class="menu-item">🧾 Upload Consolidated</a>
     <a href="e-invoice_manual.php" class="menu-item">🧾 Manual Entry</a>
-    <a href="e-invoice_submitted.php" class="menu-item">📋 View Submitted</a>
-    <div class="menu-section">Submission</div>
-    <a href="e-invoice_upload.php" class="menu-item">📤 Upload</a>
-    <a href="e-invoice_manual.php" class="menu-item">✍️ Manual Entry</a>
+    <a href="e-invoice_submitted.php" class="menu-item">🧾 View Submitted</a>
+    <div class="menu-section">Subscription</div>
+    <a href="s_payment.php" class="menu-item">💳 Payment</a>
+    <a href="s_report.php" class="menu-item">📄 Report</a>
     <div class="menu-section">Setup</div>
     <a href="company.php" class="menu-item">🏢 Company</a>
-  </nav>
+    <a href="users.php" class="menu-item">👥 Users</a>
+    <a href="profile.php" class="menu-item">👤 Profile</a>  </nav>
 </aside>
 <div class="sidebar-overlay" id="sidebarOverlay" onclick="document.getElementById('sidebar').classList.toggle('open');document.getElementById('sidebarOverlay').classList.toggle('open');"></div>
 <div class="main-wrapper">
