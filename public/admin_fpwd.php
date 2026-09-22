@@ -3,7 +3,7 @@
 // Place this file in a secure, non-public directory. 
 // Run it once via CLI or a restricted web request, then delete it immediately.
 
-require_once __DIR__ . '/config/database.php'; // Adjust path to your database configuration
+require_once '../config/database.php'; // Adjust path to your database configuration
 
 $email = 'admin@azkejora.io';
 $newPassword = 'Pr3d!ca+e'; // Set your new password here
