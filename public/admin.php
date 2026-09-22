@@ -50,8 +50,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $chk = $pdo->prepare("SELECT role FROM users WHERE id = ?");
             $chk->execute([$userId]);
             if ($chk->fetchColumn() === 'customer') {
-                foreach (['bookings', 'transactions', 'einvoice_items', 'subscriptions'] as $tbl) {
+                foreach (['bookings', 'transactions', 'einvoice_items', 'subscriptions', 'subscriber_users', 'companies', 'einvoice_records', 'einvoice_uploads', 'einvoice_consolidated', 'subscriptions_billing'] as $tbl) {
                     if ($pdo->query("SELECT to_regclass('public." . $tbl . "')")->fetchColumn()) {
+                        $col = ($tbl === 'subscriber_users' || $tbl === 'companies') ? 'user_id' : 'user_id';
                         $pdo->prepare("DELETE FROM " . $tbl . " WHERE user_id = ?")->execute([$userId]);
                     }
                 }
@@ -66,7 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     header("Location: admin.php?" . $back); exit;
 }
 
-/* ---------------- AUTO-EXPIRE: flip passed trials/periods to 'expired' ---------------- */
+/* ---------------- AUTO-EXPIRE ---------------- */
 $pdo->exec("UPDATE subscriptions SET status='expired'
     WHERE (status = 'active_trial' AND trial_ends_at IS NOT NULL AND trial_ends_at < NOW())
        OR (status IN ('active','past_due') AND period_ends_at IS NOT NULL AND period_ends_at < NOW())");
@@ -106,6 +107,7 @@ $stats = $pdo->query("SELECT
 $groups = [];
 foreach (all_settings($pdo) as $s) $groups[$s['module']][] = $s;
 $modCls = ['general'=>'mod-general','einvoice'=>'mod-einvoice','booking'=>'mod-booking'];
+$modIcon = ['general'=>'⚙️','einvoice'=>'🧾','booking'=>'📅'];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -155,19 +157,38 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .stat b{display:block;margin-top:8px;font-size:30px;font-weight:800}
 .stat .g{color:#059669}.stat .b{color:var(--brand)}.stat .r{color:#e11d48}
 
-/* ---------- SETTINGS ---------- */
+/* ---------- SETTINGS (v2 — clean + responsive) ---------- */
 .set-card{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--card);margin-bottom:28px;overflow:hidden}
-.set-head{padding:16px 24px;border-bottom:1px solid #f1f5f9;font-weight:700;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.set-head{padding:18px 24px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.set-head .t{font-weight:800;font-size:15px}
 .set-head small{color:var(--faint);font-weight:500}
-.set-body{padding:8px 24px 20px}
-.set-row{display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px dashed #e2e8f0;flex-wrap:wrap}
-.set-row:last-child{border-bottom:none}
-.mod-chip{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;border-radius:999px;padding:4px 12px;min-width:82px;text-align:center;background:#f1f5f9;color:#64748b}
+.set-head code{background:#f1f5f9;border-radius:6px;padding:2px 6px;font-size:11px;color:#475569}
+.set-body{padding:4px 24px 16px}
+
+.set-module{margin-top:22px}
+.set-module-head{display:flex;align-items:center;gap:12px;margin-bottom:2px}
+.set-module-head .line{flex:1;height:1px;background:var(--line)}
+.set-module-head .cnt{font-size:11px;color:var(--faint);font-weight:600;white-space:nowrap}
+.mod-chip{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;border-radius:999px;padding:4px 12px;background:#f1f5f9;color:#64748b;white-space:nowrap}
 .mod-general{background:#e0e5ff;color:#4644cf}.mod-einvoice{background:#fef3c7;color:#d97706}.mod-booking{background:#fae8ff;color:#c026d3}
-.set-label{flex:1;min-width:220px}.set-label b{font-size:14px;display:block}.set-label small{color:var(--faint);font-size:12px}
-.set-input{width:110px;border:1px solid var(--line);border-radius:10px;padding:9px 10px;font-size:14px;text-align:center;outline:none;font-weight:700}
-.set-input:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.1)}
-.btn-save{background:var(--grad);color:#fff;border-radius:10px;padding:10px 18px;font-size:13px;font-weight:700}
+
+.set-row{display:grid;grid-template-columns:minmax(200px,5fr) minmax(150px,3fr);gap:6px 24px;align-items:center;padding:14px 0;border-bottom:1px dashed #e2e8f0}
+.set-module .set-row:last-child{border-bottom:none}
+.set-row.wide{grid-template-columns:1fr}
+.set-label b{font-size:14px;display:block;color:#1e293b;font-weight:600}
+.set-label small{color:var(--faint);font-size:12px;display:block;margin-top:2px;line-height:1.45}
+.set-control{display:flex;justify-content:flex-end}
+.set-row.wide .set-control{justify-content:stretch}
+
+.set-input{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;outline:none;background:#f8fafc;transition:.15s;color:var(--ink)}
+.set-input:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.1);background:#fff}
+.set-input.num{max-width:120px;text-align:center;font-weight:700}
+.set-input.url{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+textarea.set-input{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;min-height:92px;resize:vertical;line-height:1.55;white-space:pre}
+
+.set-foot{padding:14px 24px;border-top:1px solid #f1f5f9;background:#f8fafc;display:flex;justify-content:flex-end;align-items:center;gap:12px}
+.set-foot small{margin-right:auto;color:var(--faint);font-size:12px}
+.btn-save{background:var(--grad);color:#fff;border-radius:10px;padding:10px 22px;font-size:13px;font-weight:700;box-shadow:0 8px 20px -8px rgba(84,87,229,.5)}
 .btn-save:hover{opacity:.9}
 
 /* ---------- TABLE ---------- */
@@ -243,14 +264,27 @@ tbody tr:hover{background:#f8fafc}
   h1{font-size:22px}
   .topbar{padding:12px 14px}
   .top-right{gap:8px;font-size:12px}
-  .stats3{grid-template-columns:1fr}
+  .stats3{grid-template-columns:1fr;gap:12px}
+  .stat{padding:18px}
+  .stat b{font-size:24px}
   .toolbar{flex-direction:column;align-items:stretch}
   .search{width:100%}
   .search-in{flex:1;width:auto}
-  .set-head{flex-direction:column;align-items:flex-start}
-  .set-row{flex-direction:column;align-items:flex-start;gap:8px}
   .pager{flex-direction:column;align-items:center}
   th,td{padding:10px 12px}
+
+  /* Settings: fully stacked, touch-friendly */
+  .set-head{padding:16px;flex-direction:column;align-items:flex-start;gap:4px}
+  .set-body{padding:0 16px 8px}
+  .set-module{margin-top:18px}
+  .set-row{grid-template-columns:1fr;gap:8px;padding:12px 0}
+  .set-control{justify-content:stretch}
+  .set-input{font-size:14px;padding:11px 12px}
+  .set-input.num{max-width:none;text-align:left}
+  textarea.set-input{min-height:110px}
+  .set-foot{padding:12px 16px;flex-direction:column-reverse;align-items:stretch;gap:8px}
+  .set-foot small{text-align:center;margin:0}
+  .set-foot .btn-save{width:100%;padding:13px}
 }
 </style>
 </head>
@@ -302,22 +336,61 @@ tbody tr:hover{background:#f8fafc}
       <div class="stat"><p>Past Due / Expired</p><b class="r"><?= $stats['past_due'] ?></b></div>
     </div>
 
+    <!-- ============ PLATFORM SETTINGS (v2) ============ -->
     <form method="POST" class="set-card action-form">
       <input type="hidden" name="action" value="save_settings">
-      <div class="set-head"><span>Platform Settings</span><small>Module-based configuration store · <code>settings(module, key, value)</code></small><button class="btn-save">Save settings</button></div>
+      <div class="set-head">
+        <span class="t">🛠️ Platform Settings</span>
+        <small>Module-based configuration store · <code>settings(module, key, value)</code></small>
+      </div>
       <div class="set-body">
         <?php foreach ($groups as $module => $items): ?>
-          <?php foreach ($items as $s): ?>
-          <div class="set-row">
-            <span class="mod-chip <?= $modCls[$module] ?? '' ?>"><?= htmlspecialchars($module) ?></span>
-            <div class="set-label"><b><?= htmlspecialchars($s['label'] ?: $s['key']) ?></b><small><?= htmlspecialchars($s['hint'] ?? '') ?></small></div>
-            <input class="set-input" type="text" name="setting[<?= htmlspecialchars($module) ?>][<?= htmlspecialchars($s['key']) ?>]" value="<?= htmlspecialchars($s['value']) ?>">
+          <div class="set-module">
+            <div class="set-module-head">
+              <span class="mod-chip <?= $modCls[$module] ?? '' ?>"><?= $modIcon[$module] ?? '📦' ?> <?= htmlspecialchars($module) ?></span>
+              <span class="line"></span>
+              <span class="cnt"><?= count($items) ?> setting(s)</span>
+            </div>
+
+            <?php foreach ($items as $s):
+                $val    = (string)($s['value'] ?? '');
+                $trim   = trim($val);
+                $isJson = str_starts_with($trim, '{') || str_starts_with($trim, '[');
+                $isLong = mb_strlen($trim) > 60;
+                $isUrl  = (bool)preg_match('#^https?://#i', $trim);
+                $isNum  = $trim !== '' && is_numeric($trim);
+                $wide   = $isJson || $isLong || $isUrl;
+                $fname  = 'setting[' . htmlspecialchars($module) . '][' . htmlspecialchars($s['key']) . ']';
+            ?>
+            <div class="set-row <?= $wide ? 'wide' : '' ?>">
+              <div class="set-label">
+                <b><?= htmlspecialchars($s['label'] ?: $s['key']) ?></b>
+                <?php if (!empty($s['hint'])): ?><small><?= htmlspecialchars($s['hint']) ?></small><?php endif; ?>
+              </div>
+              <div class="set-control">
+                <?php if ($isJson || $isLong): ?>
+                  <textarea class="set-input" rows="4" name="<?= $fname ?>" spellcheck="false"><?= htmlspecialchars($val) ?></textarea>
+                <?php elseif ($isUrl): ?>
+                  <input class="set-input url" type="text" name="<?= $fname ?>" value="<?= htmlspecialchars($val) ?>" spellcheck="false" autocomplete="off">
+                <?php else: ?>
+                  <input class="set-input <?= $isNum ? 'num' : '' ?>" type="text" name="<?= $fname ?>" value="<?= htmlspecialchars($val) ?>" <?= $isNum ? 'inputmode="numeric"' : '' ?> autocomplete="off">
+                <?php endif; ?>
+              </div>
+            </div>
+            <?php endforeach; ?>
           </div>
-          <?php endforeach; ?>
         <?php endforeach; ?>
+        <?php if (!$groups): ?>
+          <div class="set-row"><div class="set-label"><b>No settings defined yet.</b><small>They will appear here once seeded.</small></div></div>
+        <?php endif; ?>
+      </div>
+      <div class="set-foot">
+        <small>Changes apply immediately after saving.</small>
+        <button class="btn-save" type="submit">💾 Save settings</button>
       </div>
     </form>
 
+    <!-- ============ SUBSCRIBERS TABLE ============ -->
     <div class="table-card">
       <form method="GET" class="toolbar">
         <h3>All Subscribers <span><?= $total ?> record(s)<?= $q ? ' · filtered by "'.htmlspecialchars($q).'"' : '' ?></span></h3>
@@ -352,14 +425,15 @@ tbody tr:hover{background:#f8fafc}
                   $remainingText = $diff->days > 0 ? "{$diff->days}d {$diff->h}h left" : "{$diff->h}h {$diff->i}m left";
               }
           }
+          $delMsg = 'Permanently delete ' . $s['name'] . ' (' . $s['email'] . ') and ALL related bookings, transactions & invoices? This cannot be undone.';
         ?>
           <tr data-id="<?= $s['id'] ?>" data-name="<?= htmlspecialchars($s['name'], ENT_QUOTES) ?>" data-email="<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>">
             <!-- 1 · CUSTOMER -->
             <td class="name"><b><?= htmlspecialchars($s['name']) ?></b><div class="email"><?= htmlspecialchars($s['email']) ?></div></td>
 
-            <!-- 2 · PLAN + STATUS (combined) -->
+            <!-- 2 · PLAN + STATUS -->
             <td>
-              <div class="plan-line"><?= $s['plan'] ?: 'No Plan' ?> <span style="color:var(--faint);font-weight:500">(RM <?= $s['price'] ?>)</span></div>
+              <div class="plan-line"><?= $s['plan'] ? htmlspecialchars($s['plan']) : 'No Plan' ?> <span style="color:var(--faint);font-weight:500">(RM <?= htmlspecialchars((string)$s['price']) ?>)</span></div>
               <span class="badge <?= htmlspecialchars($st) ?>"><?= htmlspecialchars($st) ?></span>
             </td>
 
@@ -369,10 +443,8 @@ tbody tr:hover{background:#f8fafc}
               <span><small>Payment:</small> <b class="mono"><?= $s['first_payment'] ? date('M d, Y', strtotime($s['first_payment'])) : '—' ?></b></span>
             </td>
 
-            <td class="date-pair">&nbsp;</td>
-            
             <!-- 4 · EXPIRY -->
-            <td class="sale">
+            <td class="date-pair">
               <?php if ($expiryDate): ?>
                 <span><b class="mono"><?php
                   if ($st === 'active_trial') echo '⏱ ' . $expiryDate->format('M d, H:i');
@@ -386,7 +458,7 @@ tbody tr:hover{background:#f8fafc}
               <?php endif; ?>
             </td>
 
-            <!-- 5 · TOTAL SALE -->          
+            <!-- 5 · TOTAL SALE -->
             <td class="sale">RM <?= number_format((float)$s['total_sale'], 0) ?></td>
 
             <!-- 6 · ACTIONS -->
@@ -394,7 +466,7 @@ tbody tr:hover{background:#f8fafc}
               <button class="ibtn" data-edit title="Edit profile">✏️</button>
               <a href="admin_company.php?user_id=<?= $s['id'] ?>" class="ibtn" title="Update subscriber company">🏢</a>
               <button class="ibtn" title="Impersonate (coming soon)" onclick="impersonate('<?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?>')">🎭</button>
-              <form method="POST" class="action-form" onsubmit="return confirm('Permanently delete <?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?> (<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>) and ALL related bookings, transactions & invoices?\nThis cannot be undone.')">
+              <form method="POST" class="action-form" data-confirm="<?= htmlspecialchars($delMsg, ENT_QUOTES) ?>">
                 <input type="hidden" name="action" value="delete_user">
                 <input type="hidden" name="user_id" value="<?= $s['id'] ?>">
                 <button class="ibtn del" title="Delete user + related data (testing)">🗑️</button>
@@ -430,6 +502,7 @@ tbody tr:hover{background:#f8fafc}
   </main>
 </div>
 
+<!-- ============ EDIT MODAL ============ -->
 <div class="modal" id="editModal">
   <form method="POST" class="modal-card action-form">
     <input type="hidden" name="action" value="save_profile">
@@ -453,25 +526,25 @@ document.querySelectorAll('button[data-edit]').forEach(b => b.addEventListener('
   document.getElementById('edit_email').value = tr.dataset.email;
   modal.classList.add('open');
 }));
-function impersonate(name){ alert('🎭 Impersonation for "' + name + '" is planned — module not built yet.'); }
+function impersonate(name){ alert(' Impersonation for "' + name + '" is planned — module not built yet.'); }
 
 function toggleSidebar() {
     document.getElementById('sidebar').classList.toggle('open');
     document.getElementById('sidebarOverlay').classList.toggle('open');
 }
 
+/* ---------- SUBMIT: single confirm + loading overlay ---------- */
 const overlay = document.getElementById('loadingOverlay');
-document.querySelectorAll('form').forEach(form => {
+document.querySelectorAll('.action-form').forEach(form => {
   form.addEventListener('submit', function(e) {
-    if (this.onsubmit && !this.onsubmit(e)) return;
+    const msg = this.dataset.confirm;
+    if (msg && !confirm(msg)) { e.preventDefault(); return; }
     overlay.classList.add('active');
   });
 });
 document.querySelectorAll('a[href]').forEach(link => {
   link.addEventListener('click', function() {
-    if (!this.href.includes('#') && !this.target) {
-      overlay.classList.add('active');
-    }
+    if (!this.href.includes('#') && !this.target) overlay.classList.add('active');
   });
 });
 </script>
