@@ -2,7 +2,7 @@
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/settings.php';
 requireCustomer();
-ensure_settings_table($pdo0); // Note: adjusted to match your auth.php variable if needed, or keep $pdo
+ensure_settings_table($pdo);
 $uid = currentUserId();
 $me  = currentUser();
 
@@ -58,7 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'proce
         }
         if ($paymentMethod === 'manual_transfer' && empty($bankName)) {
             throw new Exception("Please select your bank name.");
- a       }
+        }
         
         // Generate receipt and invoice numbers
         $receiptNo = 'RCP-' . date('Ymd') . '-' . strtoupper(substr($transactionId, -8));
@@ -266,7 +266,7 @@ a{text-decoration:none}
       <div class="summary-row">
         <span class="label">Total</span>
         <span class="value" style="color:var(--brand);font-size:24px">RM<?= number_format($amount, 2) ?></span>
-      </div “>
+      </div>
     </div>
     
     <form method="POST" enctype="multipart/form-data">
@@ -330,7 +330,7 @@ a{text-decoration:none}
             <p><span>Amount:</span> <strong style="color:var(--brand)">RM<?= number_format($amount, 2) ?></strong></p>
           </div>
           <p style="margin-top:16px;font-size:12px;color:var(--faint)">* Your subscription will be marked as "Pending Verification" until our team confirms the payment.</p>
-       20px>
+        </div>
       </div>
 
       <!-- Touch 'n Go Details -->
