@@ -11,26 +11,36 @@ $back = http_build_query(array_filter(['q' => $q, 'page' => $page]));
 
 /* ---------------- POST ACTIONS ---------------- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    $userId = $_POST['user_id'] ?? '';
+    $userId = trim($_POST['user_id'] ?? '');
+    $subId  = trim($_POST['sub_id']  ?? '');
 
-    if ($_POST['action'] === 'extend_trial') {
-        $st = $pdo->prepare("UPDATE subscriptions SET status='active_trial', trial_ends_at = NOW() + (? * INTERVAL '1 hour') WHERE user_id = ?");
-        $st->execute([$trialHours, $userId]);
-        if ($st->rowCount() === 0)
-            $pdo->prepare("INSERT INTO subscriptions (user_id, status, price, trial_ends_at) VALUES (?,'active_trial',0, NOW() + (? * INTERVAL '1 hour'))")
-                ->execute([$userId, $trialHours]);
+    /* ---- EXPIRE NOW (new) : update subscriptions table ---- */
+    if ($_POST['action'] === 'expire_now' && $subId !== '') {
+        $pdo->prepare("UPDATE subscriptions SET
+                status         = 'expired',
+                trial_ends_at  = CASE WHEN status = 'active_trial' THEN NOW() ELSE trial_ends_at END,
+                period_ends_at = CASE WHEN status = 'active_trial' THEN period_ends_at ELSE NOW() END
+                WHERE id = ?")->execute([$subId]);
+        header("Location: admin.php?expired=1&" . $back); exit;
 
-    } elseif ($_POST['action'] === 'activate') {
-        $st = $pdo->prepare("UPDATE subscriptions SET status='active', period_ends_at = NOW() + INTERVAL '90 days' WHERE user_id = ?");
-        $st->execute([$userId]);
-        if ($st->rowCount() === 0)
-            $pdo->prepare("INSERT INTO subscriptions (user_id, status, price, period_ends_at) VALUES (?,'active',0, NOW() + INTERVAL '90 days')")
-                ->execute([$userId]);
+    } elseif ($_POST['action'] === 'extend_trial' && $subId !== '') {
+        $st = $pdo->prepare("UPDATE subscriptions SET status='active_trial', trial_ends_at = NOW() + (? * INTERVAL '1 hour') WHERE id = ?");
+        $st->execute([$trialHours, $subId]);
+        if ($st->rowCount() === 0 && $userId !== '') {
+            $ins = $pdo->prepare("INSERT INTO subscriptions (user_id, status, price, trial_ends_at) VALUES (?,'active_trial',0, NOW() + (? * INTERVAL '1 hour')) RETURNING id");
+            $ins->execute([$userId, $trialHours]);
+            $newSub = $ins->fetchColumn();
+            $pdo->prepare("UPDATE users SET subscription_id = ? WHERE id = ?")->execute([$newSub, $userId]);
+        }
 
-    } elseif ($_POST['action'] === 'suspend') {
-        $pdo->prepare("UPDATE subscriptions SET status='suspended' WHERE user_id = ?")->execute([$userId]);
+    } elseif ($_POST['action'] === 'activate' && $subId !== '') {
+        $pdo->prepare("UPDATE subscriptions SET status='active', period_ends_at = NOW() + INTERVAL '90 days' WHERE id = ?")
+            ->execute([$subId]);
 
-    } elseif ($_POST['action'] === 'save_profile') {
+    } elseif ($_POST['action'] === 'suspend' && $subId !== '') {
+        $pdo->prepare("UPDATE subscriptions SET status='suspended' WHERE id = ?")->execute([$subId]);
+
+    } elseif ($_POST['action'] === 'save_profile' && $userId !== '') {
         $name  = trim($_POST['name'] ?? '');
         $email = trim(strtolower($_POST['email'] ?? ''));
         if ($name !== '' && filter_var($email, FILTER_VALIDATE_EMAIL))
@@ -44,18 +54,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
         header("Location: admin.php?saved=1&" . $back); exit;
 
-    } elseif ($_POST['action'] === 'delete_user') {
+    } elseif ($_POST['action'] === 'delete_user' && $userId !== '') {
         $pdo->beginTransaction();
         try {
             $chk = $pdo->prepare("SELECT role FROM users WHERE id = ?");
             $chk->execute([$userId]);
             if ($chk->fetchColumn() === 'customer') {
-                foreach (['bookings', 'transactions', 'einvoice_items', 'subscriptions', 'subscriber_users', 'companies', 'einvoice_records', 'einvoice_uploads', 'einvoice_consolidated', 'subscriptions_billing'] as $tbl) {
+                /* 1) Null-out subscription FK pointers (RESTRICT-safe) */
+                $pdo->prepare("UPDATE users SET subscription_id = NULL WHERE id = ? OR subscription_id IN (SELECT id FROM subscriptions WHERE user_id = ?)")->execute([$userId, $userId]);
+                $pdo->prepare("UPDATE companies SET subscription_id = NULL WHERE user_id = ?")->execute([$userId]);
+                $pdo->prepare("UPDATE subscriber_users SET subscription_id = NULL WHERE owner_id = ? OR user_id = ?")->execute([$userId, $userId]);
+                /* 2) Team-member rows (owner or member) */
+                $pdo->prepare("DELETE FROM subscriber_users WHERE owner_id = ? OR user_id = ?")->execute([$userId, $userId]);
+                /* 3) Child tables in FK-safe order */
+                foreach (['einvoice_records', 'einvoice_uploads', 'einvoice_consolidated', 'subscriptions_billing', 'transactions', 'companies', 'subscriptions'] as $tbl) {
                     if ($pdo->query("SELECT to_regclass('public." . $tbl . "')")->fetchColumn()) {
-                        $col = ($tbl === 'subscriber_users' || $tbl === 'companies') ? 'user_id' : 'user_id';
                         $pdo->prepare("DELETE FROM " . $tbl . " WHERE user_id = ?")->execute([$userId]);
                     }
                 }
+                /* 4) The account itself */
                 $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$userId]);
             }
             $pdo->commit();
@@ -72,9 +89,17 @@ $pdo->exec("UPDATE subscriptions SET status='expired'
     WHERE (status = 'active_trial' AND trial_ends_at IS NOT NULL AND trial_ends_at < NOW())
        OR (status IN ('active','past_due') AND period_ends_at IS NOT NULL AND period_ends_at < NOW())");
 
-/* ---------------- DATA ---------------- */
+/* ---------------- DATA : subscriptions ➜ users (users.subscription_id = subscriptions.id) ----------------
+   Excludes team-member accounts (subscriber_users rows where the user is managed by a DIFFERENT owner),
+   so every subscription is listed exactly once under its true owner.                            */
 $like = '%' . mb_strtolower($q) . '%';
-$cnt  = $pdo->prepare("SELECT COUNT(*) FROM users u WHERE u.role='customer' AND (LOWER(u.name) LIKE ? OR LOWER(u.email) LIKE ?)");
+$memberFilter = "NOT EXISTS (SELECT 1 FROM subscriber_users su WHERE su.user_id = u.id AND su.owner_id IS DISTINCT FROM su.user_id)";
+
+$cnt = $pdo->prepare("SELECT COUNT(*)
+    FROM subscriptions s
+    JOIN users u ON u.subscription_id = s.id
+    WHERE u.role = 'customer' AND $memberFilter
+      AND (LOWER(u.name) LIKE ? OR LOWER(u.email) LIKE ?)");
 $cnt->execute([$like, $like]);
 $total   = (int)$cnt->fetchColumn();
 $perPage = 10;
@@ -83,17 +108,19 @@ $page    = min($page, $pages);
 $offset  = ($page - 1) * $perPage;
 
 $subscribers = $pdo->prepare("
-    SELECT u.id, u.name, u.email, u.created_at, s.plan, s.status, s.price, s.trial_ends_at, s.period_ends_at,
+    SELECT s.id AS sub_id, s.plan, s.status, s.price, s.trial_ends_at, s.period_ends_at, s.created_at AS sub_created_at,
+           u.id, u.name, u.email, u.created_at,
            agg.first_payment, agg.total_sale
-    FROM users u
-    LEFT JOIN subscriptions s ON s.user_id = u.id
+    FROM subscriptions s
+    JOIN users u ON u.subscription_id = s.id
     LEFT JOIN LATERAL (
         SELECT MIN(x.created_at) FILTER (WHERE x.status='succeeded' AND x.amount > 0) AS first_payment,
                COALESCE(SUM(x.amount) FILTER (WHERE x.status='succeeded' AND x.amount > 0), 0) AS total_sale
         FROM transactions x WHERE x.user_id = u.id
     ) agg ON true
-    WHERE u.role = 'customer' AND (LOWER(u.name) LIKE ? OR LOWER(u.email) LIKE ?)
-    ORDER BY u.created_at DESC, u.email
+    WHERE u.role = 'customer' AND $memberFilter
+      AND (LOWER(u.name) LIKE ? OR LOWER(u.email) LIKE ?)
+    ORDER BY s.created_at DESC, u.email
     LIMIT $perPage OFFSET $offset");
 $subscribers->execute([$like, $like]);
 $rows = $subscribers->fetchAll();
@@ -106,8 +133,24 @@ $stats = $pdo->query("SELECT
 
 $groups = [];
 foreach (all_settings($pdo) as $s) $groups[$s['module']][] = $s;
-$modCls = ['general'=>'mod-general','einvoice'=>'mod-einvoice','booking'=>'mod-booking'];
+$modCls  = ['general'=>'mod-general','einvoice'=>'mod-einvoice','booking'=>'mod-booking'];
 $modIcon = ['general'=>'⚙️','einvoice'=>'🧾','booking'=>'📅'];
+
+/* ---------------- REMAINING-TIME HELPER ---------------- */
+function remainingInfo(string $st, ?string $trialEnds, ?string $periodEnds, DateTime $now): array {
+    $end = null;
+    if ($st === 'active_trial' && $trialEnds)          $end = new DateTime($trialEnds);
+    elseif ($st === 'expired')                          $end = $periodEnds ? new DateTime($periodEnds) : ($trialEnds ? new DateTime($trialEnds) : null);
+    elseif ($periodEnds)                                $end = new DateTime($periodEnds);
+    if (!$end) return ['end'=>null, 'text'=>'', 'cls'=>''];
+    if ($st === 'expired' || $now > $end) return ['end'=>$end, 'text'=>'Expired', 'cls'=>'expired'];
+    $mins = (int)floor(($end->getTimestamp() - $now->getTimestamp()) / 60);
+    $d = intdiv($mins, 1440); $h = intdiv($mins % 1440, 60); $m = $mins % 60;
+    $text = $d > 0 ? "{$d}d {$h}h {$m}m left" : ($h > 0 ? "{$h}h {$m}m left" : "{$m}m left");
+    $cls  = $d >= 3 ? 'ok' : ($d >= 1 ? 'warn' : 'danger');
+    return ['end'=>$end, 'text'=>$text, 'cls'=>$cls];
+}
+$now = new DateTime();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -119,7 +162,6 @@ $modIcon = ['general'=>'⚙️','einvoice'=>'🧾','booking'=>'📅'];
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink)}
 a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 
-/* ---------- LOADING OVERLAY ---------- */
 .loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.92);backdrop-filter:blur(4px);display:none;place-items:center;z-index:9999}
 .loading-overlay.active{display:grid}
 .spinner-wrap{text-align:center}
@@ -127,7 +169,6 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner-text{margin-top:16px;font-size:13px;font-weight:600;color:var(--muted)}
 
-/* ---------- SIDEBAR ---------- */
 .sidebar{position:fixed;top:0;left:0;bottom:0;width:260px;background:#fff;border-right:1px solid var(--line);padding:24px 16px;z-index:30;transition:transform .3s ease;display:flex;flex-direction:column}
 .sidebar-brand{padding:0 8px 24px;border-bottom:1px solid var(--line);margin-bottom:16px}
 .sidebar-nav{display:flex;flex-direction:column;gap:4px}
@@ -136,7 +177,6 @@ a{text-decoration:none}button{font:inherit;cursor:pointer;border:none}
 .menu-item.active{background:var(--grad);color:#fff;box-shadow:0 4px 12px -4px rgba(84,87,229,.4)}
 .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);z-index:25}
 
-/* ---------- MAIN LAYOUT ---------- */
 .main-wrapper{margin-left:260px;min-height:100vh;display:flex;flex-direction:column}
 .topbar{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10;gap:12px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
@@ -150,28 +190,25 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .sub{color:var(--muted);font-size:14px;margin-top:4px}
 .banner{margin:16px 0 0;background:#d1fae5;color:#059669;border-radius:12px;padding:10px 16px;font-size:13px;font-weight:700}
 
-/* ---------- STATS ---------- */
 .stats3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin:28px 0}
 .stat{background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:var(--card)}
 .stat p{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
 .stat b{display:block;margin-top:8px;font-size:30px;font-weight:800}
 .stat .g{color:#059669}.stat .b{color:var(--brand)}.stat .r{color:#e11d48}
 
-/* ---------- SETTINGS (v2 — clean + responsive) ---------- */
+/* ---------- SETTINGS ---------- */
 .set-card{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--card);margin-bottom:28px;overflow:hidden}
 .set-head{padding:18px 24px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .set-head .t{font-weight:800;font-size:15px}
 .set-head small{color:var(--faint);font-weight:500}
 .set-head code{background:#f1f5f9;border-radius:6px;padding:2px 6px;font-size:11px;color:#475569}
 .set-body{padding:4px 24px 16px}
-
 .set-module{margin-top:22px}
 .set-module-head{display:flex;align-items:center;gap:12px;margin-bottom:2px}
 .set-module-head .line{flex:1;height:1px;background:var(--line)}
 .set-module-head .cnt{font-size:11px;color:var(--faint);font-weight:600;white-space:nowrap}
 .mod-chip{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;border-radius:999px;padding:4px 12px;background:#f1f5f9;color:#64748b;white-space:nowrap}
 .mod-general{background:#e0e5ff;color:#4644cf}.mod-einvoice{background:#fef3c7;color:#d97706}.mod-booking{background:#fae8ff;color:#c026d3}
-
 .set-row{display:grid;grid-template-columns:minmax(200px,5fr) minmax(150px,3fr);gap:6px 24px;align-items:center;padding:14px 0;border-bottom:1px dashed #e2e8f0}
 .set-module .set-row:last-child{border-bottom:none}
 .set-row.wide{grid-template-columns:1fr}
@@ -179,13 +216,11 @@ h1{font-size:28px;font-weight:800;letter-spacing:-.02em}
 .set-label small{color:var(--faint);font-size:12px;display:block;margin-top:2px;line-height:1.45}
 .set-control{display:flex;justify-content:flex-end}
 .set-row.wide .set-control{justify-content:stretch}
-
 .set-input{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;outline:none;background:#f8fafc;transition:.15s;color:var(--ink)}
 .set-input:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.1);background:#fff}
 .set-input.num{max-width:120px;text-align:center;font-weight:700}
 .set-input.url{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
 textarea.set-input{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;min-height:92px;resize:vertical;line-height:1.55;white-space:pre}
-
 .set-foot{padding:14px 24px;border-top:1px solid #f1f5f9;background:#f8fafc;display:flex;justify-content:flex-end;align-items:center;gap:12px}
 .set-foot small{margin-right:auto;color:var(--faint);font-size:12px}
 .btn-save{background:var(--grad);color:#fff;border-radius:10px;padding:10px 22px;font-size:13px;font-weight:700;box-shadow:0 8px 20px -8px rgba(84,87,229,.5)}
@@ -202,7 +237,7 @@ textarea.set-input{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:1
 .search-btn{background:#f1f5f9;color:#475569;border-radius:10px;padding:9px 16px;font-size:12px;font-weight:700}
 .clear-btn{font-size:12px;font-weight:700;color:#e11d48}
 .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
-table{width:100%;border-collapse:collapse;font-size:14px;min-width:960px}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:980px}
 th{padding:14px 24px;text-align:left;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);background:#f8fafc;border-bottom:1px solid #f1f5f9}
 td{padding:14px 24px;border-bottom:1px solid #f1f5f9;color:var(--muted);vertical-align:top}
 tbody tr:hover{background:#f8fafc}
@@ -218,12 +253,13 @@ tbody tr:hover{background:#f8fafc}
 .date-pair{display:flex;flex-direction:column;gap:4px}
 .date-pair span{display:flex;align-items:center;gap:6px}
 .date-pair small{color:var(--faint);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-.remaining{margin-top:4px;font-size:11px;font-weight:700;color:var(--brand)}
-.remaining.expired{color:#e11d48}
+.remaining{margin-top:2px;font-size:11px;font-weight:800;letter-spacing:.02em}
+.remaining.ok{color:#059669}.remaining.warn{color:#d97706}.remaining.danger{color:#e11d48}.remaining.expired{color:#e11d48}
 .actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;align-items:center}
 .ibtn{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:14px;background:#f8fafc;border:1px solid var(--line);transition:.15s;text-decoration:none;color:var(--muted)}
 .ibtn:hover{background:#e2e8f0;color:var(--ink)}
 .ibtn.del:hover{background:#ffe4e6;border-color:#fecdd3;color:#e11d48}
+.ibtn.exp:hover{background:#fef3c7;border-color:#fde68a;color:#d97706}
 .abtn{border-radius:8px;padding:7px 12px;font-size:11px;font-weight:700;transition:.15s}
 .abtn.trial{background:#f1f5f9;color:#475569}.abtn.trial:hover{background:#e2e8f0}
 .abtn.go{background:var(--grad);color:#fff}.abtn.go:hover{opacity:.9}
@@ -236,7 +272,6 @@ tbody tr:hover{background:#f8fafc}
 .pnum{border-radius:8px;padding:7px 11px;font-size:12px;font-weight:700;background:#fff;border:1px solid var(--line);color:#475569}
 .pnum.on{background:var(--grad);color:#fff;border-color:transparent}
 
-/* ---------- MODAL ---------- */
 .modal{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:rgba(19,19,39,.5);backdrop-filter:blur(4px);padding:16px}
 .modal.open{display:grid}
 .modal-card{width:100%;max-width:420px;background:#fff;border-radius:20px;padding:28px;box-shadow:0 30px 80px -20px rgba(19,19,39,.4)}
@@ -249,14 +284,13 @@ tbody tr:hover{background:#f8fafc}
 .mrow{display:flex;gap:10px;margin-top:20px}
 .mrow .btn-save{flex:1;text-align:center}.mrow .cancel{flex:1;background:#f1f5f9;color:#475569;border-radius:10px;font-size:13px;font-weight:700}
 
-/* ---------- RESPONSIVE ---------- */
 @media(max-width:900px){
   .sidebar{transform:translateX(-100%)}
   .sidebar.open{transform:translateX(0)}
   .sidebar-overlay.open{display:block}
   .main-wrapper{margin-left:0}
   .menu-toggle{display:block}
-  table{min-width:860px}
+  table{min-width:880px}
   th,td{padding:12px 16px}
 }
 @media(max-width:760px){
@@ -265,15 +299,11 @@ tbody tr:hover{background:#f8fafc}
   .topbar{padding:12px 14px}
   .top-right{gap:8px;font-size:12px}
   .stats3{grid-template-columns:1fr;gap:12px}
-  .stat{padding:18px}
-  .stat b{font-size:24px}
+  .stat{padding:18px}.stat b{font-size:24px}
   .toolbar{flex-direction:column;align-items:stretch}
-  .search{width:100%}
-  .search-in{flex:1;width:auto}
+  .search{width:100%}.search-in{flex:1;width:auto}
   .pager{flex-direction:column;align-items:center}
   th,td{padding:10px 12px}
-
-  /* Settings: fully stacked, touch-friendly */
   .set-head{padding:16px;flex-direction:column;align-items:flex-start;gap:4px}
   .set-body{padding:0 16px 8px}
   .set-module{margin-top:18px}
@@ -296,7 +326,6 @@ tbody tr:hover{background:#f8fafc}
   </div>
 </div>
 
-<!-- ============ SIDEBAR ============ -->
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-brand">
     <span class="brand"><span class="logo">⚡</span>AZ Kejora <em>Admin</em></span>
@@ -311,7 +340,6 @@ tbody tr:hover{background:#f8fafc}
 </aside>
 <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
 
-<!-- ============ MAIN WRAPPER ============ -->
 <div class="main-wrapper">
   <nav class="topbar">
     <div style="display:flex;align-items:center;gap:12px">
@@ -326,9 +354,10 @@ tbody tr:hover{background:#f8fafc}
 
   <main class="main">
     <h1>Subscriber Management</h1>
-    <p class="sub">Default trial period: <b><?= $trialHours ?> hour(s)</b> — configurable in Platform Settings below. Passed trials/periods auto-flip to <b>expired</b>.</p>
+    <p class="sub">Default trial period: <b><?= $trialHours ?> hour(s)</b>. List source: <code>subscriptions ⋈ users (users.subscription_id = subscriptions.id)</code>, team-member accounts excluded. Passed trials/periods auto-flip to <b>expired</b>.</p>
     <?php if (isset($_GET['saved'])): ?><div class="banner">✔ Settings saved successfully.</div><?php endif; ?>
     <?php if (isset($_GET['deleted'])): ?><div class="banner" style="background:#ffe4e6;color:#e11d48">🗑️ Subscriber and all related data deleted.</div><?php endif; ?>
+    <?php if (isset($_GET['expired'])): ?><div class="banner" style="background:#fef3c7;color:#b45309">⏹ Subscription marked as expired.</div><?php endif; ?>
 
     <div class="stats3">
       <div class="stat"><p>Active Subscriptions</p><b class="g"><?= $stats['active_subs'] ?></b></div>
@@ -336,7 +365,7 @@ tbody tr:hover{background:#f8fafc}
       <div class="stat"><p>Past Due / Expired</p><b class="r"><?= $stats['past_due'] ?></b></div>
     </div>
 
-    <!-- ============ PLATFORM SETTINGS (v2) ============ -->
+    <!-- ============ PLATFORM SETTINGS ============ -->
     <form method="POST" class="set-card action-form">
       <input type="hidden" name="action" value="save_settings">
       <div class="set-head">
@@ -351,7 +380,6 @@ tbody tr:hover{background:#f8fafc}
               <span class="line"></span>
               <span class="cnt"><?= count($items) ?> setting(s)</span>
             </div>
-
             <?php foreach ($items as $s):
                 $val    = (string)($s['value'] ?? '');
                 $trim   = trim($val);
@@ -390,10 +418,10 @@ tbody tr:hover{background:#f8fafc}
       </div>
     </form>
 
-    <!-- ============ SUBSCRIBERS TABLE ============ -->
+    <!-- ============ SUBSCRIPTION LIST ============ -->
     <div class="table-card">
       <form method="GET" class="toolbar">
-        <h3>All Subscribers <span><?= $total ?> record(s)<?= $q ? ' · filtered by "'.htmlspecialchars($q).'"' : '' ?></span></h3>
+        <h3>All Subscriptions <span><?= $total ?> record(s)<?= $q ? ' · filtered by "'.htmlspecialchars($q).'"' : '' ?></span></h3>
         <div class="search">
           <input class="search-in" type="text" name="q" placeholder="Search name or email…" value="<?= htmlspecialchars($q) ?>">
           <button class="search-btn">Search</button>
@@ -401,33 +429,14 @@ tbody tr:hover{background:#f8fafc}
         </div>
       </form>
       <div class="table-wrap"><table>
-        <thead><tr><th>Customer</th><th>Plan / Status</th><th>Start</th><th>Expiry</th><th>Total Sale</th><th style="text-align:right">Actions</th></tr></thead>
+        <thead><tr><th>Customer</th><th>Plan / Status</th><th>Start</th><th>Expiry &amp; Remaining</th><th>Total Sale</th><th style="text-align:right">Actions</th></tr></thead>
         <tbody>
         <?php foreach ($rows as $s):
-          $st = $s['status'] ?? 'none';
-          $now = new DateTime();
-          $expiryDate = null;
-          $remainingText = '';
-          $remainingClass = '';
-
-          if ($st === 'active_trial' && $s['trial_ends_at']) {
-              $expiryDate = new DateTime($s['trial_ends_at']);
-          } elseif ($s['period_ends_at']) {
-              $expiryDate = new DateTime($s['period_ends_at']);
-          }
-
-          if ($expiryDate) {
-              $diff = $now->diff($expiryDate);
-              if ($now > $expiryDate) {
-                  $remainingText = 'Expired';
-                  $remainingClass = 'expired';
-              } else {
-                  $remainingText = $diff->days > 0 ? "{$diff->days}d {$diff->h}h left" : "{$diff->h}h {$diff->i}m left";
-              }
-          }
+          $st  = $s['status'] ?? 'none';
+          $rem = remainingInfo($st, $s['trial_ends_at'], $s['period_ends_at'], $now);
           $delMsg = 'Permanently delete ' . $s['name'] . ' (' . $s['email'] . ') and ALL related bookings, transactions & invoices? This cannot be undone.';
         ?>
-          <tr data-id="<?= $s['id'] ?>" data-name="<?= htmlspecialchars($s['name'], ENT_QUOTES) ?>" data-email="<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>">
+          <tr data-id="<?= $s['id'] ?>" data-sub="<?= $s['sub_id'] ?>" data-name="<?= htmlspecialchars($s['name'], ENT_QUOTES) ?>" data-email="<?= htmlspecialchars($s['email'], ENT_QUOTES) ?>">
             <!-- 1 · CUSTOMER -->
             <td class="name"><b><?= htmlspecialchars($s['name']) ?></b><div class="email"><?= htmlspecialchars($s['email']) ?></div></td>
 
@@ -443,16 +452,11 @@ tbody tr:hover{background:#f8fafc}
               <span><small>Payment:</small> <b class="mono"><?= $s['first_payment'] ? date('M d, Y', strtotime($s['first_payment'])) : '—' ?></b></span>
             </td>
 
-            <!-- 4 · EXPIRY -->
+            <!-- 4 · EXPIRY + REMAINING -->
             <td class="date-pair">
-              <?php if ($expiryDate): ?>
-                <span><b class="mono"><?php
-                  if ($st === 'active_trial') echo '⏱ ' . $expiryDate->format('M d, H:i');
-                  else echo $expiryDate->format('M d, Y');
-                ?></b></span>
-                <?php if ($remainingText): ?>
-                  <span class="remaining <?= $remainingClass ?>"><?= $remainingText ?></span>
-                <?php endif; ?>
+              <?php if ($rem['end']): ?>
+                <span><b class="mono"><?= $st === 'active_trial' ? '⏱ ' . $rem['end']->format('M d, Y H:i') : $rem['end']->format('M d, Y H:i') ?></b></span>
+                <?php if ($rem['text']): ?><span class="remaining <?= $rem['cls'] ?>"><?= $rem['text'] ?></span><?php endif; ?>
               <?php else: ?>
                 <span class="mono">—</span>
               <?php endif; ?>
@@ -465,27 +469,47 @@ tbody tr:hover{background:#f8fafc}
             <td><div class="actions">
               <button class="ibtn" data-edit title="Edit profile">✏️</button>
               <a href="admin_company.php?user_id=<?= $s['id'] ?>" class="ibtn" title="Update subscriber company">🏢</a>
-              <button class="ibtn" title="Impersonate (coming soon)" onclick="impersonate('<?= htmlspecialchars(addslashes($s['name']), ENT_QUOTES) ?>')">🎭</button>
+
+              <?php if ($st !== 'expired'): ?>
+              <form method="POST" class="action-form" data-confirm="Mark this subscription as EXPIRED now? The end date will be stamped to the current time.">
+                <input type="hidden" name="action" value="expire_now">
+                <input type="hidden" name="sub_id" value="<?= $s['sub_id'] ?>">
+                <button class="ibtn exp" title="Mark as expired">⏹</button>
+              </form>
+              <?php endif; ?>
+
+              <?php if (in_array($st, ['active_trial','suspended','past_due','expired'])): ?>
+              <form method="POST" class="action-form">
+                <input type="hidden" name="action" value="extend_trial">
+                <input type="hidden" name="sub_id" value="<?= $s['sub_id'] ?>">
+                <input type="hidden" name="user_id" value="<?= $s['id'] ?>">
+                <button class="abtn trial" title="Reset trial to configured default">⏱ +<?= $trialHours ?>h</button>
+              </form>
+              <?php endif; ?>
+
+              <?php if ($st !== 'active'): ?>
+              <form method="POST" class="action-form">
+                <input type="hidden" name="action" value="activate">
+                <input type="hidden" name="sub_id" value="<?= $s['sub_id'] ?>">
+                <button class="abtn go">Activate (90d)</button>
+              </form>
+              <?php else: ?>
+              <form method="POST" class="action-form">
+                <input type="hidden" name="action" value="suspend">
+                <input type="hidden" name="sub_id" value="<?= $s['sub_id'] ?>">
+                <button class="abtn stop">Suspend</button>
+              </form>
+              <?php endif; ?>
+
               <form method="POST" class="action-form" data-confirm="<?= htmlspecialchars($delMsg, ENT_QUOTES) ?>">
                 <input type="hidden" name="action" value="delete_user">
                 <input type="hidden" name="user_id" value="<?= $s['id'] ?>">
                 <button class="ibtn del" title="Delete user + related data (testing)">🗑️</button>
               </form>
-              <?php if (in_array($st, ['active_trial','suspended','past_due','expired','none'])): ?>
-                <form method="POST" class="action-form"><input type="hidden" name="action" value="extend_trial"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
-                <button class="abtn trial" title="Reset trial to configured default">⏱ +<?= $trialHours ?>h</button></form>
-              <?php endif; ?>
-              <?php if ($st !== 'active'): ?>
-                <form method="POST" class="action-form"><input type="hidden" name="action" value="activate"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
-                <button class="abtn go">Activate (90d)</button></form>
-              <?php else: ?>
-                <form method="POST" class="action-form"><input type="hidden" name="action" value="suspend"><input type="hidden" name="user_id" value="<?= $s['id'] ?>">
-                <button class="abtn stop">Suspend</button></form>
-              <?php endif; ?>
             </div></td>
           </tr>
         <?php endforeach; ?>
-        <?php if (!$rows): ?><tr><td colspan="6" style="text-align:center;padding:40px">No subscribers match your search.</td></tr><?php endif; ?>
+        <?php if (!$rows): ?><tr><td colspan="6" style="text-align:center;padding:40px">No subscriptions match your search.</td></tr><?php endif; ?>
         </tbody>
       </table></div>
       <div class="pager">
@@ -502,7 +526,6 @@ tbody tr:hover{background:#f8fafc}
   </main>
 </div>
 
-<!-- ============ EDIT MODAL ============ -->
 <div class="modal" id="editModal">
   <form method="POST" class="modal-card action-form">
     <input type="hidden" name="action" value="save_profile">
@@ -526,14 +549,12 @@ document.querySelectorAll('button[data-edit]').forEach(b => b.addEventListener('
   document.getElementById('edit_email').value = tr.dataset.email;
   modal.classList.add('open');
 }));
-function impersonate(name){ alert(' Impersonation for "' + name + '" is planned — module not built yet.'); }
 
 function toggleSidebar() {
     document.getElementById('sidebar').classList.toggle('open');
     document.getElementById('sidebarOverlay').classList.toggle('open');
 }
 
-/* ---------- SUBMIT: single confirm + loading overlay ---------- */
 const overlay = document.getElementById('loadingOverlay');
 document.querySelectorAll('.action-form').forEach(form => {
   form.addEventListener('submit', function(e) {
