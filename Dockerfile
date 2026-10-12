@@ -1,17 +1,26 @@
+```dockerfile
 FROM php:8.2-apache
 
-RUN docker-php-ext-install pdo_mysql
+# Install system dependencies for MySQL and PostgreSQL
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev \
+    && docker-php-ext-install -j"$(nproc)" \
+        pdo_mysql \
+        pdo_pgsql \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install PostgreSQL PDO extension for Supabase
-RUN apt-get update && apt-get install -y libpq-dev \
-    && docker-php-ext-install pdo pdo_pgsql
-
-# Enable Apache rewrite engine
+# Enable Apache URL rewriting
 RUN a2enmod rewrite
 
 # Copy project files into Apache web root
 COPY . /var/www/html/
 
-RUN mkdir -p storage && chown -R www-data:www-data storage && chmod -R 775 storage
+# Ensure the storage directory exists and is writable
+RUN mkdir -p /var/www/html/storage \
+    && chown -R www-data:www-data /var/www/html/storage \
+    && chmod -R 775 /var/www/html/storage
 
+# Apache listens on port 80
 EXPOSE 80
+```
