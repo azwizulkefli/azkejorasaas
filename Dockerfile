@@ -1,4 +1,3 @@
-```dockerfile
 FROM php:8.2-apache
 
 # Install system dependencies for MySQL and PostgreSQL
@@ -23,4 +22,3 @@ RUN mkdir -p /var/www/html/storage \
 
 # Apache listens on port 80
 EXPOSE 80
-```
